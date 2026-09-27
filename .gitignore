@@ -33,3 +33,6 @@ __pycache__/
 *.log
 
 database/
+
+# Личные пути/настройки оператора (см. settings.example.json)
+settings.json

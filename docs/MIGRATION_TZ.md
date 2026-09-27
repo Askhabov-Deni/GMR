@@ -1,0 +1,387 @@
+# GMR — Техническое задание для AI-агента (Claude Code)
+
+**Статус:** рабочий ТЗ, составлен на основе реального содержимого репозитория
+`https://github.com/Askhabov-Deni/GMR` (1 коммит, ветка `main`), а не только
+абстрактного плана.
+
+**Как использовать этот файл:** закоммить его в репозиторий как
+`docs/MIGRATION_TZ.md`. Рядом заведи `docs/MIGRATION_STATUS.md` (шаблон —
+в самом низу этого документа). В начале КАЖДОЙ новой сессии с агентом
+(в том числе в новом чате/контексте) давай ему промпт из раздела
+"Протокол сессий" — этого достаточно, повторно пересказывать весь проект
+не нужно. Токены на удержание всего контекста в одной сессии не нужны:
+документ спроектирован так, чтобы каждая фаза была самодостаточной.
+
+---
+
+## 0. Что на самом деле лежит в репозитории (факты, не предположения)
+
+```
+GMR/
+├── reader.py                        1334 строки — весь production pipeline
+├── program2.py                      1884 строки — Tkinter UI + review + feedback
+├── settings.json                    абсолютные Windows-пути (D:\...)
+├── models/
+│   ├── cnn/      (9 файлов)         config, dataset, model, train, infer, evaluate, extract_digit_crops, annotate_digits, build_dataset_cnn
+│   ├── crnn/     (7 файлов)         config, dataset, model, train, infer, evaluate, metrics
+│   └── yolo_all_detect/ (5 файлов)  infer, train, labeler, test, train_val_split
+├── meter_detect/runs/detect/...     веса YOLO (meter/serial detector)
+├── meter_ocr/
+│   ├── runs/yolo/... , runs/cnn/... веса моделей
+│   └── utils/ (3 файла)             compare_yolo_vs_cnn, crop_save, crops_parameters
+├── serial_id_ocr/runs/crnn/...      веса CRNN
+└── utils/ (10 файлов)               см. таблицу в разделе 3
+```
+
+Важные конкретные факты, влияющие на план:
+
+- `reader.py` делает `sys.path.insert(0, .../models/crnn)` и
+  `sys.path.insert(0, .../models/cnn)` (строки 49-50), потому что
+  `models/crnn/infer_crnn.py` и `models/cnn/infer_cnn.py` внутри себя
+  делают **голые импорты** (`from dataset_crnn import val_transform`,
+  `from config_cnn import ...`) без пакетного префикса. Это значит: эти
+  файлы физически не запускаются без sys.path-хака снаружи. Это первое,
+  что ломается при любом перемещении файлов — фиксируется отдельным
+  golden-тестом до переноса.
+- `program2.py` импортирует **приватные** функции `reader.py напрямую**
+  (`_read_meter_digits`, `_find_crop_entry` — с подчёркиванием), и
+  дублирует часть его логики в `ModelBundle.run_on_photo`. Это ровно тот
+  запрещённый паттерн `UI → private reader functions`, который в мастер-
+  спеке назван недопустимым (раздел 96). Продублированную логику нужно
+  унифицировать в Фазе 3, а не рефакторить дважды порознь.
+- `settings.json` и дефолты `PipelineConfig` содержат абсолютные
+  Windows-пути (`D:\gas_photos`, `D:\РОЗА ФОТО МАЙ 2026...`). Это означает,
+  что "clean install на чистой машине" из мастер-спеки сегодня физически
+  невозможен — Фаза Packaging обязана этот путь убрать первой, иначе
+  даже golden tests в CI не запустятся без ручной правки путей.
+- В `utils/` половина скриптов имеют **захардкоженные абсолютные пути**
+  прямо в теле файла (`utils/move_files.py` — `C:\AD\gas-meter-reader\...`,
+  `utils/xlx_to_csv.py` — `D:\РОЗА ФОТО...`) и в некоторых есть реальные
+  деструктивные операции (`utils/del_lb.py` — удаление файлов, есть флаг
+  `DRY_RUN`, по умолчанию `False`). Такие скрипты нельзя просто "перенести
+  и запустить" — сначала classify, потом обезопасить.
+
+---
+
+## 1. Неизменяемые правила (для агента — жёсткий контракт, не тема для обсуждения)
+
+1. Domain-слой никогда не импортирует `torch`, `cv2`, `pandas`, `tkinter`,
+   `ultralytics`.
+2. Ни один шаг фазы не коммитится, если golden tests не проходят.
+3. Legacy-код (`reader.py`, `program2.py` как есть) не удаляется до тех
+   пор, пока новая реализация не прошла golden tests в течение минимум
+   одной фазы после переноса.
+4. Пороговые значения и заглушки **не меняются молча**:
+   `missing_digit_placeholder="5"`, `forgiven_digit_placeholder="0"`,
+   `ignore_last_digits=2`, `delta_threshold=10000.0`,
+   `expected_digits=5`, `serial_conf_thresh=0.6`, `digit_conf_thresh=0.6`,
+   `meter_conf_thresh=0.7`, `digit_detect_conf_thresh=0.7`.
+   Если агент считает, что значение нужно поменять — это отдельное
+   решение, требующее явного подтверждения, а не побочный эффект
+   рефакторинга.
+5. Никакой новой бизнес-функциональности внутри фаз миграции. Если
+   попутно найден баг — фиксируется в `docs/MIGRATION_STATUS.md` как
+   отдельный пункт, не чинится "по пути" без ведома владельца.
+6. Каждая фаза заканчивается рабочей системой. Не "наполовину переписанным".
+
+---
+
+## 2. Golden tests — точные кейсы (не абстрактные, а с реальными числами из кода)
+
+Пиши их **до** любого рефакторинга структуры, на текущем `reader.py`,
+мокая `YOLOInferer` / `CRNNInferer` / `CNNInferer` (они уже классы с
+понятным интерфейсом — `process_image`, `predict_with_details`,
+`process_array`, `predict` — мокать реально, без GPU).
+
+Обязательный минимум (бьётся об реальный код `process_photo` /
+`_read_meter_digits`, `reader.py:717-988` и `527-673`):
+
+| # | Вход | Ожидаемый Outcome | Где в коде |
+|---|---|---|---|
+| 1 | `last=1000, current=1200` | `PLUS`, `delta=200` | строка 982 |
+| 2 | `last=1200, current=1000` | `MINUS`, `delta=-200` | строка 982 |
+| 3 | `last=1000, current=20000` (delta=19000 > 10000) | `SUSPICIOUS` | строка 976-980 |
+| 4 | `last=None` (пустая ячейка в таблице) | `PLUS`, `delta=None` | строка 983-985 |
+| 5 | фото уже есть в `_log_filenames_cache` | `REPEAT` | строка 870-875 |
+| 6 | тот же `account_id` второй раз в этом прогоне | `REPEAT` (`duplicate in current run`) | строка 878-883 |
+| 7 | в таблице `col_new_reading` заполнен И есть pre_existing запись в логе с тем же account_id | `REPEAT` (`pre-existing entry`) | строка 897-907 |
+| 8 | в таблице `col_new_reading` заполнен, но НЕТ pre_existing записи | `SUSPICIOUS` (аномалия рассинхронизации) | строка 909-917 |
+| 9 | серийник не найден ни в одном из 3 вариантов (`s`, `"0"+s`, `"00"+s`) | `SERIAL_NOT_FOUND` | строка 815-836 |
+| 10 | `serial_conf = 0.5` (< 0.6) | `SERIAL_LOW_CONF` | строка 768 |
+| 11 | детектор цифр вернул 3 цифры (не 4 и не 5) | `DIGITS_ERROR`, `"expected 5 digits, got 3"` | строка 606 |
+| 12 | детектор вернул 4 цифры, gap найден в позиции ≥2 | восстановление через `missing_digit_placeholder` → успех | строка 572-603 |
+| 13 | детектор вернул 4 цифры, gap в позиции 0 или 1 | `DIGITS_ERROR` (`critical position`) — восстановление НЕ применяется | строка 597-601 |
+| 14 | последняя цифра (позиция 4, при `ignore_last_digits=2` — позиции 3 и 4) с conf < 0.6 | не ошибка, подставляется `forgiven_digit_placeholder="0"` | строка 635-643 |
+| 15 | серийник с ведущими нулями в таблице (`"007123"`) | сравнение по `_normalize_serial` (только strip, БЕЗ int()) — нули сохраняются | строка 185-193 |
+| 16 | detector цифр вернул 0 кропов | `error="digit detector found nothing"`, `reading=None` | строка 563-564 |
+
+Дополнительно (если будут реальные фото под рукой):
+- bbox → координаты оригинала не должны сбиваться при рефакторинге
+  (`_digit_bboxes_to_orig`, строка 676-712) — сравнить bbox до/после
+  на одном и том же фото.
+
+---
+
+## 3. Стартовая версия `docs/audit/utils.md`
+
+Ниже — черновая классификация, которую агент обязан **проверить**, а не
+просто скопировать (правило "неизвестный скрипт — не мусор" остаётся в силе:
+это стартовая гипотеза, не финальное решение).
+
+| Путь | Похоже на | Проблема | Предварительное решение |
+|---|---|---|---|
+| `utils/check_excel_lb.py` | dataset prep | хардкод путей в теле файла | MOVE → `ml/tasks/*/dataset`, вынести пути в CLI-аргументы |
+| `utils/compute_mean_std.py` | training utility | уже есть argparse — лучший образец в utils/ | KEEP, MOVE → `ml/engines/common` |
+| `utils/convert_to_sequence.py` | dataset prep | хардкод пути `database/meter_ocr_data/...` | MOVE, параметризовать |
+| `utils/del_lb.py` | maintenance (деструктивный) | удаляет файлы, хардкод путей, `DRY_RUN=False` по умолчанию | ARCHIVE в `tools/diagnostics`, сменить дефолт на `DRY_RUN=True` |
+| `utils/excel_label_tool.py` | dataset prep / labeling | пересекается по смыслу с `label_tool.py` и `label_yolo_tool.py` | нужно сравнить все три — MERGE или явно развести по назначению |
+| `utils/label_tool.py` | labeling tool (CRNN) | — | MOVE → `ml/tasks/serial_recognition/crnn/dataset` |
+| `utils/label_yolo_tool.py` (56K, самый крупный) | labeling tool (YOLO/digits) | вероятно, канонический инструмент разметки | MOVE → `ml/tasks/digit_detection/yolo/dataset` |
+| `utils/move_files.py` | one-off maintenance | хардкод `C:\AD\gas-meter-reader\...` — сломан вне машины автора | ARCHIVE как historical tool, не переносить как рабочий |
+| `utils/prepare_labeling_dataset.py` | dataset prep | — | MOVE → dataset pipeline |
+| `utils/rename.py` | one-off maintenance | хардкод пути | ARCHIVE |
+| `utils/xlx_to_csv.py` | data import/export | хардкод пути, но логика общая (xlsx↔csv) | MOVE → `infrastructure/importers`, параметризовать путь |
+| `meter_ocr/utils/compare_yolo_vs_cnn.py` | evaluation/diagnostics | сравнивает 3 модели интерактивно | MOVE → `tools/diagnostics` |
+| `meter_ocr/utils/crop_save.py` | dataset prep | хардкод `MODEL_PATH` и путей | MOVE, параметризовать |
+| `meter_ocr/utils/crops_parameters.py` | benchmark/diagnostics | статистика по размерам кропов | MOVE → `tools/diagnostics` |
+
+Для каждой строки перед финальным решением агент обязан выполнить
+шаги 1-9 из алгоритма мастер-спеки (прочитать файл целиком, найти
+импорты и references по всему репозиторию, проверить CLI entrypoint,
+git history) — таблица выше только экономит первый проход.
+
+---
+
+## 3bis. Аудит `models/*.py` — прочитано целиком, конкретные находки
+
+Хорошая новость сначала: **training/eval-скрипты внутри `models/` заметно
+качественнее, чем `reader.py`/`program2.py`/`utils/`.** `train_cnn.py`,
+`evaluate_cnn.py`, `model_cnn.py`, `dataset_cnn.py` — с argparse,
+docstring'ами, resume/fine-tune, early stopping, взвешенным сэмплированием
+классов, задокументированной логикой аугментаций. Это меняет расстановку
+рисков: Фаза 4 (перенос моделей) должна быть **дешевле**, чем казалось —
+почти вся ML-логика уже прилично организована, там в основном перенос +
+чистка импортов, не переписывание с нуля.
+
+Проблемы сконцентрированы в другом — на стыке "standalone-инструмент для
+модели" и "как её реально использует `reader.py` в проде". Конкретно:
+
+**1. Дублирующиеся, рассинхронизированные пороги уверенности.**
+`models/cnn/config_cnn.py` определяет `MIN_CONFIDENCE = 0.8` — но это
+значение использует только CLI самого `infer_cnn.py` (`--min_conf`,
+дефолт 0.8). В проде `reader.py` вызывает `_read_meter_digits` с
+`digit_conf_thresh=0.6` — другим числом. То же с CRNN: `infer_crnn.py`
+хардкодит `--min_conf` по умолчанию `0.8` прямо в `argparse`
+(в `config_crnn.py` такой константы вообще нет), тогда как `reader.py`
+использует `serial_conf_thresh=0.6`. Итог: если кто-то отлаживает
+качество модели через standalone-инструмент, он судит по чужому порогу,
+не по тому, что реально работает в проде. Это надо схлопнуть в одно
+значение при построении ML-интерфейсов (Фаза 3).
+
+**2. `infer_crnn.py` использует `expected_length=5` по умолчанию** для
+проверки "хороших" предсказаний — но `config_crnn.py` сам объявляет
+`MIN_LABEL_LENGTH=4, MAX_LABEL_LENGTH=10` для серийных номеров.
+Дефолт `5`, похоже, скопирован по аналогии с показаниями счётчика
+(5 цифр) и не подходит для серийников переменной длины.
+
+**3. Несогласованная загрузка чекпоинтов.** `DigitCNN.from_pretrained`
+(`models/cnn/model_cnn.py`) грузит через
+`torch.load(..., weights_only=True)` — безопасный вариант,
+рекомендованный для PyTorch ≥2.0. `CRNN.from_pretrained`
+(`models/crnn/model_crnn.py`) — тот же паттерн, но **без**
+`weights_only=True`. Плюс исторически разные ключи чекпоинта
+(`model_state_dict` / `model_state` / голый state_dict) — работает
+благодаря защитным veтвям, но это след нескольких итераций, а не
+осознанный формат — стоит унифицировать при переносе в `ml/`.
+
+**4. Вероятно мёртвый скрипт в пайплайне датасета CNN.**
+`models/cnn/extract_digit_crops.py` раскладывает кропы в
+`train/<class>/` и `val/<class>/`. Но `dataset_cnn.py._collect_samples()`
+ожидает **плоскую** структуру `<crops_dir>/<class>/*.jpg` (сплит 70/15/15
+делает сам `dataset_cnn.py` внутри). Именно такую плоскую структуру и
+именно в тот путь, что указан в `config_cnn.CROPS_DIR`, кладёт
+**другой** скрипт — `build_dataset_cnn.py`. Похоже, `extract_digit_crops.py`
+— более ранний/альтернативный подход, несовместимый с текущим
+`dataset_cnn.py`. Это ровно тот случай, для которого в мастер-спеке
+написано правило "неизвестный скрипт не мусор, пока не проверено, кто
+его использует" — здесь конкретный кандидат на `ARCHIVE`, но финальное
+решение всё равно за проверкой git history / реального использования.
+
+**5. Несопроизводимый train/val split для YOLO-детектора цифр.**
+`models/yolo_all_detect/train_val_split.py` делает `random.shuffle(photos)`
+**без `random.seed(...)`** — в отличие от `dataset_cnn.py` и
+`extract_digit_crops.py`, где `SEED=67` зафиксирован явно. Значит, каждый
+повторный запуск даёт другой train/val split именно для детектора цифр
+(`digits_detect_v4`), и текущий сплит, на котором обучена
+production-модель, невоспроизводим. Для "another developer can retrain
+ML" (раздел 100 мастер-спеки) это конкретная дыра — стоит зафиксировать
+seed до следующего переобучения этой модели.
+
+**6. Хардкод `C:\AD\gas-meter-reader\...` — не только в `utils/`.**
+Те же абсолютные Windows-пути встречаются и внутри `models/`:
+`models/cnn/build_dataset_cnn.py` (`__main__`) и
+`models/yolo_all_detect/train_val_split.py`. Это системная проблема
+репозитория, не только `utils/` — при "чистой установке" (раздел 100)
+свалится в трёх независимых местах, если чистить только `utils/`.
+
+**7. Мёртвый закомментированный конфиг.** `config_crnn.py` хранит
+закомментированный альтернативный набор `IMG_W/IMG_H/_MEAN/_STD` для
+`gas_meter_gold` — судя по всему, след эксперимента "а не читать ли
+показания счётчика через CRNN вместо YOLO+CNN". Сейчас не используется,
+но сбивает с толку при чтении файла как "текущей конфигурации".
+
+**8. Два больших Tkinter-инструмента разметки с пересекающейся зоной
+ответственности.** `models/yolo_all_detect/labeler_yolo.py` (992 строки,
+англоязычный, универсальный bbox-редактор с повторным прогоном YOLO) и
+`utils/label_yolo_tool.py` (1174 строки, русскоязычный, специализированный
+полуавтомат для gas_meter/serial_id/marker_id с автозаполнением через
+EasyOCR). Это не дубликаты один-в-один, но ~2100 строк похожего
+Tkinter-кода на разметку в двух разных местах — стоит явно решить в
+Фазе 6 (Cleanup), нужны ли оба, до того как оба будут "перенесены и
+забыты" в новую структуру.
+
+Обновление для раздела 3 (`utils.md`) и Фазы 4: находки 1-8 выше
+добавляются как отдельные пункты аудита для файлов внутри `models/`,
+которые изначально не были включены в таблицу раздела 3 (та таблица
+покрывала только `utils/` и `meter_ocr/utils/`).
+
+---
+
+## 4. Фазы
+
+Каждая фаза — отдельная сессия агента. Единственный gate перехода:
+**golden tests (раздел 2) проходят + рабочий путь (обработка хотя бы
+одного реального фото end-to-end) не сломан.**
+
+### Фаза 0 — Baseline (не трогаем структуру)
+- Написать golden tests из раздела 2 на **текущем** `reader.py`
+  (моки для YOLO/CRNN/CNN-классов).
+- Убрать хардкод абсолютных Windows-путей из `PipelineConfig` и
+  `settings.json` → вынести в `.env` / `settings.example.json` +
+  `settings.json` в `.gitignore` (сейчас `settings.json` закоммичен
+  с реальным путём оператора — это первое, что мешает "чистой установке").
+- Заполнить `docs/audit/utils.md`, начиная с таблицы раздела 3.
+- **Не переносить и не переименовывать ни один файл в этой фазе.**
+- Готово, когда: golden tests зелёные, `settings.json` не содержит
+  секретов/личных путей, `utils.md` заполнен по всем 13 файлам.
+
+### Фаза 1 — Packaging / зависимости
+- Зафиксировать `requirements.txt` / `pyproject.toml` с реальными
+  версиями (`torch`, `ultralytics`, `opencv-python`, `pandas`,
+  `albumentations`, `tqdm` — то, что реально импортируется).
+- Убрать `sys.path.insert` хаки из `reader.py` (строки 49-50) —
+  превратить `models/` в нормальный пакет с `__init__.py` и
+  relative imports вместо голых `from dataset_crnn import ...`.
+- Готово, когда: golden tests зелёные при запуске из чистого venv
+  без ручных правок `sys.path`.
+
+### Фаза 2a — Domain extraction (без изменения хранилища)
+- Извлечь `Outcome`, `PhotoResult`, `PipelineConfig` в
+  `src/gmr/domain/` как есть, без изменения полей.
+- Вынести бизнес-правила в явные policy-объекты, не меняя их значения:
+  `MissingDigitRecoveryPolicy`, `DigitForgivenessPolicy`,
+  `DeltaThresholdPolicy`, `DuplicatePolicy` (порядок проверок —
+  лог → processed-in-run → pre-existing → suspicious, см. раздел 2,
+  кейсы 5-8 — порядок не менять).
+- `reader.py` продолжает работать, просто дергая новые классы вместо
+  инлайн-кода.
+- Готово, когда: golden tests зелёные, `reader.py` стал короче за счёт
+  делегирования в `domain/`, хранилище (CSV) не тронуто.
+
+### Фаза 2b — Storage (CSV/XLSX → SQLite), отдельно от 2a
+- До переключения source of truth — обязателен **shadow-run**: новая
+  реализация пишет в SQLite параллельно со старым CSV-путём на реальных
+  (или синтетических, повторяющих структуру) данных минимум на одном
+  полном прогоне, результаты сверяются построчно.
+- Особое внимание кейсу из раздела 2, пункт 8 (`SUSPICIOUS` из-за
+  рассинхронизации таблицы и лога) — это как раз тот баг, который легко
+  тихо сломать при смене хранилища.
+- CSV/XLSX остаются import/export слоем, не удаляются.
+- Готово, когда: golden tests зелёные + shadow-run совпал построчно +
+  явный rollback-путь на CSV задокументирован в `MIGRATION_STATUS.md`.
+
+### Фаза 3 — ML Interfaces
+- Protocol-контракты: `MeterDetector`, `SerialRecognizer`,
+  `DigitDetector`, `DigitRecognizer`.
+- `YOLOInferer`, `CRNNInferer`, `CNNInferer` оборачиваются в эти
+  контракты БЕЗ изменения их внутреннего поведения (в частности —
+  `straighten` в `YOLOInferer.__init__`, который сейчас включен по
+  умолчанию для meter/serial и явно выключен для digit-детектора,
+  — это поведенческая деталь, а не случайность, сохранить).
+- Заодно устраняется дублирование логики между `reader.py:_read_meter_digits`
+  и `program2.py:ModelBundle.run_on_photo` — обе точки входа должны
+  вызывать один и тот же application-сервис через новый интерфейс.
+- Готово, когда: golden tests зелёные, `program2.py` больше не
+  импортирует приватные функции `reader.py` (`_read_meter_digits`,
+  `_find_crop_entry`) напрямую.
+
+### Фаза 4 — Model migration
+- Физический перенос `models/cnn/*`, `models/crnn/*`,
+  `models/yolo_all_detect/*` в `ml/tasks/...` по мэппингу из мастер-спеки
+  (раздел 97 полного документа).
+- Переносить и прогонять golden tests **после каждой из трёх моделей
+  отдельно** (сначала YOLO, тесты зелёные → коммит; потом CRNN, тесты
+  зелёные → коммит; потом CNN) — не переносить все три разом одним
+  большим диффом, иначе при падении теста непонятно, какая миграция
+  виновата.
+- Заодно решить находки из раздела 3bis: схлопнуть дублирующиеся пороги
+  уверенности (CNN/CRNN `MIN_CONFIDENCE`/`--min_conf`=0.8 vs prod
+  0.6) в единый источник; унифицировать `weights_only=True` при загрузке
+  чекпоинтов CNN и CRNN; поставить `random.seed(...)` в
+  `train_val_split.py`; вынести решение по `extract_digit_crops.py`
+  (ARCHIVE/DELETE) в `utils.md`.
+- Готово, когда: golden tests зелёные после каждого из трёх переносов
+  по отдельности, и находки 1, 3, 5 из раздела 3bis закрыты.
+
+### Фаза 5 — UI / CLI
+- `program2.py` разбирается на `apps/desktop` (чистый Tkinter слой) +
+  application-сервисы (`review`, `feedback` — то, что сейчас размазано
+  по `save_crnn_markup`, `save_cnn_markup`, `EditScreen`, `VerifyScreen`).
+- Появляется CLI как альтернативный интерфейс к тем же use case (хотя бы
+  `gmr process <folder>` эквивалент текущему `run_pipeline`).
+- Готово, когда: golden tests зелёные, оба интерфейса (desktop и CLI)
+  работают на одном и том же application-слое.
+
+### Фаза 6 — Cleanup
+- `docs/audit/utils.md` закрыт (ни одной строки в статусе "непонятно").
+- Мёртвый код удалён (после того как legacy прошёл фазу деprecation).
+- README отражает реальное текущее состояние, включая инструкцию по
+  чистой установке (без `D:\` путей).
+
+---
+
+## 5. Протокол сессий (решает проблему "не хватит токенов")
+
+В начале **каждой** новой сессии агенту (Claude Code или другому) дай
+ровно это:
+
+```
+Прочитай docs/MIGRATION_TZ.md и docs/MIGRATION_STATUS.md.
+Мы сейчас на фазе: <номер из MIGRATION_STATUS.md>.
+Работай строго в рамках этой фазы. Перед коммитом прогони golden tests.
+После завершения обнови MIGRATION_STATUS.md: что сделано, что осталось,
+какие решения принял (особенно по utils.md), и остановись — не начинай
+следующую фазу без подтверждения.
+```
+
+Владелец проекта не обязан помнить детали прошлых сессий — вся
+преемственность живёт в `MIGRATION_STATUS.md`, а не в истории чата.
+
+### Шаблон `docs/MIGRATION_STATUS.md`
+
+```markdown
+# GMR Migration — статус
+
+Текущая фаза: 0
+
+## Фаза 0 — Baseline
+- [ ] golden tests написаны (раздел 2 ТЗ) — сколько из 16 кейсов готово: _/16
+- [ ] settings.json очищен от личных путей
+- [ ] docs/audit/utils.md заполнен (13/13 файлов)
+
+## Решения, принятые агентом (append-only, не переписывать задним числом)
+- <дата> — <что решено> — <почему>
+
+## Найденные баги (не чинить в рамках миграции, только фиксировать)
+- <дата> — <описание> — <где в коде>
+```

@@ -1,0 +1,120 @@
+"""
+conftest.py — общие фикстуры для golden tests reader.py (docs/MIGRATION_TZ.md, раздел 2).
+
+Важно: reader.py на момент Фазы 0 импортирует models.crnn.infer_crnn /
+models.yolo_all_detect.infer_yolo / models.cnn.infer_cnn на уровне модуля
+(через sys.path-хак, см. MIGRATION_TZ.md §0), а те тянут torch/ultralytics/
+albumentations. Тесты НЕ грузят реальные веса и НЕ инстанцируют реальные
+YOLOInferer/CRNNInferer/CNNInferer — вместо них process_photo() и
+_read_meter_digits() получают лёгкие fake-объекты (см. FakeMeterDetector и
+т.д. ниже), т.к. эти функции принимают инференс-объекты как аргументы
+(dependency injection уже есть в текущем коде, тестировать это несложно).
+
+Если тяжёлые ML-библиотеки не установлены в окружении — reader.py всё равно
+не заимпортируется (import verhu файла). Это сознательно: Фаза 0 тестирует
+`reader.py` "как есть", без изменения структуры импортов (это будет Фаза 1).
+"""
+import numpy as np
+import pandas as pd
+
+import reader  # noqa: E402  (репозиторий уже в sys.path благодаря корневому conftest.py)
+
+
+# ─── Fake-детекторы / OCR (реализуют интерфейс реальных Inferer-классов) ─────
+
+class FakeMeterDetector:
+    """Имитирует YOLOInferer(meter_detect_model). process_image() -> list[dict]."""
+
+    def __init__(self, crops):
+        self._crops = crops
+
+    def process_image(self, img_path, save_crops=False, max_per_class=1, straighten=None):
+        return self._crops
+
+
+class FakeDigitDetector:
+    """Имитирует YOLOInferer(digit_detect_model, straighten=False). process_array() -> list[dict]."""
+
+    def __init__(self, crops):
+        self._crops = crops
+
+    def process_array(self, img, save_crops=False, max_per_class=5, straighten=None):
+        return self._crops
+
+
+class FakeDigitOCR:
+    """
+    Имитирует CNNInferer.predict(crop) -> {"digit": int, "confidence": float}.
+
+    predictions — dict {id(crop_array): (digit_str, confidence)}, ключуется
+    по id() самого np.ndarray-кропа, который тест положил в digit-crops.
+    """
+
+    def __init__(self, predictions):
+        self._predictions = predictions
+
+    def predict(self, image_input):
+        digit, conf = self._predictions[id(image_input)]
+        return {"digit": int(digit), "confidence": float(conf)}
+
+
+class FakeSerialOCR:
+    """Имитирует CRNNInferer.predict_with_details(crop) -> {"text","avg_confidence","details"}."""
+
+    def __init__(self, text, avg_confidence):
+        self._text = text
+        self._avg_confidence = avg_confidence
+
+    def predict_with_details(self, image_input):
+        return {"text": self._text, "avg_confidence": self._avg_confidence, "details": []}
+
+
+# ─── Вспомогательные билдеры данных ──────────────────────────────────────────
+
+def make_crop(h=20, w=20):
+    """Уникальный np.ndarray-кроп (нужна разная identity для digit_ocr predictions dict)."""
+    return np.zeros((h, w, 3), dtype=np.uint8)
+
+
+def make_meter_crops(meter_bbox=(0, 0, 300, 100), serial_bbox=(0, 100, 150, 130)):
+    """Стандартный результат meter_detector.process_image(): gas_meter + serial_number."""
+    return [
+        {"class": "gas_meter", "conf": 0.95, "angle": 0.0,
+         "bbox": meter_bbox, "crop": make_crop(100, 300), "path": None},
+        {"class": "serial_number", "conf": 0.95, "angle": 0.0,
+         "bbox": serial_bbox, "crop": make_crop(30, 150), "path": None},
+    ]
+
+
+def make_digit_crops_with_centers(x_starts, width=20, height=30):
+    """
+    Строит список digit-кропов (класс YOLO output dict) с заданными
+    x1-координатами (bbox[0] используется для сортировки в _read_meter_digits,
+    а center = (x1+x2)//2 — для поиска gap в алгоритме восстановления).
+    Возвращает (crops, real_crop_arrays) — real_crop_arrays в исходном
+    порядке x_starts, для последующей привязки в FakeDigitOCR.predictions.
+    """
+    crops = []
+    real_arrays = []
+    for x1 in x_starts:
+        arr = make_crop(height, width)
+        real_arrays.append(arr)
+        crops.append({
+            "class": "digit", "conf": 0.95, "angle": 0.0,
+            "bbox": (x1, 0, x1 + width, height), "crop": arr, "path": None,
+        })
+    return crops, real_arrays
+
+
+def make_df(rows, col_serial="Номер счетчика", col_account_id="Лицевой счет",
+            col_last_reading="Последние показания", col_new_reading="Текущие показания"):
+    """rows — list[dict] с ключами serial/account_id/last_reading/new_reading (может быть '')."""
+    return pd.DataFrame([
+        {
+            col_serial: r.get("serial", ""),
+            col_account_id: r.get("account_id", ""),
+            col_last_reading: r.get("last_reading", ""),
+            col_new_reading: r.get("new_reading", ""),
+        }
+        for r in rows
+    ])

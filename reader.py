@@ -64,10 +64,16 @@ class PipelineConfig:
     digit_ocr_model:          str   = "meter_ocr/runs/cnn/runs/v2_gold/best.pth"
     serial_ocr_model:         str   = "serial_id_ocr/runs/crnn/2026-06-05_01-09/best.pt"
 
-    # Пути к данным
-    input_dir:                str   = r"D:\gas_photos"
-    output_base_dir:          str   = r"D:\gas_photos\processed"
-    table_path:               str   = r"D:\РОЗА ФОТО МАЙ 2026 новый сохр.csv"
+    # Пути к данным.
+    # Раньше здесь были захардкожены личные Windows-пути оператора (D:\...) —
+    # это делало "чистую установку" на другой машине невозможной (см.
+    # docs/MIGRATION_TZ.md §0). Теперь дефолты — безопасные относительные
+    # пути внутри репозитория; реальные пути задаются через переменные
+    # окружения (см. .env.example) либо передаются явно при создании
+    # PipelineConfig(...).
+    input_dir:                str   = field(default_factory=lambda: os.environ.get("GMR_INPUT_DIR", "data/input"))
+    output_base_dir:          str   = field(default_factory=lambda: os.environ.get("GMR_OUTPUT_DIR", "data/output"))
+    table_path:               str   = field(default_factory=lambda: os.environ.get("GMR_TABLE_PATH", "data/meters_table.csv"))
 
     # Имена столбцов в таблице
     col_serial:               str   = "Номер счетчика"
