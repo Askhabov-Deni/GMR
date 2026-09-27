@@ -1,0 +1,14 @@
+{
+  "images_dir": "database/meter_ocr_data/gas_meter1/images",
+  "labels_dir": "database/meter_ocr_data/gas_meter1/labels",
+  "epochs": 100,
+  "batch_size": 32,
+  "lr": 0.0003,
+  "save_dir": "runs",
+  "seed": 42,
+  "resume": null,
+  "finetune": null,
+  "es_patience": 15,
+  "es_min_delta": 0.0,
+  "num_workers": 0
+}

@@ -1,0 +1,14 @@
+{
+  "images_dir": "database/serial_id_ocr_data/serial_id_gold/images",
+  "labels_dir": "database/serial_id_ocr_data/serial_id_gold/labels",
+  "epochs": 100,
+  "batch_size": 32,
+  "lr": 0.0003,
+  "save_dir": "serial_id_ocr/runs/crnn",
+  "seed": 42,
+  "resume": null,
+  "finetune": null,
+  "es_patience": 15,
+  "es_min_delta": 0.0,
+  "num_workers": 0
+}

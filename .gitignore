@@ -1,0 +1,35 @@
+# Виртуальные окружения
+venv/
+.venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# Веса моделей
+*.pth
+*.pt
+
+# Изображения
+*.png
+*.jpg
+*.jpeg
+*.JPG
+*.JPEG
+
+
+# Прочее
+.env
+*.log
+
+database/
