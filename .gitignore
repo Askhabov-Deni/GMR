@@ -33,6 +33,8 @@ __pycache__/
 *.log
 
 database/
+data_for_reader_test/
+
 
 # Личные пути/настройки оператора (см. settings.example.json)
 settings.json
