@@ -14,7 +14,7 @@ Golden tests для reader.py — docs/MIGRATION_TZ.md, раздел 2.
 """
 from tests._fixtures import (
     FakeDigitDetector, FakeDigitOCR, FakeMeterDetector, FakeSerialOCR,
-    make_df, make_digit_crops_with_centers, make_meter_crops,
+    make_crop, make_df, make_digit_crops_with_centers, make_meter_crops,
 )
 import reader
 from reader import Outcome
@@ -269,3 +269,39 @@ def test_case16_digit_detector_found_nothing():
     assert err == "digit detector found nothing"
     assert digit_results is None
     assert digit_bboxes is None
+
+
+# ─── 17-19: NO_METER / NO_SERIAL — до этого 0% покрытия ──────────────────────
+# Найдено по расхождению с production-отчётом (docs/audit/baseline_1111.txt):
+# NO_METER+NO_SERIAL = 127/1111 фото (11.5%) реального трафика, а Outcome-кейсы
+# для них отсутствовали в golden tests (были покрыты только 7 из 9 значений
+# Outcome). Три разных условия внутри process_photo (reader.py:736-756) дают
+# два одинаковых Outcome с разным error_detail — тестируем все три отдельно,
+# чтобы будущий рефакторинг (Фаза 2a) не мог тихо их схлопнуть в одно.
+
+def test_case17_no_meter_empty_crops(base_config):
+    # reader.py:736-740 — meter_detector вообще ничего не нашёл (crops == [])
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    result = _run(base_config, df, [], FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95)
+    assert result.outcome == Outcome.NO_METER
+    assert result.error_detail == "YOLO returned no crops"
+
+
+def test_case18_no_meter_class_missing(base_config):
+    # reader.py:742-751 — crops не пустой, но класса gas_meter среди них нет
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    crops = [{"class": "serial_number", "conf": 0.9, "angle": 0.0,
+              "bbox": (0, 0, 100, 30), "crop": make_crop(30, 100), "path": None}]
+    result = _run(base_config, df, crops, FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95)
+    assert result.outcome == Outcome.NO_METER
+    assert result.error_detail == "class gas_meter not detected"
+
+
+def test_case19_no_serial_class_missing(base_config):
+    # reader.py:753-756 — gas_meter нашёлся, а serial_number — нет
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    crops = [{"class": "gas_meter", "conf": 0.9, "angle": 0.0,
+              "bbox": (0, 0, 300, 100), "crop": make_crop(100, 300), "path": None}]
+    result = _run(base_config, df, crops, FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95)
+    assert result.outcome == Outcome.NO_SERIAL
+    assert result.error_detail == "class serial_number not detected"
