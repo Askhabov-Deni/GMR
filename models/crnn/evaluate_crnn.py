@@ -25,10 +25,16 @@ from collections import Counter
 import torch
 from torch.utils.data import DataLoader
 
-from config_crnn import MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
-from dataset_crnn import load_dataset, split, MeterDataset, val_transform, collate
-from metrics_crnn import exact_match, cer, per_position_accuracy
-from model_crnn import CRNN, predict
+try:
+    from .config_crnn import MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
+    from .dataset_crnn import load_dataset, split, MeterDataset, val_transform, collate
+    from .metrics_crnn import exact_match, cer, per_position_accuracy
+    from .model_crnn import CRNN, predict
+except ImportError:  # запуск как отдельный скрипт (python models/crnn/evaluate_crnn.py)
+    from config_crnn import MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
+    from dataset_crnn import load_dataset, split, MeterDataset, val_transform, collate
+    from metrics_crnn import exact_match, cer, per_position_accuracy
+    from model_crnn import CRNN, predict
 
 
 # ── Аргументы ────────────────────────────────────────────────────────

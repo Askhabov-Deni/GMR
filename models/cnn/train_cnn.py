@@ -26,13 +26,22 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from config_cnn import (
-    BATCH_SIZE, CROPS_DIR, IMG_SIZE, IMG_WIDTH,
-    DEVICE, EPOCHS, LABEL_SMOOTHING, LR,
-    NUM_CLASSES, OUTPUT_DIR, PATIENCE, WEIGHT_DECAY, SEED
-)
-from dataset_cnn import make_loaders
-from model_cnn import DigitCNN
+try:
+    from .config_cnn import (
+        BATCH_SIZE, CROPS_DIR, IMG_SIZE, IMG_WIDTH,
+        DEVICE, EPOCHS, LABEL_SMOOTHING, LR,
+        NUM_CLASSES, OUTPUT_DIR, PATIENCE, WEIGHT_DECAY, SEED
+    )
+    from .dataset_cnn import make_loaders
+    from .model_cnn import DigitCNN
+except ImportError:  # запуск как отдельный скрипт (python models/cnn/train_cnn.py)
+    from config_cnn import (
+        BATCH_SIZE, CROPS_DIR, IMG_SIZE, IMG_WIDTH,
+        DEVICE, EPOCHS, LABEL_SMOOTHING, LR,
+        NUM_CLASSES, OUTPUT_DIR, PATIENCE, WEIGHT_DECAY, SEED
+    )
+    from dataset_cnn import make_loaders
+    from model_cnn import DigitCNN
 
 
 # ─── Аргументы командной строки ──────────────────────────────────────────────

@@ -6,7 +6,10 @@ from torch.utils.data import Dataset
 import torchvision.transforms as T
 from PIL import Image, ImageOps
 
-from config_crnn import IMG_W, IMG_H, _MEAN, _STD, MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
+try:
+    from .config_crnn import IMG_W, IMG_H, _MEAN, _STD, MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
+except ImportError:  # запуск как отдельный скрипт (python models/crnn/dataset_crnn.py)
+    from config_crnn import IMG_W, IMG_H, _MEAN, _STD, MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
 
 
 # ── Загрузка аннотаций ────────────────────────────────────────────────

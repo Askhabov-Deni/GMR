@@ -16,17 +16,30 @@ import torch.nn.functional as F
 from albumentations.pytorch import ToTensorV2
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
-from config_cnn import (
-    BATCH_SIZE,
-    IMG_SIZE,
-    IMG_WIDTH,
-    NORM_MEAN,
-    NORM_STD,
-    NUM_CLASSES,
-    SEED,
-    TRAIN_RATIO,
-    VAL_RATIO,
-)
+try:
+    from .config_cnn import (
+        BATCH_SIZE,
+        IMG_SIZE,
+        IMG_WIDTH,
+        NORM_MEAN,
+        NORM_STD,
+        NUM_CLASSES,
+        SEED,
+        TRAIN_RATIO,
+        VAL_RATIO,
+    )
+except ImportError:  # запуск как отдельный скрипт: python models/cnn/dataset_cnn.py
+    from config_cnn import (
+        BATCH_SIZE,
+        IMG_SIZE,
+        IMG_WIDTH,
+        NORM_MEAN,
+        NORM_STD,
+        NUM_CLASSES,
+        SEED,
+        TRAIN_RATIO,
+        VAL_RATIO,
+    )
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 

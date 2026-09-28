@@ -20,8 +20,12 @@ import torch
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-from config_cnn import IMG_SIZE, IMG_WIDTH, NORM_MEAN, NORM_STD, NUM_CLASSES, MIN_CONFIDENCE, DEVICE
-from model_cnn import DigitCNN
+try:
+    from .config_cnn import IMG_SIZE, IMG_WIDTH, NORM_MEAN, NORM_STD, NUM_CLASSES, MIN_CONFIDENCE, DEVICE
+    from .model_cnn import DigitCNN
+except ImportError:  # запуск как отдельный скрипт: python models/cnn/infer_cnn.py
+    from config_cnn import IMG_SIZE, IMG_WIDTH, NORM_MEAN, NORM_STD, NUM_CLASSES, MIN_CONFIDENCE, DEVICE
+    from model_cnn import DigitCNN
 
 
 class CNNInferer:

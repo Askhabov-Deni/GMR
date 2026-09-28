@@ -21,9 +21,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from config_cnn import DEVICE, NUM_CLASSES, CROPS_DIR, SEED, BATCH_SIZE
-from dataset_cnn import make_loaders, dynamic_collate_fn
-from model_cnn import DigitCNN
+try:
+    from .config_cnn import DEVICE, NUM_CLASSES, CROPS_DIR, SEED, BATCH_SIZE
+    from .dataset_cnn import make_loaders, dynamic_collate_fn
+    from .model_cnn import DigitCNN
+except ImportError:  # запуск как отдельный скрипт (python models/cnn/evaluate_cnn.py)
+    from config_cnn import DEVICE, NUM_CLASSES, CROPS_DIR, SEED, BATCH_SIZE
+    from dataset_cnn import make_loaders, dynamic_collate_fn
+    from model_cnn import DigitCNN
 
 
 # ─── Аргументы ───────────────────────────────────────────────────────────────

@@ -35,10 +35,16 @@ import datetime
 import torch
 from torch.utils.data import DataLoader
 
-from config_crnn import IMG_W, IMG_H
-from dataset_crnn import load_dataset, split, MeterDataset, train_transform, val_transform, collate
-from metrics_crnn import exact_match, cer
-from model_crnn import CRNN, ctc_loss, predict
+try:
+    from .config_crnn import IMG_W, IMG_H
+    from .dataset_crnn import load_dataset, split, MeterDataset, train_transform, val_transform, collate
+    from .metrics_crnn import exact_match, cer
+    from .model_crnn import CRNN, ctc_loss, predict
+except ImportError:  # запуск как отдельный скрипт (python models/crnn/train_crnn.py)
+    from config_crnn import IMG_W, IMG_H
+    from dataset_crnn import load_dataset, split, MeterDataset, train_transform, val_transform, collate
+    from metrics_crnn import exact_match, cer
+    from model_crnn import CRNN, ctc_loss, predict
 
 
 # ── Аргументы ────────────────────────────────────────────────────────

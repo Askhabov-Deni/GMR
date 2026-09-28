@@ -29,7 +29,6 @@ DEBUG-РЕЖИМ (config.debug_digits = True):
     meta.json                   — предсказание и конфиданс по каждой позиции
 """
 
-import sys
 import os
 import csv
 import json
@@ -45,9 +44,6 @@ import cv2
 import numpy as np
 import torch
 import pandas as pd
-
-sys.path.insert(0, str(Path(__file__).parent / "models" / "crnn"))
-sys.path.insert(0, str(Path(__file__).parent / "models" / "cnn"))
 
 from models.crnn.infer_crnn import CRNNInferer
 from models.yolo_all_detect.infer_yolo import YOLOInferer

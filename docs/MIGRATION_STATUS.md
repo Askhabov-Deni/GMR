@@ -1,6 +1,6 @@
 # GMR Migration — статус
 
-Текущая фаза: 0 (близко к завершению, см. ниже — что осталось)
+Текущая фаза: 1 (Packaging) — код готов, ждёт проверки на чистом venv у владельца
 
 ## Фаза 0 — Baseline
 - [x] golden tests написаны (раздел 2 ТЗ) — сколько из 16 кейсов готово: 16/16
@@ -31,6 +31,54 @@
       пришлось поставить, чтобы `reader.py` вообще импортировался:
       `torch`, `torchvision`, `ultralytics`, `albumentations`, `pytest`
       (`cv2`, `pandas`, `numpy`, `PIL` уже были в окружении).
+
+## Фаза 1 — Packaging
+- [x] `models/`, `models/cnn/`, `models/crnn/`, `models/yolo_all_detect/` стали
+      пакетами (`__init__.py`).
+- [x] Голые импорты соседей (`from config_cnn import ...`, `from model_crnn import ...`)
+      в 9 файлах `models/cnn/*` и `models/crnn/*` заменены на
+      `try: from .x import ... / except ImportError: from x import ...`.
+      Так работают оба режима: пакетный (`reader.py`) и запуск скрипта напрямую
+      (`python models/crnn/train_crnn.py`) — второй проверен через `--help`.
+      `models/yolo_all_detect/*` изменений не потребовал (внутренних импортов нет).
+- [x] Два `sys.path.insert` и ставший ненужным `import sys` удалены из `reader.py`.
+      `import reader` работает из чужого cwd при одном лишь PYTHONPATH на репозиторий.
+- [x] `requirements.txt` (runtime), `requirements-dev.txt` (+pytest),
+      `requirements-tools.txt` (easyocr, tqdm — только для отдельных утилит).
+- [x] Golden tests 16/16 после изменений (песочница, Python 3.12).
+- [ ] **Не проверено**: установка `requirements-dev.txt` в полностью чистый venv —
+      в песочнице агента не хватило диска на torch (`No space left on device`).
+      Нужно у владельца: новый venv → `python -m pip install -r requirements-dev.txt`
+      → `python -m pytest tests/`.
+- [ ] Корневой `conftest.py` пока оставлен: он нужен, чтобы локальный `tests/`
+      не перекрывался одноимённым пакетом из site-packages (см. решения Фазы 0).
+      Это про тесты, не про код приложения.
+
+### Решения Фазы 1
+- try/except ImportError вместо чисто относительных импортов: чисто относительные
+  сломали бы запуск `python models/cnn/train_cnn.py` ("no known parent package").
+  Побочный эффект: `except ImportError` может замаскировать реальную ошибку
+  импорта внутри самого модуля — если увидишь странный ImportError про `config_*`,
+  ищи причину в первой ветке.
+- tqdm не в основных зависимостях: используется только в `utils/compute_mean_std.py`,
+  а в окружении агента не установлен, версию проверить было нечем.
+- Версии в `requirements.txt` — точные (`==`) те, на которых прошли тесты; у
+  владельца стоят Python 3.14 и torch 2.14.0, albumentations был 1.4.18.
+
+## Найденные баги (продолжение)
+- 2026-09-28 — **albumentations 1.4.18 молча игнорирует `A.GaussNoise(std_range=...)`**
+  (`models/cnn/dataset_cnn.py`, `_train_transform`): выдаёт UserWarning
+  "Argument 'std_range' is not valid and will be ignored", а не ошибку. На 2.0.8
+  параметр принимается. Проверено в песочнице на обеих версиях. У владельца в
+  venv стоял именно 1.4.18. Следствие: если CNN-модель цифр обучалась на 1.4.x,
+  шум в аугментации был не тот, что записан в коде. Какая версия использовалась
+  при обучении текущих весов — неизвестно, вопрос к владельцу. Веса не трогаем.
+  Golden tests этот код не покрывают (аугментации не вызываются).
+- 2026-09-28 — venv владельца создан по пути `C:\AD\gas-meter-reader\.venv`, папка
+  проекта потом переехала в `C:\AD\GSM\gas-meter-reader`, и `pip.exe` перестал
+  запускаться ("Fatal error in launcher"). Тот же класс проблемы, что хардкод
+  путей в `utils/`: путь зашивается при создании. Обход: `python -m pip`
+  или пересоздать venv.
 
 ## Решения, принятые агентом (append-only, не переписывать задним числом)
 - 2026-09-27 — golden tests кладём в `tests/` с `tests/__init__.py` и

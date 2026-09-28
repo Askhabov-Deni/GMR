@@ -7,8 +7,12 @@ import cv2
 import torch
 from PIL import Image
 
-from dataset_crnn import val_transform
-from model_crnn import CRNN, predict_with_confidence
+try:
+    from .dataset_crnn import val_transform
+    from .model_crnn import CRNN, predict_with_confidence
+except ImportError:  # запуск как отдельный скрипт (python models/crnn/infer_crnn.py)
+    from dataset_crnn import val_transform
+    from model_crnn import CRNN, predict_with_confidence
 
 
 class CRNNInferer:

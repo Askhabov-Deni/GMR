@@ -9,7 +9,13 @@
 import torch
 import torch.nn as nn
 
-from config_cnn import IMG_SIZE, IMG_WIDTH, NUM_CLASSES, DROPOUT, DEVICE
+try:
+    # Пакетный импорт (когда models/ — обычный пакет, см. models/cnn/__init__.py,
+    # так вызывает reader.py: from models.cnn.infer_cnn import CNNInferer)
+    from .config_cnn import IMG_SIZE, IMG_WIDTH, NUM_CLASSES, DROPOUT, DEVICE
+except ImportError:
+    # Запуск как отдельный скрипт: python models/cnn/model_cnn.py
+    from config_cnn import IMG_SIZE, IMG_WIDTH, NUM_CLASSES, DROPOUT, DEVICE
 
 
 class DigitCNN(nn.Module):

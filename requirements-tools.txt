@@ -1,0 +1,5 @@
+# Необязательно: зависимости отдельных утилит из utils/. Версии не зафиксированы —
+# в рамках миграции эти скрипты не запускались.
+-r requirements.txt
+easyocr   # utils/label_yolo_tool.py (авто-OCR серийников)
+tqdm      # utils/compute_mean_std.py
