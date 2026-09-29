@@ -71,3 +71,22 @@ CLI/argparse, проверена git history).
 человек, отлаживающий качество через этот инструмент, может смотреть не на
 ту модель, которая реально работает в проде. Зафиксировано в
 `docs/MIGRATION_STATUS.md` как баг, не чинится по ходу миграции.
+
+---
+
+# Аудит `models/` (раздел 3bis ТЗ)
+
+Добавлено 2026-09-29 перед Фазой 3. Все 8 находок раздела 3bis
+перепроверены по коду на коммите `edd0762` — подтверждаются. Решения здесь
+не принимаются, только фиксируется, в какой фазе их разбирать.
+
+| # | Где | Находка (проверено) | Фаза |
+|---|---|---|---|
+| 1 | `models/cnn/config_cnn.py:52`, `models/crnn/infer_crnn.py:52,121` | Пороги уверенности standalone-инструментов `0.8`, в проде (`PipelineConfig`) `digit_conf_thresh=0.6`, `serial_conf_thresh=0.6`. Отладка модели через CLI судит по чужому порогу. | 3 (свести к одному источнику; значения прода не менять — правило 4) |
+| 2 | `models/crnn/infer_crnn.py:53,86` | `expected_length=5` для серийников, хотя `config_crnn.py:23-24` объявляет длину 4–10. Похоже на копию из логики показаний (5 цифр). | 3 |
+| 3 | `models/cnn/model_cnn.py:87` vs `models/crnn/model_crnn.py:78` | CNN грузит чекпоинт с `weights_only=True`, CRNN — без. Плюс разные ключи чекпоинта. | 4 |
+| 4 | `models/cnn/extract_digit_crops.py` | Раскладывает кропы в `train/`/`val/`, а `dataset_cnn.py` ждёт плоскую структуру, которую делает `build_dataset_cnn.py`. Кандидат в ARCHIVE, нужно подтверждение владельца, что не используется. | 6 |
+| 5 | `models/yolo_all_detect/train_val_split.py:32` | `random.shuffle` без seed — сплит детектора цифр невоспроизводим. Исправить до следующего переобучения. | 4 |
+| 6 | `models/yolo_all_detect/train_val_split.py:7-9`, `models/cnn/build_dataset_cnn.py:66-72` | Абсолютные пути `C:\AD\gas-meter-reader\...` (старое расположение проекта). В `models/` это ровно два файла. | 4 |
+| 7 | `models/crnn/config_crnn.py:15-16` | Закомментированный альтернативный конфиг `gas_meter_gold` (IMG_W/IMG_H и т.д.) — след эксперимента, сбивает при чтении. | 6 |
+| 8 | `models/yolo_all_detect/labeler_yolo.py` (992) + `utils/label_yolo_tool.py` (1174) | Два Tkinter-разметчика bbox, 2166 строк с пересекающейся ролью. | 6 |
