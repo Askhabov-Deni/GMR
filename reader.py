@@ -34,10 +34,8 @@ import csv
 import json
 import shutil
 import logging
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from enum import Enum, auto
 from typing import Optional
 
 import cv2
@@ -57,7 +55,7 @@ class PipelineConfig:
     # Пути к моделям
     meter_detect_model:       str   = "meter_detect/runs/detect/gas_meter_all_classes_s_v1/weights/best.pt"
     digit_detect_model:       str   = "meter_ocr/runs/yolo/digits_detect_v4/weights/best.pt"
-    digit_ocr_model:          str   = "meter_ocr/runs/cnn/runs/v3_platinum/best.pth"
+    digit_ocr_model:          str   = "meter_ocr/runs/cnn/runs/v2_gold/best.pth"
     serial_ocr_model:         str   = "serial_id_ocr/runs/crnn/2026-06-05_01-09/best.pt"
 
     # Пути к данным.
@@ -67,9 +65,9 @@ class PipelineConfig:
     # пути внутри репозитория; реальные пути задаются через переменные
     # окружения (см. .env.example) либо передаются явно при создании
     # PipelineConfig(...).
-    input_dir:                str   = field(default_factory=lambda: os.environ.get("GMR_INPUT_DIR", "data_for_reader_test/input"))
-    output_base_dir:          str   = field(default_factory=lambda: os.environ.get("GMR_OUTPUT_DIR", "data_for_reader_test/output"))
-    table_path:               str   = field(default_factory=lambda: os.environ.get("GMR_TABLE_PATH", "data_for_reader_test/meters_table.csv"))
+    input_dir:                str   = field(default_factory=lambda: os.environ.get("GMR_INPUT_DIR", "data/input"))
+    output_base_dir:          str   = field(default_factory=lambda: os.environ.get("GMR_OUTPUT_DIR", "data/output"))
+    table_path:               str   = field(default_factory=lambda: os.environ.get("GMR_TABLE_PATH", "data/meters_table.csv"))
 
     # Имена столбцов в таблице
     col_serial:               str   = "Номер счетчика"
@@ -131,55 +129,6 @@ _BOX_COLORS = {
     "digit":         (0,   140, 255),   # оранжевый (BGR)
 }
 _BOX_THICKNESS = 2
-
-
-# ─── Типы результата ──────────────────────────────────────────────────────────
-
-class Outcome(Enum):
-    PLUS             = auto()
-    MINUS            = auto()
-    REPEAT           = auto()
-    NO_METER         = auto()
-    NO_SERIAL        = auto()
-    SERIAL_LOW_CONF  = auto()
-    SERIAL_NOT_FOUND = auto()
-    DIGITS_ERROR     = auto()
-    SUSPICIOUS       = auto()
-
-
-OUTCOME_FOLDER = {
-    Outcome.PLUS:             "plus",
-    Outcome.MINUS:            "minus",
-    Outcome.REPEAT:           "repeat",
-    Outcome.NO_METER:         "question/no_meter",
-    Outcome.NO_SERIAL:        "question/no_serial",
-    Outcome.SERIAL_LOW_CONF:  "question/serial_low_conf",
-    Outcome.SERIAL_NOT_FOUND: "question/serial_not_found",
-    Outcome.DIGITS_ERROR:     "question/digits_error",
-    Outcome.SUSPICIOUS:       "question/suspicious",
-}
-
-
-@dataclass
-class PhotoResult:
-    photo_path:     str
-    outcome:        Outcome
-    serial_text:    Optional[str]   = None
-    serial_conf:    Optional[float] = None
-    account_id:     Optional[str]   = None
-    reading:        Optional[int]   = None
-    # ↓ Частично распознанные показания, например "5?3?1"
-    #   заполняется даже при DIGITS_ERROR — для аннотации на фото
-    reading_str:    Optional[str]   = None
-    last_reading:   Optional[float] = None
-    delta:          Optional[float] = None
-    new_photo_name: Optional[str]   = None
-    error_detail:   Optional[str]   = None
-    # ↓ Данные для отрисовки боксов (заполняются в process_photo)
-    # meter_crops_raw — список dict из meter_detector (gas_meter, serial_number)
-    meter_crops_raw: Optional[list] = None
-    # digit_bboxes_in_orig — боксы цифр в координатах оригинала [(x1,y1,x2,y2), ...]
-    digit_bboxes_in_orig: Optional[list] = None
 
 
 # ─── Нормализация серийного номера ───────────────────────────────────────────
@@ -573,42 +522,24 @@ def _read_meter_digits(
 
     elif n == expected_digits - 1:
         centers = [(c["bbox"][0] + c["bbox"][2]) // 2 for c in digit_crops_sorted]
-        gaps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)]
-        avg_step = sum(gaps) / len(gaps)
+        decision = _recovery_policy.decide(centers, meter_crop.shape[1], expected_digits)
 
-        # Ищем gap значительно больше среднего — пропуск в середине
-        missing_idx = None
-        for i, gap in enumerate(gaps):
-            if gap > avg_step * 1.6:
-                missing_idx = i + 1
-                break
+        if decision.reason == "gap not found":
+            return None, None, f"expected {expected_digits} digits, got {n} (gap not found)", None, None
 
-        # Если gap не найден — пропала крайняя цифра
-        if missing_idx is None:
-            crop_w = meter_crop.shape[1]
-            left_margin  = centers[0]
-            right_margin = crop_w - centers[-1]
-
-            if right_margin > left_margin * 1.6:
-                missing_idx = expected_digits - 1   # пропала последняя
-            elif left_margin > right_margin * 1.6:
-                missing_idx = 0                      # пропала первая
-            else:
-                return None, None, f"expected {expected_digits} digits, got {n} (gap not found)", None, None
-
-        if missing_idx < 2:
+        if decision.reason == "critical position":
             return None, None, (
                 f"expected {expected_digits} digits, got {n} "
-                f"(missing digit at critical position {missing_idx})"
+                f"(missing digit at critical position {decision.missing_idx})"
             ), None, None
 
-        digit_crops_sorted.insert(missing_idx, None)  # None = заглушка
+        digit_crops_sorted.insert(decision.missing_idx, None)  # None = заглушка
 
     else:
         return None, None, f"expected {expected_digits} digits, got {n}", None, None
 
     # ── Классифицируем цифры ──────────────────────────────────────────────────
-    forgiven_positions = set(range(expected_digits - ignore_last_digits, expected_digits))
+    forgiven_positions = _forgiveness_policy.forgiven_positions(expected_digits, ignore_last_digits)
 
     digits        = []
     digit_results = []
@@ -634,7 +565,7 @@ def _read_meter_digits(
         digit_char = str(pred["digit"])
         ok = conf >= conf_thresh
 
-        if not ok and pos in forgiven_positions:
+        if not ok and _forgiveness_policy.is_forgiven(pos, conf, conf_thresh, forgiven_positions):
             digit_results.append({
                 "position":   pos,
                 "digit":      digit_char,
@@ -866,56 +797,24 @@ def process_photo(
     _orig_fname   = Path(photo_path).name
     _log_fnames   = getattr(config, "_log_filenames_cache", set())
     _log_rows     = getattr(config, "_log_rows_cache", [])
+    _processed_accounts = getattr(config, "_processed_accounts_cache", set())
     _new_val      = df.at[row_idx, config.col_new_reading]
     _table_filled = pd.notna(_new_val) and str(_new_val).strip() not in ("", "nan")
 
-    if _orig_fname in _log_fnames:
-        # Файл уже есть в логе — настоящий дубль
-        result.outcome = Outcome.REPEAT
-        result.error_detail = f"already in log: {_orig_fname}"
+    _dup = _duplicate_policy.decide(
+        photo_filename=_orig_fname,
+        account_id=account_id,
+        table_new_reading_filled=_table_filled,
+        log_filenames=_log_fnames,
+        processed_accounts=_processed_accounts,
+        log_rows=_log_rows,
+    )
+    if _dup.outcome is not None:
+        # SUSPICIOUS здесь означает рассинхронизацию таблицы и лога —
+        # показания НЕ перезаписываем (см. DuplicatePolicy).
+        result.outcome = _dup.outcome
+        result.error_detail = _dup.reason
         result.new_photo_name = f"{account_id}{ext}"
-        return result
-
-    _processed_accounts = getattr(config, "_processed_accounts_cache", set())
-    if account_id in _processed_accounts:
-        # Счётчик уже обработан в этом прогоне — два фото одного счётчика
-        result.outcome = Outcome.REPEAT
-        result.error_detail = f"duplicate in current run: account={account_id}"
-        result.new_photo_name = f"{account_id}{ext}"
-        return result
-
-    if _table_filled:
-        # Проверяем: может это pre_existing (инициализировано из таблицы)?
-        # Нормализуем account_id: pandas может прочитать числовую колонку как float
-        # → "1300000013.0" вместо "1300000013". Срезаем ".0" через int(float(...)).
-        def _norm_account(v: str) -> str:
-            v = v.strip()
-            try:
-                return str(int(float(v)))
-            except (ValueError, OverflowError):
-                return v
-
-        _account_id_norm = _norm_account(str(account_id))
-        _is_pre_existing = any(
-            r.get("source") == "pre_existing"
-            and _norm_account(str(r.get("account_id", ""))) == _account_id_norm
-            for r in _log_rows
-        )
-        if _is_pre_existing:
-            # Данные в таблице были до нашего прогона — это дубль, не аномалия
-            result.outcome = Outcome.REPEAT
-            result.error_detail = f"pre-existing entry in table (account={account_id})"
-            result.new_photo_name = f"{account_id}{ext}"
-            return result
-
-        # В таблице есть данные, в логе нет и не pre_existing → рассинхронизация
-        result.outcome = Outcome.SUSPICIOUS
-        result.error_detail = (
-            "аномалия: данные в таблице есть, фото не найдено в логе — "
-            "возможна рассинхронизация"
-        )
-        result.new_photo_name = f"{account_id}{ext}"
-        # Показания НЕ перезаписываем
         return result
 
     # ── Шаг 5: читаем показания счётчика ─────────────────────────────────────
@@ -971,20 +870,12 @@ def process_photo(
     result.reading_str = reading_str
 
     # ── Шаг 6: проверяем подозрительное отклонение ───────────────────────────
-    if last_reading is not None:
-        delta = reading - last_reading
-        result.delta = delta
+    result.outcome, result.delta = _delta_policy.decide(reading, last_reading, config.delta_threshold)
 
-        if abs(delta) > config.delta_threshold:
-            result.outcome = Outcome.SUSPICIOUS
-            result.error_detail = f"delta={delta:+.0f} > ±{config.delta_threshold:.0f}"
-            result.new_photo_name = f"{account_id}{ext}"
-            return result
-
-        result.outcome = Outcome.PLUS if delta >= 0 else Outcome.MINUS
-    else:
-        result.delta = None
-        result.outcome = Outcome.PLUS
+    if result.outcome == Outcome.SUSPICIOUS:
+        result.error_detail = f"delta={result.delta:+.0f} > ±{config.delta_threshold:.0f}"
+        result.new_photo_name = f"{account_id}{ext}"
+        return result
 
     result.new_photo_name = f"{account_id}{ext}"
     return result

@@ -1,6 +1,6 @@
 # GMR Migration — статус
 
-Текущая фаза: 1 (Packaging) — код готов, ждёт проверки на чистом venv у владельца
+Текущая фаза: 2a (Domain extraction) — код готов, ждёт проверки у владельца
 
 ## Фаза 0 — Baseline
 - [x] golden tests написаны (раздел 2 ТЗ) — сколько из 16 кейсов готово: 16/16
@@ -99,6 +99,53 @@
   - 19: `gas_meter` есть, `serial_number` — нет
   19/19 golden tests зелёные. Теперь покрыты все 9 значений Outcome — это и
   есть полный контракт поведения, который обязана сохранить Фаза 2a.
+
+## Фаза 2a — Domain extraction
+- [x] `Outcome`, `OUTCOME_FOLDER`, `PhotoResult` перенесены в
+      `src/gmr/domain/models.py`; `PipelineConfig` — в
+      `src/gmr/domain/config.py`. Поля и дефолты не менялись (прямой перенос).
+      Домен не импортирует `torch`/`cv2`/`ultralytics` — проверено
+      (`python -c "import src.gmr.domain"` без установки ML-библиотек).
+- [x] 4 policy-класса в `src/gmr/domain/policies.py`, каждый — прямая
+      пересадка соответствующего блока `reader.py` без изменения значений:
+      - `MissingDigitRecoveryPolicy` — восстановление пропущенной цифры
+        (gap-эвристика, порог 1.6×, критическая позиция <2)
+      - `DigitForgivenessPolicy` — прощение хвостовых позиций
+        (`ignore_last_digits`)
+      - `DeltaThresholdPolicy` — PLUS/MINUS/SUSPICIOUS по дельте
+      - `DuplicatePolicy` — порядок дублей: лог → processed-in-run →
+        pre-existing → рассинхронизация (порядок НЕ менялся, кейсы 5-8)
+- [x] `reader.py` реэкспортирует `PipelineConfig`/`Outcome`/`OUTCOME_FOLDER`/
+      `PhotoResult` из `src.gmr.domain` — `program2.py`, который импортирует
+      их напрямую из `reader` (`from reader import PipelineConfig, PhotoResult,
+      Outcome, ...`), продолжает работать без изменений. Проверено:
+      `import program2` (после доустановки `python3-tk`, см. ниже).
+- [x] `reader.py`: 1336 → 1176 строк (-160, ~12%) за счёт делегирования в
+      `domain/`. Хранилище (CSV/лог) не тронуто — Фаза 2a изменений в
+      `_load_table`/`_save_table`/`_load_log`/`_save_log` не делала.
+- [x] Golden tests 19/19 после рефакторинга. Мутационно проверены 2 из 4
+      policy: `DuplicatePolicy` (сломал первую проверку лога → упал
+      test_case5) и `DeltaThresholdPolicy` (сломал ветку `last_reading is
+      None` → упал test_case4) — значит policy реально вызываются, а не
+      лежат неиспользуемым кодом рядом со старой логикой.
+
+### Решения Фазы 2a
+- `_read_meter_digits` и `process_photo` остались в `reader.py` (сигнатуры,
+  имена — без изменений, их напрямую импортирует `program2.py` и вызывают
+  golden tests) — они теперь ДЕЛЕГИРУЮТ решения в policy-объекты вместо
+  инлайн-логики, но сами функции не переехали. Полный перенос вызовов моделей
+  в domain/application слой — это Фаза 3 (ML Interfaces), не 2a.
+- Дополнительные динамические атрибуты `PipelineConfig`
+  (`_log_filenames_cache`, `_log_rows_cache`, `_processed_accounts_cache`,
+  выставляемые в `run_pipeline`) НЕ стали полями датакласса — они как были,
+  так и остаются "неофициальным" расширением конфига через `getattr(...,
+  default)`. Явно не расширял контракт без отдельного решения по этому вопросу.
+- `program2.py` требует системный Tcl/Tk (`python3-tk` через apt), не
+  ставится через pip — в песочнице агента отсутствовал изначально, доставлен
+  отдельно для проверки импорта. У владельца (Windows) обычно идёт в комплекте
+  с python.org-инсталлятором, но если ставился Python через Microsoft Store —
+  может понадобиться отдельная установка. Не блокирует Фазу 2a, но стоит
+  иметь в виду для Фазы 4/CI, если появится автоматический прогон program2.py.
 
 ## Решения, принятые агентом (append-only, не переписывать задним числом)
 - 2026-09-27 — golden tests кладём в `tests/` с `tests/__init__.py` и
