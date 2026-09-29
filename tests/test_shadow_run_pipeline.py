@@ -91,11 +91,17 @@ def fake_models(monkeypatch):
     monkeypatch.setattr(reader, "CRNNInferer", lambda *a, **k: _SerialOCR())
 
 
+def _image(name):
+    # у каждого фото своё содержимое: с 2026-09-29 фото узнаётся в логе по
+    # отпечатку байтов, и одинаковые картинки были бы одним и тем же фото
+    return np.full((100, 200, 3), 20 + 40 * _ORDER.index(name), dtype=np.uint8)
+
+
 def _setup_workspace(root: Path):
     inp = root / "input"
     inp.mkdir(parents=True)
     for name in _ORDER:
-        cv2.imwrite(str(inp / name), np.full((100, 200, 3), 128, dtype=np.uint8))
+        cv2.imwrite(str(inp / name), _image(name))
     table = root / "table.csv"
     with open(table, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(_TABLE[0]))
@@ -187,7 +193,7 @@ def _rerun(tmp_path, table, shadow=False):
     inp = tmp_path / "input"
     inp.mkdir()
     for name in _ORDER:
-        cv2.imwrite(str(inp / name), np.full((100, 200, 3), 128, dtype=np.uint8))
+        cv2.imwrite(str(inp / name), _image(name))
     cfg = reader.PipelineConfig(
         input_dir=str(inp), output_base_dir=str(tmp_path / "out"),
         table_path=str(table), draw_boxes=False, shadow_sqlite_log=shadow,

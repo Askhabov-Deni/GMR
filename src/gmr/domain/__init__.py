@@ -9,6 +9,7 @@ from .policies import (
     ProcessedPhotoDecision,
     ProcessedPhotoPolicy,
     RecoveryDecision,
+    find_auto_row_for_output_file,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "ProcessedPhotoDecision",
     "ProcessedPhotoPolicy",
     "RecoveryDecision",
+    "find_auto_row_for_output_file",
 ]

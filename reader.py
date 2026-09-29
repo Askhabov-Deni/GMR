@@ -58,7 +58,9 @@ from src.gmr.domain import (
     MissingDigitRecoveryPolicy,
     ProcessedPhotoPolicy,
 )
-from src.gmr.storage import LOG_COLUMNS, CsvLogStore, ShadowLogStore, SqliteLogStore
+from src.gmr.storage import (
+    LOG_COLUMNS, CsvLogStore, ShadowLogStore, SqliteLogStore, photo_fingerprint,
+)
 
 # reader.py продолжает быть единственным местом, где вызываются модели —
 # domain-слой (src/gmr/domain/) не знает ни про torch, ни про cv2, ни про
@@ -258,6 +260,8 @@ def _make_log_row(
     config: "PipelineConfig",
     source: str = "auto",
     processed_by: str = "auto",
+    photo_hash: str = "",
+    source_folder: str = "",
 ) -> dict:
     """Строит dict для записи в лог по результату process_photo."""
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -278,6 +282,8 @@ def _make_log_row(
         "model_serial_conf": f"{result.serial_conf:.4f}" if result.serial_conf is not None else "",
         "model_reading_str": result.reading_str or "",
         "notes":             result.error_detail or "",
+        "photo_hash":        photo_hash,
+        "source_folder":     source_folder,
     }
 
 
@@ -605,10 +611,14 @@ def process_photo(
     digit_detector: YOLOInferer,
     digit_ocr: CNNInferer,
     serial_ocr: CRNNInferer,
+    photo_hash: Optional[str] = None,
 ) -> PhotoResult:
     """
     Обрабатывает одну фотографию. Возвращает PhotoResult.
     НЕ изменяет df и не трогает файлы — это делает caller (run_pipeline).
+
+    photo_hash — отпечаток содержимого фото (photo_fingerprint). Если задан,
+    шаг 0 узнаёт фото в логе по нему, иначе по имени файла.
     """
     result = PhotoResult(photo_path=photo_path, outcome=Outcome.NO_METER)
     ext = Path(photo_path).suffix
@@ -618,7 +628,7 @@ def process_photo(
     # сразу REPEAT; фото только с авто-ошибками в логе обрабатывается заново
     # (ProcessedPhotoPolicy, решение владельца 2026-09-29, вариант Г).
     _seen = _processed_photo_policy.decide(
-        Path(photo_path).name, getattr(config, "_log_rows_cache", [])
+        Path(photo_path).name, getattr(config, "_log_rows_cache", []), photo_hash
     )
     if _seen.skip:
         row = _seen.row or {}
@@ -1037,6 +1047,8 @@ def run_pipeline(config: PipelineConfig) -> None:
 
     # ── Лог обработки ────────────────────────────────────────────────────────
     log_path = _log_path(config.table_path)
+    if CsvLogStore(log_path).upgrade_if_needed():
+        log.info(f"Лог переведён на новый формат (столбцы photo_hash, source_folder): {log_path}")
 
     # Фаза 2b: в shadow-run режиме каждая запись лога дублируется в SQLite.
     # CSV (log_path) остаётся источником истины — чтение идёт только из него.
@@ -1120,9 +1132,11 @@ def run_pipeline(config: PipelineConfig) -> None:
             photo_path = photo_path_obj  # совместимость с process_photo (ожидает str)
             log.info(f"[{i}/{len(photos)}] {photo_path.name}")
 
+            photo_hash = photo_fingerprint(str(photo_path))
             result = process_photo(
                 str(photo_path), df, config,
                 meter_detector, digit_detector, digit_ocr, serial_ocr,
+                photo_hash=photo_hash,
             )
             stats[result.outcome] += 1
             total_stats[result.outcome] += 1
@@ -1155,7 +1169,10 @@ def run_pipeline(config: PipelineConfig) -> None:
             log.info(f"  📁 → {output_base}/{OUTCOME_FOLDER[result.outcome]}/{new_name}")
 
             # Запись в лог после каждого фото
-            log_row = _make_log_row(photo_path_obj.name, result, config)
+            log_row = _make_log_row(
+                photo_path_obj.name, result, config,
+                photo_hash=photo_hash, source_folder=subfolder_name,
+            )
             if shadow_store is not None:
                 shadow_store.append(log_row)
             else:

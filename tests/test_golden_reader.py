@@ -399,3 +399,45 @@ def test_case25_auto_repeat_counts_as_done(base_config):
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
     )
     assert result.outcome == Outcome.REPEAT
+
+
+# ─── 26-28: фото узнаётся по отпечатку, старые строки — по имени ──────────────
+# Решение владельца 2026-09-29 ("хеш + подпапка", docs/MIGRATION_STATUS.md).
+
+def _hashed_row(fname, outcome, photo_hash):
+    return _log_row(fname, outcome) | {"photo_hash": photo_hash}
+
+
+def test_case26_same_name_other_hash_is_processed(base_config):
+    # в логе IMG.jpg из другой подпапки (другое фото, другой отпечаток)
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_hashed_row("photo1.jpg", "PLUS", "aaaa")]
+    dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
+    result = reader.process_photo(
+        "photo1.jpg", df, base_config, FakeMeterDetector(make_meter_crops()), dd, docr,
+        FakeSerialOCR(SERIAL, 0.95), photo_hash="bbbb",
+    )
+    assert result.outcome == Outcome.PLUS
+
+
+def test_case27_same_hash_other_name_skips_models(base_config):
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_hashed_row("original.jpg", "PLUS", "aaaa")]
+    result = reader.process_photo(
+        "renamed.jpg", df, base_config,
+        _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+        photo_hash="aaaa",
+    )
+    assert result.outcome == Outcome.REPEAT
+
+
+def test_case28_legacy_row_without_hash_matches_by_name(base_config):
+    # строки, записанные до 2026-09-29, отпечатка не имеют — узнаём по имени
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_log_row("photo1.jpg", "PLUS")]
+    result = reader.process_photo(
+        "photo1.jpg", df, base_config,
+        _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+        photo_hash="cccc",
+    )
+    assert result.outcome == Outcome.REPEAT

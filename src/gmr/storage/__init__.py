@@ -1,3 +1,4 @@
+from .fingerprint import photo_fingerprint
 from .log_store import (
     LOG_COLUMNS,
     CsvLogStore,
@@ -12,4 +13,5 @@ __all__ = [
     "LogStore",
     "ShadowLogStore",
     "SqliteLogStore",
+    "photo_fingerprint",
 ]

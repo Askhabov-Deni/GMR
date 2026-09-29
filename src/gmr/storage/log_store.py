@@ -38,6 +38,10 @@ LOG_COLUMNS = [
     "reading", "last_reading", "delta", "outcome", "source", "processed_by",
     "processed_at", "verified_by", "verified_at", "model_serial_conf",
     "model_reading_str", "notes",
+    # добавлены 2026-09-29 (идентичность фото, см. MIGRATION_STATUS.md):
+    # отпечаток содержимого исходного фото и подпапка, из которой оно пришло.
+    # Всегда в конце — порядок прежних столбцов не меняется.
+    "photo_hash", "source_folder",
 ]
 
 
@@ -72,12 +76,34 @@ class CsvLogStore:
             writer.writerows(rows)
 
     def append(self, row: dict) -> None:
+        self.upgrade_if_needed()
         exists = Path(self.log_path).exists()
         with open(self.log_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=LOG_COLUMNS, extrasaction="ignore")
             if not exists:
                 writer.writeheader()
             writer.writerow(row)
+
+    def header(self) -> Optional[list[str]]:
+        """Шапка файла лога, или None если файла нет / он пустой."""
+        if not Path(self.log_path).exists():
+            return None
+        with open(self.log_path, newline="", encoding="utf-8") as f:
+            return next(csv.reader(f), None)
+
+    def upgrade_if_needed(self) -> bool:
+        """
+        Лог старого формата (без столбцов, добавленных позже) переписывается
+        с текущей шапкой: старые значения сохраняются, новые столбцы пустые.
+        Без этого дозапись строки из LOG_COLUMNS под старую шапку сдвинула
+        бы столбцы. Возвращает True, если файл был переписан.
+        """
+        head = self.header()
+        if head is None or head == LOG_COLUMNS:
+            return False
+        rows = self.load()
+        self.save(rows)
+        return True
 
 
 # ─── SQLite (новое) ───────────────────────────────────────────────────────────
@@ -113,6 +139,13 @@ class SqliteLogStore:
                 f"CREATE TABLE IF NOT EXISTS processing_log "
                 f"(id INTEGER PRIMARY KEY AUTOINCREMENT, {cols_sql})"
             )
+            # база, созданная до добавления новых столбцов, — дополняем
+            existing = {r[1] for r in conn.execute("PRAGMA table_info(processing_log)")}
+            for c in LOG_COLUMNS:
+                if c not in existing:
+                    conn.execute(
+                        f'ALTER TABLE processing_log ADD COLUMN "{c}" TEXT NOT NULL DEFAULT \'\''
+                    )
 
     def load(self) -> list[dict]:
         with self._connect() as conn:

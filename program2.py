@@ -55,6 +55,7 @@ from reader import (
     _draw_annotation,
     _LOG_COLUMNS,
 )
+from src.gmr.domain import find_auto_row_for_output_file
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger("program2")
@@ -675,6 +676,18 @@ class MainWindow(tk.Tk):
         self._verify_tab.refresh()
 
     def append_log(self, row: dict):
+        if row.get("source") == "manual" and not row.get("photo_hash"):
+            # Отпечаток исходного фото — из автоматической строки, которая
+            # создала этот файл (файл в question/ пересохранён с аннотацией,
+            # по нему отпечаток не посчитать). Нужен, чтобы reader.py узнал
+            # разобранное фото по содержимому, а не только по имени.
+            src = find_auto_row_for_output_file(
+                self.log_rows, row.get("original_filename", ""),
+                Path(self.settings.photos_dir).name,
+            )
+            if src is not None:
+                row["photo_hash"] = src.get("photo_hash", "")
+                row["source_folder"] = src.get("source_folder", "")
         self.log_rows.append(row)
         log_p = _log_path(self.settings.table_path)
         _append_log_row(log_p, row)

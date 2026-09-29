@@ -254,17 +254,31 @@ class ProcessedPhotoPolicy:
     (например, второго фото того же счётчика) ничего не даёт и приводила бы
     к ложной "рассинхронизации".
 
-    Идентичность фото — только имя файла (original_filename), как и раньше.
-    Два разных фото с одинаковым именем в разных подпапках для лога
-    неразличимы — см. "Найденные баги" в MIGRATION_STATUS.md.
+    Какие строки лога относятся к этому фото (решение владельца 2026-09-29,
+    "хеш + подпапка"):
+      - у строки есть photo_hash и известен отпечаток фото → совпадение по
+        отпечатку (имя файла не важно: одинаковые имена в разных подпапках
+        различаются, то же фото под другим именем узнаётся);
+      - у строки нет photo_hash (записана до 2026-09-29 или program2.py не
+        нашёл исходную строку) → совпадение по original_filename, как раньше;
+      - отпечаток фото неизвестен (photo_hash=None) → по имени для всех строк.
 
-    Golden tests: case5, case20-case23, case25.
+    Golden tests: case5, case20-case23, case25-case28.
     """
 
     DONE_OUTCOMES = ("PLUS", "MINUS", "REPEAT")
 
-    def decide(self, photo_filename: str, log_rows: list) -> ProcessedPhotoDecision:
-        rows = [r for r in log_rows if r.get("original_filename") == photo_filename]
+    @staticmethod
+    def row_matches(row: dict, photo_filename: str, photo_hash: Optional[str]) -> bool:
+        row_hash = row.get("photo_hash") or ""
+        if row_hash and photo_hash:
+            return row_hash == photo_hash
+        return row.get("original_filename") == photo_filename
+
+    def decide(
+        self, photo_filename: str, log_rows: list, photo_hash: Optional[str] = None
+    ) -> ProcessedPhotoDecision:
+        rows = [r for r in log_rows if self.row_matches(r, photo_filename, photo_hash)]
         if not rows:
             return ProcessedPhotoDecision(skip=False)
 
@@ -279,3 +293,33 @@ class ProcessedPhotoPolicy:
             return ProcessedPhotoDecision(True, f"already in log: {photo_filename}", done[-1])
 
         return ProcessedPhotoDecision(skip=False)
+
+
+# ─── Исходная строка для файла из выходной папки (для program2.py) ───────────
+
+def find_auto_row_for_output_file(
+    log_rows: list, output_name: str, folder_name: str
+) -> Optional[dict]:
+    """
+    Файл в выходной папке (например, question/digits_error/A-1.jpg) — это
+    не копия исходного фото, а пересохранённое фото с аннотацией, поэтому
+    отпечаток по нему не посчитать. program2.py берёт отпечаток из
+    автоматической строки лога, которая этот файл создала.
+
+    Имя файла в выходной папке = final_filename строки, а если он пустой
+    (NO_METER, NO_SERIAL, SERIAL_LOW_CONF, SERIAL_NOT_FOUND) — original_filename.
+    folder_name — подпапка оператора (source_folder в логе; "" — режим
+    одной папки). Предпочитаются строки этой подпапки, затем строки без
+    подпапки. Среди подходящих берётся последняя: файл на диске записан
+    последним прогоном.
+    """
+    candidates = [
+        r for r in log_rows
+        if r.get("source") == "auto"
+        and (r.get("final_filename") or r.get("original_filename")) == output_name
+    ]
+    for wanted in (folder_name, ""):
+        same = [r for r in candidates if (r.get("source_folder") or "") == wanted]
+        if same:
+            return same[-1]
+    return None
