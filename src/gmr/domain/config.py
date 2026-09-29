@@ -21,7 +21,7 @@ class PipelineConfig:
     # Пути к моделям
     meter_detect_model:       str   = "meter_detect/runs/detect/gas_meter_all_classes_s_v1/weights/best.pt"
     digit_detect_model:       str   = "meter_ocr/runs/yolo/digits_detect_v4/weights/best.pt"
-    digit_ocr_model:          str   = "meter_ocr/runs/cnn/runs/v2_gold/best.pth"
+    digit_ocr_model:          str   = "meter_ocr/runs/cnn/runs/v3_platinum/best.pth"
     serial_ocr_model:         str   = "serial_id_ocr/runs/crnn/2026-06-05_01-09/best.pt"
 
     # Пути к данным.
@@ -31,9 +31,9 @@ class PipelineConfig:
     # пути внутри репозитория; реальные пути задаются через переменные
     # окружения (см. .env.example) либо передаются явно при создании
     # PipelineConfig(...).
-    input_dir:                str   = field(default_factory=lambda: os.environ.get("GMR_INPUT_DIR", "data/input"))
-    output_base_dir:          str   = field(default_factory=lambda: os.environ.get("GMR_OUTPUT_DIR", "data/output"))
-    table_path:               str   = field(default_factory=lambda: os.environ.get("GMR_TABLE_PATH", "data/meters_table.csv"))
+    input_dir:                str   = field(default_factory=lambda: os.environ.get("GMR_INPUT_DIR", "data_for_reader_test/input"))
+    output_base_dir:          str   = field(default_factory=lambda: os.environ.get("GMR_OUTPUT_DIR", "data_for_reader_test/output"))
+    table_path:               str   = field(default_factory=lambda: os.environ.get("GMR_TABLE_PATH", "data_for_reader_test/meters_table.csv"))
 
     # Имена столбцов в таблице
     col_serial:               str   = "Номер счетчика"
