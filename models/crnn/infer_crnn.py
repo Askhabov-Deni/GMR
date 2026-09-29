@@ -8,9 +8,11 @@ import torch
 from PIL import Image
 
 try:
+    from .config_crnn import MAX_LABEL_LENGTH, MIN_CONFIDENCE, MIN_LABEL_LENGTH
     from .dataset_crnn import val_transform
     from .model_crnn import CRNN, predict_with_confidence
 except ImportError:  # запуск как отдельный скрипт (python models/crnn/infer_crnn.py)
+    from config_crnn import MAX_LABEL_LENGTH, MIN_CONFIDENCE, MIN_LABEL_LENGTH
     from dataset_crnn import val_transform
     from model_crnn import CRNN, predict_with_confidence
 
@@ -49,8 +51,8 @@ class CRNNInferer:
     def process_directory(
         self,
         image_dir: str,
-        min_confidence: float = 0.8,
-        expected_length: int  = 5,
+        min_confidence: float = MIN_CONFIDENCE,
+        expected_length: int | None = None,
         debug: bool           = False,
         debug_dir: str        = "debug_bad_crops",
     ) -> dict:
@@ -58,6 +60,10 @@ class CRNNInferer:
         Прогоняет все изображения из папки и выводит статистику.
 
         Args:
+            expected_length: точная длина "хорошего" текста; None (по умолчанию) —
+                любая длина из диапазона MIN_LABEL_LENGTH..MAX_LABEL_LENGTH
+                config_crnn.py. Раньше по умолчанию было 5 — длина показаний
+                счётчика, а серийники бывают 4–10 символов (находка 2).
             debug: если True — копирует плохие кейсы в debug_dir.
         """
         exts  = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -83,7 +89,10 @@ class CRNNInferer:
             conf         = res["avg_confidence"]
             details      = res["details"]
             is_good_conf = conf >= min_confidence
-            is_good_len  = len(text) == expected_length
+            is_good_len  = (
+                len(text) == expected_length if expected_length is not None
+                else MIN_LABEL_LENGTH <= len(text) <= MAX_LABEL_LENGTH
+            )
 
             details_str = (
                 " ".join(f"{d['char']}({d['conf']:.2f})" for d in details)
@@ -118,7 +127,7 @@ if __name__ == "__main__":
     p.add_argument("--checkpoint", default="runs/crnn/best.pt")
     p.add_argument("--image",      default=None)
     p.add_argument("--image_dir",  default=None)
-    p.add_argument("--min_conf",   type=float, default=0.8)
+    p.add_argument("--min_conf",   type=float, default=MIN_CONFIDENCE)
     p.add_argument("-d", "--debug", action="store_true", help="Сохранять плохие кропы для разбора")
     p.add_argument("--debug_dir",  default="debug_bad_crops")
     args = p.parse_args()

@@ -1,3 +1,4 @@
+import argparse
 import os
 import shutil
 from pathlib import Path
@@ -60,16 +61,16 @@ def build_cnn_dataset(digits_dir: str, labels_dir: str, output_dir: str):
 
 
 if __name__ == "__main__":
-    # === НАСТРОЙКИ ПУТЕЙ (измените под вашу структуру) ===
-    
-    # Папка, где лежат вырезанные кропы цифр
-    DIGITS_FOLDER = r"C:\AD\gas-meter-reader\database\meter_ocr_data\digit_ocr\images\digit"
-    
-    # Папка, где лежат .txt файлы с полными показаниями (например, 51603)
-    LABELS_FOLDER = r"C:\AD\gas-meter-reader\database\meter_ocr_data\gas_meter_gold\labels" 
-    
-    # Куда сохранить итоговый датасет для CNN
-    OUTPUT_DATASET = r"C:\AD\gas-meter-reader\database\meter_ocr_data\cnn_dataset_gold"
+    # Пути — относительно папки проекта (запускать из неё), как CROPS_DIR в
+    # config_cnn.py. Раньше были зашиты абсолютные C:\AD\gas-meter-reader\...
+    # (старое расположение проекта; MIGRATION_TZ.md, 3bis, находка 6).
+    p = argparse.ArgumentParser(description="Сборка датасета CNN: <output>/<цифра>/*.jpg")
+    p.add_argument("--digits_dir", default="database/meter_ocr_data/digit_ocr/images/digit",
+                   help="папка с вырезанными кропами цифр")
+    p.add_argument("--labels_dir", default="database/meter_ocr_data/gas_meter_gold/labels",
+                   help="папка с .txt полных показаний (например, 51603)")
+    p.add_argument("--output_dir", default="database/meter_ocr_data/cnn_dataset_gold",
+                   help="куда сохранить датасет для CNN")
+    args = p.parse_args()
 
-    # Запуск функции
-    build_cnn_dataset(DIGITS_FOLDER, LABELS_FOLDER, OUTPUT_DATASET)
+    build_cnn_dataset(args.digits_dir, args.labels_dir, args.output_dir)

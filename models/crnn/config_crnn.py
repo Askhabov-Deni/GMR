@@ -22,3 +22,12 @@ _STD  = [0.1961, 0.1972, 0.2039]
 
 MIN_LABEL_LENGTH = 4
 MAX_LABEL_LENGTH = 10
+
+
+# ── Инференс ──────────────────────────────────────────────────────────
+
+# Порог "хорошего" предсказания в infer_crnn.py (CLI --min_conf по умолчанию).
+# Равен прод-порогу PipelineConfig.serial_conf_thresh (src/gmr/domain/config.py).
+# Раньше в infer_crnn.py был захардкожен 0.8 (MIGRATION_TZ.md, 3bis, находка 1).
+# Равенство проверяет tests/test_phase4_models.py.
+MIN_CONFIDENCE = 0.6

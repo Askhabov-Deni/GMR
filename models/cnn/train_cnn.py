@@ -166,7 +166,7 @@ def main() -> None:
 
     if not crops_dir.exists():
         print(f"❌ Папка с кропами не найдена: {crops_dir.resolve()}")
-        print("   Сначала запустите extract_digit_crops.py")
+        print("   Сначала запустите build_dataset_cnn.py")
         return
 
     print(f"🖥️  Устройство: {device}")

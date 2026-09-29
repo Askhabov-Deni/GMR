@@ -1,0 +1,73 @@
+# Модели GMR — что в работе
+
+Четыре модели, которыми `reader.py` и `program2.py` читают фото. Пути —
+из `PipelineConfig` (`src/gmr/domain/config.py`), относительно папки проекта.
+Файлы весов (`*.pt`, `*.pth`) в git не хранятся (`.gitignore`) — только
+здесь записано, какие именно файлы в работе и где их копия.
+
+## Файлы весов (отпечатки)
+
+Таблицу заполняет скрипт на машине, где лежат веса (у агента весов нет):
+`python -m tools.weights_manifest --write`. Перезапускать после каждой
+замены модели — старую строку перенести в «Историю замен» ниже.
+
+<!-- weights:begin -->
+Снято: 2026-09-30 01:31 (`python -m tools.weights_manifest --write`)
+
+| Модель | Путь (PipelineConfig) | МБ | Изменён | SHA-256 (16) |
+|---|---|---|---|---|
+| детектор счётчика и серийника (YOLO) | `meter_detect/runs/detect/gas_meter_all_classes_s_v1/weights/best.pt` | 21.5 | 2026-05-12 23:56 | `6e82ab6e5c303d2b` |
+| детектор цифр (YOLO) | `meter_ocr/runs/yolo/digits_detect_v4/weights/best.pt` | 5.9 | 2026-06-12 13:49 | `48d589378d368d86` |
+| распознавание цифры (CNN) | `meter_ocr/runs/cnn/runs/v3_platinum/best.pth` | 2.4 | 2026-09-28 23:07 | `0c7020aa91fb6655` |
+| распознавание серийника (CRNN) | `serial_id_ocr/runs/crnn/2026-06-05_01-09/best.pt` | 24.6 | 2026-06-05 02:43 | `83681b2d3bb736a4` |
+<!-- weights:end -->
+
+**Резервная копия:** есть у владельца (подтверждено 2026-09-29).
+Где лежит: _вписать путь / диск / облако_. После копирования сравнить
+отпечатки копии с таблицей выше — должны совпасть.
+
+## Модели и их качество при обучении
+
+Метрики — из файлов обучения, которые лежат в git рядом с путём весов
+(`history.json`, `eval/metrics.json`, `results.csv`). Это качество на
+отложенной выборке датасета, **не** на реальном потоке фото — реальную
+точность меряет Фаза 5.
+
+| Роль | Прогон | Архитектура | Метрики (из файлов обучения) |
+|---|---|---|---|
+| Детектор счётчика и серийника | `meter_detect/runs/detect/gas_meter_all_classes_s_v1` | YOLOv8s, 640px, 200 эпох | лучшая эпоха 184: mAP50 0.967, mAP50-95 0.786, precision 0.970, recall 0.949 (`results.csv`) |
+| Детектор цифр | `meter_ocr/runs/yolo/digits_detect_v4` | YOLOv8n, 480px, 50 эпох | лучшая эпоха 41: mAP50 0.995, mAP50-95 0.796, precision 0.994, recall 0.994 (`results.csv`) |
+| Распознавание цифры | `meter_ocr/runs/cnn/runs/v3_platinum` | DigitCNN (`models/cnn/model_cnn.py`), 10 классов | лучшая val_acc 0.973 (эпоха 24), test_acc 0.974 (`history.json`) |
+| Распознавание серийника | `serial_id_ocr/runs/crnn/2026-06-05_01-09` | CRNN + CTC (`models/crnn/model_crnn.py`) | best val_acc 0.927, test accuracy 0.914 (весь номер целиком), CER 0.023; длины в тесте: 5–8 и 10 символов (`history.json`, `eval/metrics.json`) |
+
+Прочие прогоны в репозитории (`meter_ocr/runs/cnn/runs/v1`, `v2_gold`,
+`meter_ocr/runs/crnn/2026-06-04_14-43` — CRNN для показаний, эксперимент,
+`meter_detect/.../gas_meter_all_classes_m_v1`) в работе не используются.
+
+Известные ограничения:
+- Split детектора цифр `digits_detect_v4` сделан без seed — воспроизвести
+  именно его нельзя. С Фазы 4 `train_val_split.py` фиксирует seed, следующий
+  split будет воспроизводимым.
+- У YOLO-прогонов `seed: 0` в `args.yaml` — это seed обучения, не split.
+
+## Как посмотреть, что модель делает
+
+`python -m tools.inspect_model <meter|digits|serial|digit|photo> <фото|папка>` —
+описание в начале `tools/inspect_model.py`. По умолчанию те же веса и
+пороги, что в `reader.py`; `--weights` — сравнить с другим файлом весов,
+`--conf` — посмотреть на другой порог.
+
+## Как заменить модель
+
+1. Обучить (скрипты в `models/`), посмотреть метрики.
+2. `python -m tools.inspect_model <модель> <папка с реальными фото> --weights <новый файл>`
+   и то же без `--weights` — сравнить глазами на одних и тех же фото.
+3. Поменять путь в `PipelineConfig`, прогнать `python -m pytest tests/`.
+4. `python -m tools.weights_manifest --write`, старую строку — в историю ниже.
+5. Сделать резервную копию нового файла.
+
+## История замен
+
+| Когда | Роль | Было → стало | Почему |
+|---|---|---|---|
+| до 2026-09-28 | распознавание цифры | … → `v3_platinum` | новая CNN цифр (со слов владельца; прогон на 1111 фото — `docs/audit/baseline_run_2026-09-28.txt`) |

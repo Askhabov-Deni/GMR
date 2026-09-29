@@ -39,7 +39,7 @@ class CNNInferer:
             A.LongestMaxSize(max_size=IMG_SIZE),
             A.PadIfNeeded(
                 min_height=IMG_SIZE, min_width=IMG_WIDTH,
-                border_mode=cv2.BORDER_CONSTANT, value=0, # Паддинг черным (0)
+                border_mode=cv2.BORDER_CONSTANT, fill=0, # Паддинг черным (0)
             ),
             A.Normalize(mean=NORM_MEAN, std=NORM_STD),
             ToTensorV2(),

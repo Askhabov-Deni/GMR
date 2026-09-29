@@ -230,7 +230,7 @@ def main() -> None:
     # Загрузка чекпоинта
     if args.finetune:
         print(f"🎯 Fine-tuning из: {args.finetune}")
-        ckpt = torch.load(args.finetune, map_location=device)
+        ckpt = torch.load(args.finetune, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state"])
         best_acc = ckpt.get("val_acc", -1.0)
         print(f"   Стартовая val_acc: {best_acc:.4f}")
@@ -239,7 +239,7 @@ def main() -> None:
         if not os.path.exists(args.resume):
             raise FileNotFoundError(f"Чекпоинт не найден: {args.resume}")
         print(f"⏳ Resume из: {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state"])
         if "optimizer_state" in ckpt:
             opt.load_state_dict(ckpt["optimizer_state"])
@@ -299,7 +299,7 @@ def main() -> None:
     # Финальный тест
     print("\n🔄 Загружаю best.pt для финального теста...")
     if os.path.exists(best_ckpt_path):
-        best_ckpt = torch.load(best_ckpt_path, map_location=device)
+        best_ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=True)
         model.load_state_dict(best_ckpt["model_state"])
     else:
         print("⚠️  best.pt не найден, используется последняя эпоха")

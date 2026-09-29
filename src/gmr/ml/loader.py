@@ -33,6 +33,39 @@ def default_device() -> "torch.device":
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def load_meter_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = str) -> YoloMeterDetector:
+    return YoloMeterDetector(YOLOInferer(
+        resolve_path(config.meter_detect_model),
+        conf_thresh=config.meter_conf_thresh,
+    ))
+
+
+def load_digit_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = str) -> YoloDigitDetector:
+    return YoloDigitDetector(YOLOInferer(
+        resolve_path(config.digit_detect_model),
+        conf_thresh=config.digit_detect_conf_thresh,
+        straighten=False,
+    ))
+
+
+def load_digit_recognizer(
+    config: PipelineConfig, device: Optional["torch.device"] = None,
+    resolve_path: Callable[[str], str] = str,
+) -> CnnDigitRecognizer:
+    return CnnDigitRecognizer(
+        CNNInferer(resolve_path(config.digit_ocr_model), device=device or default_device())
+    )
+
+
+def load_serial_recognizer(
+    config: PipelineConfig, device: Optional["torch.device"] = None,
+    resolve_path: Callable[[str], str] = str,
+) -> CrnnSerialRecognizer:
+    return CrnnSerialRecognizer(
+        CRNNInferer(resolve_path(config.serial_ocr_model), device=device or default_device())
+    )
+
+
 def load_models(
     config: PipelineConfig,
     device: Optional["torch.device"] = None,
@@ -44,19 +77,8 @@ def load_models(
     """
     device = device or default_device()
     return RecognitionModels(
-        meter_detector=YoloMeterDetector(YOLOInferer(
-            resolve_path(config.meter_detect_model),
-            conf_thresh=config.meter_conf_thresh,
-        )),
-        digit_detector=YoloDigitDetector(YOLOInferer(
-            resolve_path(config.digit_detect_model),
-            conf_thresh=config.digit_detect_conf_thresh,
-            straighten=False,
-        )),
-        digit_recognizer=CnnDigitRecognizer(
-            CNNInferer(resolve_path(config.digit_ocr_model), device=device)
-        ),
-        serial_recognizer=CrnnSerialRecognizer(
-            CRNNInferer(resolve_path(config.serial_ocr_model), device=device)
-        ),
+        meter_detector=load_meter_detector(config, resolve_path),
+        digit_detector=load_digit_detector(config, resolve_path),
+        digit_recognizer=load_digit_recognizer(config, device, resolve_path),
+        serial_recognizer=load_serial_recognizer(config, device, resolve_path),
     )

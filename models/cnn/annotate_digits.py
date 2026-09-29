@@ -62,7 +62,7 @@ def load_model(model_path: str):
             sys.path.insert(0, script_dir)
         from model_cnn import DigitCNN
         m = DigitCNN()
-        state = torch.load(model_path, map_location=device)
+        state = torch.load(model_path, map_location=device, weights_only=True)
         if isinstance(state, dict) and "model_state_dict" in state:
             state = state["model_state_dict"]
         m.load_state_dict(state)

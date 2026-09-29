@@ -1,6 +1,6 @@
 """
 Загрузка данных для CNN-классификатора цифр.
-Структура папки crops_dir (создаётся extract_digit_crops.py):
+Структура папки crops_dir (создаётся build_dataset_cnn.py):
 crops_dir/
 0/  *.jpg
 ...
@@ -85,7 +85,7 @@ def _train_transform() -> A.Compose:
         A.LongestMaxSize(max_size=IMG_SIZE),
         A.PadIfNeeded(
             min_height=IMG_SIZE, min_width=IMG_WIDTH,
-            border_mode=cv2.BORDER_CONSTANT, value=0,
+            border_mode=cv2.BORDER_CONSTANT, fill=0,
         ),
         # 2. Инверсия: модель видит оба варианта полярности
         A.InvertImg(p=0.5),
@@ -101,7 +101,7 @@ def _train_transform() -> A.Compose:
         # (0.02 / 0.05) чаще рисковали бы обрезать край цифры по ширине.
         A.ShiftScaleRotate(
             shift_limit=0.015, scale_limit=0.03, rotate_limit=2,
-            border_mode=cv2.BORDER_CONSTANT, value=0, p=0.3,
+            border_mode=cv2.BORDER_CONSTANT, fill=0, p=0.3,
         ),
         # 5. Нормализация
         A.Normalize(mean=NORM_MEAN, std=NORM_STD),
@@ -114,7 +114,7 @@ def _val_transform() -> A.Compose:
         A.LongestMaxSize(max_size=IMG_SIZE),
         A.PadIfNeeded(
             min_height=IMG_SIZE, min_width=IMG_WIDTH,
-            border_mode=cv2.BORDER_CONSTANT, value=0,
+            border_mode=cv2.BORDER_CONSTANT, fill=0,
         ),
         A.Normalize(mean=NORM_MEAN, std=NORM_STD),
         ToTensorV2(),

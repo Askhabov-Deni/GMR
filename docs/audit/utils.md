@@ -90,3 +90,17 @@ CLI/argparse, проверена git history).
 | 6 | `models/yolo_all_detect/train_val_split.py:7-9`, `models/cnn/build_dataset_cnn.py:66-72` | Абсолютные пути `C:\AD\gas-meter-reader\...` (старое расположение проекта). В `models/` это ровно два файла. | 4 |
 | 7 | `models/crnn/config_crnn.py:15-16` | Закомментированный альтернативный конфиг `gas_meter_gold` (IMG_W/IMG_H и т.д.) — след эксперимента, сбивает при чтении. | 6 |
 | 8 | `models/yolo_all_detect/labeler_yolo.py` (992) + `utils/label_yolo_tool.py` (1174) | Два Tkinter-разметчика bbox, 2166 строк с пересекающейся ролью. | 6 |
+
+### Решения по находкам (Фаза 4, 2026-09-29)
+Номера фаз в таблице выше — по исходному плану; после пересмотра плана
+(ТЗ, раздел 4) бывшая Ф6 (Cleanup) — это Ф7.
+
+| # | Решение |
+|---|---|
+| 1 | Сделано. `config_cnn.MIN_CONFIDENCE` и новый `config_crnn.MIN_CONFIDENCE` = 0.6 = прод-пороги `PipelineConfig`; `infer_crnn.py` берёт порог из конфига, а не `0.8` в коде. Равенство держит тест. Прод не менялся. |
+| 2 | Сделано (числилась за Ф3, там пропущена — сделано в Ф4). `process_directory` по умолчанию считает «хорошей» длину 4–10 (`MIN/MAX_LABEL_LENGTH`); точная длина — параметром `expected_length`. В тестовой выборке CRNN длины 5–8 и 10. |
+| 3 | Сделано. Все `torch.load` в `models/` — с `weights_only=True` (CRNN: `model_crnn`, `train_crnn` ×3, `evaluate_crnn`; CNN: `annotate_digits`). На torch ≥ 2.6 (у владельца 2.14) это и так поведение по умолчанию — флаг делает его явным. Ключи чекпоинтов (`model_state` / `model_state_dict`) не унифицировались: это поменяло бы формат новых чекпоинтов, а польза нулевая — обе ветки загрузки работают. |
+| 4 | ARCHIVE: владелец не пользуется → `archive/models/cnn/extract_digit_crops.py`. Упоминания в `train_cnn.py`/`dataset_cnn.py` заменены на `build_dataset_cnn.py`. |
+| 5 | Сделано. `train_val_split.py`: `SEED=67`, список файлов сортируется перед перемешиванием. Split текущей `digits_detect_v4` этим не восстанавливается. |
+| 6 | Сделано. `train_val_split.py`, `build_dataset_cnn.py`: пути — аргументы командной строки с относительными умолчаниями (`database/...`, запуск из папки проекта). Абсолютных путей в `models/` не осталось (тест). В `utils/` — по-прежнему, это Ф7. |
+| 7, 8 | Без изменений — Ф7. |

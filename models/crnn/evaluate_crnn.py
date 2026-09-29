@@ -345,7 +345,7 @@ def main() -> None:
     ckpt_path = os.path.join(args.run_dir, "best.pt")
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Не найден best.pt в {args.run_dir}")
-    ckpt  = torch.load(ckpt_path, map_location=device)
+    ckpt  = torch.load(ckpt_path, map_location=device, weights_only=True)
     model = CRNN().to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()

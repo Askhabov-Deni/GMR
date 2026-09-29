@@ -49,7 +49,12 @@ NUM_CLASSES = 10
 SEED        = 67
 
 # ── Инференс ──────────────────────────────────────────────────────────────────
-MIN_CONFIDENCE = 0.8     # порог "хорошего" предсказания в infer_cnn.py
+# Порог "хорошего" предсказания в infer_cnn.py (CLI --min_conf по умолчанию).
+# Равен прод-порогу PipelineConfig.digit_conf_thresh (src/gmr/domain/config.py):
+# standalone-инструмент должен судить о модели по тому же порогу, что и
+# reader.py. Было 0.8 — расходилось с продом (MIGRATION_TZ.md, 3bis, находка 1).
+# Равенство проверяет tests/test_phase4_models.py.
+MIN_CONFIDENCE = 0.6
 
 # ── Устройство ────────────────────────────────────────────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
