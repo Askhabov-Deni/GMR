@@ -38,3 +38,6 @@ data_for_reader_test/
 
 # Личные пути/настройки оператора (см. settings.example.json)
 settings.json
+# Фаза 2b: shadow-run артефакты рядом с таблицей
+*_log.sqlite
+*_log_shadow_report.txt

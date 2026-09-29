@@ -85,3 +85,12 @@ class PipelineConfig:
     # digit         — оранжевый
     # Подписи классов не рисуются.
     draw_boxes:                bool = True
+
+    # Фаза 2b (docs/MIGRATION_TZ.md): shadow-run processing log в SQLite.
+    # False — поведение как раньше, пишется только <table>_log.csv.
+    # True  — каждая строка лога дополнительно пишется в <table>_log.sqlite,
+    #         после прогона CSV и SQLite сверяются построчно, расхождения
+    #         пишутся в лог и в <table>_log_shadow_report.txt.
+    # CSV остаётся источником истины в обоих режимах: чтение (дубли, кейсы
+    # 5-8) всегда идёт из CSV, SQLite ни на какое решение не влияет.
+    shadow_sqlite_log:         bool = False

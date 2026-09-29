@@ -57,6 +57,7 @@ from src.gmr.domain import (
     DuplicatePolicy,
     MissingDigitRecoveryPolicy,
 )
+from src.gmr.storage import LOG_COLUMNS, CsvLogStore, ShadowLogStore, SqliteLogStore
 
 # reader.py продолжает быть единственным местом, где вызываются модели —
 # domain-слой (src/gmr/domain/) не знает ни про torch, ни про cv2, ни про
@@ -135,13 +136,13 @@ def _save_table(df: pd.DataFrame, path: str) -> None:
 
 
 # ─── Processing log ──────────────────────────────────────────────────────────
+# Реализация вынесена в src/gmr/storage/log_store.py (Фаза 2b,
+# docs/MIGRATION_TZ.md). Функции ниже — тонкие обёртки над CsvLogStore,
+# оставлены как есть по сигнатуре и имени: program2.py импортирует их
+# напрямую (from reader import _load_log, _save_log, _append_log_row,
+# _log_path, _LOG_COLUMNS) — это сохранено намеренно, как и в Фазе 2a.
 
-_LOG_COLUMNS = [
-    "original_filename", "final_filename", "serial_id", "account_id",
-    "reading", "last_reading", "delta", "outcome", "source", "processed_by",
-    "processed_at", "verified_by", "verified_at", "model_serial_conf",
-    "model_reading_str", "notes",
-]
+_LOG_COLUMNS = LOG_COLUMNS
 
 
 def _log_path(table_path: str) -> str:
@@ -152,28 +153,17 @@ def _log_path(table_path: str) -> str:
 
 def _load_log(log_path: str) -> list[dict]:
     """Загружает лог; возвращает [] если файл не существует."""
-    if not Path(log_path).exists():
-        return []
-    with open(log_path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    return CsvLogStore(log_path).load()
 
 
 def _save_log(log_path: str, rows: list[dict]) -> None:
     """Перезаписывает весь лог."""
-    with open(log_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=_LOG_COLUMNS, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
+    CsvLogStore(log_path).save(rows)
 
 
 def _append_log_row(log_path: str, row: dict) -> None:
     """Дописывает одну строку в лог (создаёт файл с заголовком если нет)."""
-    exists = Path(log_path).exists()
-    with open(log_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=_LOG_COLUMNS, extrasaction="ignore")
-        if not exists:
-            writer.writeheader()
-        writer.writerow(row)
+    CsvLogStore(log_path).append(row)
 
 
 def _log_filenames(rows: list[dict]) -> set[str]:
@@ -186,14 +176,23 @@ def _maybe_init_log(
     log_path: str,
     df: "pd.DataFrame",
     config: "PipelineConfig",
+    store: Optional["CsvLogStore"] = None,
 ) -> list[dict]:
     """
     При первом запуске: если лог не существует, но в таблице уже есть
     заполненные col_new_reading — предлагает инициализировать лог.
     Возвращает итоговые строки лога (может быть []).
+
+    store — куда писать/откуда читать (по умолчанию CsvLogStore(log_path),
+    как было всегда). run_pipeline передаёт сюда ShadowLogStore в
+    shadow-run режиме (Фаза 2b), чтобы инициализация лога из таблицы тоже
+    дублировалась в SQLite. Существование лога по-прежнему проверяется по
+    CSV-файлу (log_path) — CSV остаётся источником истины в этой фазе.
     """
+    store = store or CsvLogStore(log_path)
+
     if Path(log_path).exists():
-        return _load_log(log_path)
+        return store.load()
 
     filled = df[df[config.col_new_reading].apply(
         lambda v: pd.notna(v) and str(v).strip() not in ("", "nan")
@@ -246,7 +245,7 @@ def _maybe_init_log(
             "notes":             "инициализировано из таблицы",
         })
 
-    _save_log(log_path, rows)
+    store.save(rows)
     logging.getLogger("reader").info(f"Лог инициализирован: {len(rows)} записей → {log_path}")
     return rows
 
@@ -1023,7 +1022,23 @@ def run_pipeline(config: PipelineConfig) -> None:
 
     # ── Лог обработки ────────────────────────────────────────────────────────
     log_path = _log_path(config.table_path)
-    log_rows = _maybe_init_log(config.table_path, log_path, df, config)
+
+    # Фаза 2b: в shadow-run режиме каждая запись лога дублируется в SQLite.
+    # CSV (log_path) остаётся источником истины — чтение идёт только из него.
+    shadow_store = None
+    if config.shadow_sqlite_log:
+        sqlite_path = str(Path(log_path).with_suffix(".sqlite"))
+        if Path(sqlite_path).exists():
+            # SQLite от прошлого shadow-прогона пересоздаём из текущего CSV,
+            # иначе после ручных правок CSV (program2.py) сверка расходилась
+            # бы не из-за бага, а из-за устаревшей копии.
+            Path(sqlite_path).unlink()
+        shadow_store = ShadowLogStore(CsvLogStore(log_path), SqliteLogStore(sqlite_path))
+        if Path(log_path).exists():
+            shadow_store.shadow.save(shadow_store.primary.load())
+        log.info(f"Shadow-run: SQLite-лог → {sqlite_path}")
+
+    log_rows = _maybe_init_log(config.table_path, log_path, df, config, store=shadow_store)
     config._log_filenames_cache      = _log_filenames(log_rows)
     config._log_rows_cache           = log_rows   # нужен для проверки pre_existing
     config._processed_accounts_cache = set()       # account_id обработанных в этом прогоне
@@ -1126,7 +1141,10 @@ def run_pipeline(config: PipelineConfig) -> None:
 
             # Запись в лог после каждого фото
             log_row = _make_log_row(photo_path_obj.name, result, config)
-            _append_log_row(log_path, log_row)
+            if shadow_store is not None:
+                shadow_store.append(log_row)
+            else:
+                _append_log_row(log_path, log_row)
             config._log_filenames_cache.add(photo_path_obj.name)
             config._log_rows_cache.append(log_row)
             if result.account_id:
@@ -1161,6 +1179,37 @@ def run_pipeline(config: PipelineConfig) -> None:
 
         log.info("\n" + overall_report_text)
         log.info(f"💾 Общий отчёт сохранён: {overall_report_path}")
+
+    if shadow_store is not None:
+        _report_shadow_run(shadow_store, log_path, log)
+
+
+def _report_shadow_run(shadow_store: ShadowLogStore, log_path: str, log: logging.Logger) -> None:
+    """Сверяет CSV и SQLite после прогона и пишет результат рядом с логом."""
+    divergences = shadow_store.compare()
+    report_path = str(Path(log_path).with_name(Path(log_path).stem + "_shadow_report.txt"))
+    n_rows = len(shadow_store.primary.load())
+
+    lines = [f"Shadow-run: CSV vs SQLite, строк в CSV-логе: {n_rows}"]
+    if not divergences:
+        lines.append("РЕЗУЛЬТАТ: совпадение построчно, расхождений нет")
+    else:
+        lines.append(f"РЕЗУЛЬТАТ: РАСХОЖДЕНИЯ — {len(divergences)}")
+        for idx, p_row, s_row in divergences[:50]:
+            diff_cols = sorted(k for k in set(p_row) | set(s_row) if p_row.get(k) != s_row.get(k))
+            lines.append(f"  строка {idx}: {', '.join(diff_cols)}")
+            for c in diff_cols:
+                lines.append(f"    {c}: csv={p_row.get(c)!r}  sqlite={s_row.get(c)!r}")
+        if len(divergences) > 50:
+            lines.append(f"  ... и ещё {len(divergences) - 50}")
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    if divergences:
+        log.warning(f"⚠️  Shadow-run: {len(divergences)} расхождений CSV/SQLite → {report_path}")
+    else:
+        log.info(f"✅ Shadow-run: CSV и SQLite совпадают ({n_rows} строк) → {report_path}")
 
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────

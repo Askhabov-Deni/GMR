@@ -1,0 +1,180 @@
+"""
+Интеграционный shadow-run (Фаза 2b): run_pipeline целиком, на настоящих
+файлах (фото, таблица, лог, output-папки), модели заменены фейками.
+
+Проверяем три вещи:
+  1. shadow_sqlite_log=True: SQLite-лог совпадает с CSV построчно, отчёт
+     сверки говорит "совпадение".
+  2. shadow-режим не меняет наблюдаемый результат: CSV-лог, таблица и
+     разложенные по папкам фото — те же, что при shadow_sqlite_log=False.
+  3. если CSV-лог уже существовал до прогона (повторный запуск), SQLite
+     засевается из него, и сверка всё равно чистая.
+
+Фейковые модели определяют, какое фото обрабатывается, по значению
+пикселя в кропе (см. _PHOTOS) — иначе детектор цифр не знает, из какого
+фото пришёл кроп счётчика.
+"""
+import csv
+import shutil
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+
+import reader
+
+# имя фото -> (серийник, 5 цифр или None, есть ли счётчик на фото)
+_PHOTOS = {
+    "p0.jpg": ("11111", "01200", True),   # PLUS (1000 -> 1200)
+    "p1.jpg": ("22222", "04000", True),   # MINUS (5000 -> 4000)
+    "p2.jpg": ("99999", "01000", True),   # SERIAL_NOT_FOUND
+    "p3.jpg": ("11111", "01300", True),   # REPEAT (тот же счётчик в прогоне)
+    "p4.jpg": (None,    None,    False),  # NO_METER
+}
+_ORDER = sorted(_PHOTOS)
+_TABLE = [
+    {"Номер счетчика": "11111", "Лицевой счет": "A-1", "Последние показания": "1000", "Текущие показания": ""},
+    {"Номер счетчика": "22222", "Лицевой счет": "A-2", "Последние показания": "5000", "Текущие показания": ""},
+]
+
+
+def _tag(name):
+    return _ORDER.index(name) + 1  # значение пикселя кропа = номер фото
+
+
+class _MeterDetector:
+    def process_image(self, img_path, save_crops=False, max_per_class=1, straighten=None):
+        name = Path(img_path).name
+        serial, _, has_meter = _PHOTOS[name]
+        if not has_meter:
+            return []
+        t = _tag(name)
+        return [
+            {"class": "gas_meter", "conf": 0.95, "angle": 0.0, "bbox": (0, 0, 200, 40),
+             "crop": np.full((40, 200, 3), t, dtype=np.uint8), "path": None},
+            {"class": "serial_number", "conf": 0.95, "angle": 0.0, "bbox": (0, 40, 100, 60),
+             "crop": np.full((20, 100, 3), t, dtype=np.uint8), "path": None},
+        ]
+
+
+class _DigitDetector:
+    def process_array(self, img, save_crops=False, max_per_class=5, straighten=None):
+        name = _ORDER[int(img[0, 0, 0]) - 1]
+        digits = _PHOTOS[name][1]
+        crops = []
+        for i, d in enumerate(digits):
+            arr = np.full((30, 20, 3), int(d), dtype=np.uint8)  # цифра зашита в пиксель
+            crops.append({"class": "digit", "conf": 0.95, "angle": 0.0,
+                          "bbox": (i * 40, 0, i * 40 + 20, 30), "crop": arr, "path": None})
+        return crops
+
+
+class _DigitOCR:
+    def predict(self, image_input):
+        return {"digit": int(image_input[0, 0, 0]), "confidence": 0.95}
+
+
+class _SerialOCR:
+    def predict_with_details(self, image_input):
+        name = _ORDER[int(image_input[0, 0, 0]) - 1]
+        return {"text": _PHOTOS[name][0], "avg_confidence": 0.95, "details": []}
+
+
+@pytest.fixture
+def fake_models(monkeypatch):
+    def yolo(model, conf_thresh=0.8, straighten=True, output_dir=None):
+        return _DigitDetector() if straighten is False else _MeterDetector()
+    monkeypatch.setattr(reader, "YOLOInferer", yolo)
+    monkeypatch.setattr(reader, "CNNInferer", lambda *a, **k: _DigitOCR())
+    monkeypatch.setattr(reader, "CRNNInferer", lambda *a, **k: _SerialOCR())
+
+
+def _setup_workspace(root: Path):
+    inp = root / "input"
+    inp.mkdir(parents=True)
+    for name in _ORDER:
+        cv2.imwrite(str(inp / name), np.full((100, 200, 3), 128, dtype=np.uint8))
+    table = root / "table.csv"
+    with open(table, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(_TABLE[0]))
+        w.writeheader()
+        w.writerows(_TABLE)
+    return inp, table
+
+
+def _run(root: Path, shadow: bool):
+    inp, table = _setup_workspace(root)
+    cfg = reader.PipelineConfig(
+        input_dir=str(inp), output_base_dir=str(root / "out"), table_path=str(table),
+        draw_boxes=False, shadow_sqlite_log=shadow,
+    )
+    reader.run_pipeline(cfg)
+    return table
+
+
+def _log_without_timestamps(log_path):
+    rows = reader._load_log(str(log_path))
+    for r in rows:
+        r["processed_at"] = ""
+    return rows
+
+
+def _output_tree(root: Path):
+    return sorted(str(p.relative_to(root / "out")) for p in (root / "out").rglob("*.jpg"))
+
+
+def test_shadow_run_sqlite_matches_csv(tmp_path, fake_models):
+    table = _run(tmp_path, shadow=True)
+    log_csv = Path(reader._log_path(str(table)))
+    sqlite = reader.SqliteLogStore(str(log_csv.with_suffix(".sqlite")))
+
+    assert sqlite.load() == reader._load_log(str(log_csv))
+    assert len(sqlite.load()) == len(_PHOTOS)
+
+    report = log_csv.with_name(log_csv.stem + "_shadow_report.txt").read_text(encoding="utf-8")
+    assert "совпадение построчно" in report
+
+
+def test_shadow_mode_does_not_change_results(tmp_path, fake_models):
+    table_off = _run(tmp_path / "off", shadow=False)
+    table_on = _run(tmp_path / "on", shadow=True)
+
+    assert _log_without_timestamps(reader._log_path(str(table_off))) == \
+           _log_without_timestamps(reader._log_path(str(table_on)))
+    assert Path(table_off).read_bytes() == Path(table_on).read_bytes()
+    assert _output_tree(tmp_path / "off") == _output_tree(tmp_path / "on")
+
+    # самопроверка фикстуры: прогон дал именно те исходы, что задуманы
+    outcomes = [r["outcome"] for r in reader._load_log(reader._log_path(str(table_on)))]
+    assert outcomes == ["PLUS", "MINUS", "SERIAL_NOT_FOUND", "REPEAT", "NO_METER"]
+    # и без shadow-режима SQLite-файла не появляется
+    assert not Path(reader._log_path(str(table_off))).with_suffix(".sqlite").exists()
+
+
+def test_shadow_run_seeds_sqlite_from_existing_csv_log(tmp_path, fake_models):
+    table = _run(tmp_path, shadow=False)          # первый прогон: только CSV
+    log_csv = Path(reader._log_path(str(table)))
+    shutil.rmtree(tmp_path / "input")
+    shutil.rmtree(tmp_path / "out")
+
+    _setup_workspace(tmp_path)                    # те же фото ещё раз (лог остаётся)
+    cfg = reader.PipelineConfig(
+        input_dir=str(tmp_path / "input"), output_base_dir=str(tmp_path / "out"),
+        table_path=str(table), draw_boxes=False, shadow_sqlite_log=True,
+    )
+    reader.run_pipeline(cfg)
+
+    rows = reader._load_log(str(log_csv))
+    assert len(rows) == 2 * len(_PHOTOS)
+    # Второй прогон. Проверка "фото уже в логе" стоит на шаге 4 process_photo,
+    # ПОСЛЕ поиска серийника в таблице (шаг 3), поэтому SERIAL_NOT_FOUND и
+    # NO_METER при повторе не становятся REPEAT. Это поведение было и до
+    # миграции (см. MIGRATION_STATUS.md, "Найденные баги") — тест его фиксирует.
+    assert [r["outcome"] for r in rows[len(_PHOTOS):]] == \
+           ["REPEAT", "REPEAT", "SERIAL_NOT_FOUND", "REPEAT", "NO_METER"]
+
+    sqlite = reader.SqliteLogStore(str(log_csv.with_suffix(".sqlite")))
+    assert sqlite.load() == rows
+    report = log_csv.with_name(log_csv.stem + "_shadow_report.txt").read_text(encoding="utf-8")
+    assert "совпадение построчно" in report
