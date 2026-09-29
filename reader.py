@@ -56,6 +56,7 @@ from src.gmr.domain import (
     DigitForgivenessPolicy,
     DuplicatePolicy,
     MissingDigitRecoveryPolicy,
+    ProcessedPhotoPolicy,
 )
 from src.gmr.storage import LOG_COLUMNS, CsvLogStore, ShadowLogStore, SqliteLogStore
 
@@ -69,6 +70,7 @@ _recovery_policy    = MissingDigitRecoveryPolicy()
 _forgiveness_policy = DigitForgivenessPolicy()
 _delta_policy        = DeltaThresholdPolicy()
 _duplicate_policy    = DuplicatePolicy()
+_processed_photo_policy = ProcessedPhotoPolicy()
 
 
 # ─── Цвета боксов ────────────────────────────────────────────────────────────
@@ -611,6 +613,22 @@ def process_photo(
     result = PhotoResult(photo_path=photo_path, outcome=Outcome.NO_METER)
     ext = Path(photo_path).suffix
 
+    # ── Шаг 0: фото уже обрабатывалось? ──────────────────────────────────────
+    # До запуска моделей. Разобранное оператором или успешно прочитанное фото
+    # сразу REPEAT; фото только с авто-ошибками в логе обрабатывается заново
+    # (ProcessedPhotoPolicy, решение владельца 2026-09-29, вариант Г).
+    _seen = _processed_photo_policy.decide(
+        Path(photo_path).name, getattr(config, "_log_rows_cache", [])
+    )
+    if _seen.skip:
+        row = _seen.row or {}
+        result.outcome = Outcome.REPEAT
+        result.error_detail = _seen.reason
+        result.account_id = row.get("account_id") or None
+        result.serial_text = row.get("serial_id") or None
+        result.new_photo_name = row.get("final_filename") or Path(photo_path).name
+        return result
+
     # ── Шаг 1: детекция трёх классов ─────────────────────────────────────────
     crops = meter_detector.process_image(photo_path, save_crops=False)
     if not crops:
@@ -742,18 +760,15 @@ def process_photo(
     #   и source="pre_existing". Такие строки означают: счётчик уже обработан
     #   до нашего прогона (данные в таблице были заранее). Это тоже дубль.
     #   Ищем их по совпадению account_id в логе с source=pre_existing.
-    _orig_fname   = Path(photo_path).name
-    _log_fnames   = getattr(config, "_log_filenames_cache", set())
+    # Проверка "это фото уже в логе" — на шаге 0 (ProcessedPhotoPolicy).
     _log_rows     = getattr(config, "_log_rows_cache", [])
     _processed_accounts = getattr(config, "_processed_accounts_cache", set())
     _new_val      = df.at[row_idx, config.col_new_reading]
     _table_filled = pd.notna(_new_val) and str(_new_val).strip() not in ("", "nan")
 
     _dup = _duplicate_policy.decide(
-        photo_filename=_orig_fname,
         account_id=account_id,
         table_new_reading_filled=_table_filled,
-        log_filenames=_log_fnames,
         processed_accounts=_processed_accounts,
         log_rows=_log_rows,
     )

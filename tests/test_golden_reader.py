@@ -92,9 +92,14 @@ def test_case4_no_last_reading_is_plus_with_none_delta(base_config):
 # ─── 5: фото уже в _log_filenames_cache → REPEAT ─────────────────────────────
 
 def test_case5_repeat_photo_already_in_log(base_config):
-    # reader.py:870-875
+    # Шаг 0 process_photo (ProcessedPhotoPolicy). До 2026-09-29 решение
+    # принималось по набору имён _log_filenames_cache; с варианта Г — по
+    # строке лога: успешно прочитанное фото (auto PLUS) сразу REPEAT.
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_filenames_cache = {"photo1.jpg"}
+    base_config._log_rows_cache = [
+        {"original_filename": "photo1.jpg", "outcome": "PLUS", "source": "auto",
+         "account_id": ACCOUNT, "final_filename": f"{ACCOUNT}.jpg"},
+    ]
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
     result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95,
                   photo_name="photo1.jpg")
@@ -305,3 +310,92 @@ def test_case19_no_serial_class_missing(base_config):
     result = _run(base_config, df, crops, FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95)
     assert result.outcome == Outcome.NO_SERIAL
     assert result.error_detail == "class serial_number not detected"
+
+
+# ─── 20-25: вариант Г — какие фото из лога перечитываются ─────────────────────
+# Решение владельца 2026-09-29 (docs/MIGRATION_STATUS.md). Шаг 0 process_photo:
+# разобранное оператором или успешно прочитанное фото сразу REPEAT, модели не
+# запускаются; фото только с авто-ошибками в логе обрабатывается заново.
+
+class _MustNotRun:
+    """Детектор, который валит тест, если его вызвали."""
+    def process_image(self, *a, **k):
+        raise AssertionError("модель не должна запускаться для уже разобранного фото")
+    process_array = process_image
+
+
+def _log_row(fname, outcome, source="auto", account=ACCOUNT, final=""):
+    return {"original_filename": fname, "outcome": outcome, "source": source,
+            "account_id": account, "serial_id": SERIAL, "final_filename": final}
+
+
+def test_case20_done_photo_skips_models(base_config):
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_log_row("photo1.jpg", "MINUS", final=f"{ACCOUNT}.jpg")]
+    result = reader.process_photo(
+        "photo1.jpg", df, base_config,
+        _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+    )
+    assert result.outcome == Outcome.REPEAT
+    assert result.account_id == ACCOUNT
+    assert result.new_photo_name == f"{ACCOUNT}.jpg"
+
+
+def test_case21_manual_row_skips_even_after_auto_error(base_config):
+    # оператор пометил фото "Нечитаемо" в program2.py после авто NO_METER
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [
+        _log_row("photo1.jpg", "NO_METER", account=""),
+        _log_row("photo1.jpg", "UNREADABLE", source="manual", account=""),
+    ]
+    result = reader.process_photo(
+        "photo1.jpg", df, base_config,
+        _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+    )
+    assert result.outcome == Outcome.REPEAT
+    assert "handled manually" in result.error_detail
+    assert result.new_photo_name == "photo1.jpg"
+
+
+def test_case22_auto_digits_error_is_reprocessed(base_config):
+    # в прошлый раз цифры не прочитались, теперь модель читает -> PLUS
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_log_row("photo1.jpg", "DIGITS_ERROR")]
+    dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
+    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95)
+    assert result.outcome == Outcome.PLUS
+    assert result.reading == 1200
+
+
+def test_case23_auto_early_error_is_reprocessed(base_config):
+    # в прошлый раз NO_METER -> фото снова проходит модели (здесь снова NO_METER)
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_log_row("photo1.jpg", "NO_METER", account="")]
+    result = _run(base_config, df, [], FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95)
+    assert result.outcome == Outcome.NO_METER
+    assert result.error_detail == "YOLO returned no crops"
+
+
+def test_case24_table_filled_explained_by_log_is_repeat_not_suspicious(base_config):
+    # счётчик уже прочитан по ДРУГОМУ фото (PLUS в логе), таблица заполнена.
+    # Раньше это давало SUSPICIOUS "рассинхронизация"; с 2026-09-29 — REPEAT.
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000",
+                    "new_reading": "1200"}])
+    base_config._log_rows_cache = [
+        _log_row("other.jpg", "PLUS"),
+        _log_row("photo1.jpg", "DIGITS_ERROR"),
+    ]
+    dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
+    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95)
+    assert result.outcome == Outcome.REPEAT
+    assert "already has reading in log" in result.error_detail
+
+
+def test_case25_auto_repeat_counts_as_done(base_config):
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_log_row("photo1.jpg", "REPEAT")]
+    result = reader.process_photo(
+        "photo1.jpg", df, base_config,
+        _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+    )
+    assert result.outcome == Outcome.REPEAT

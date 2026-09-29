@@ -6,6 +6,8 @@ from .policies import (
     DuplicateDecision,
     DuplicatePolicy,
     MissingDigitRecoveryPolicy,
+    ProcessedPhotoDecision,
+    ProcessedPhotoPolicy,
     RecoveryDecision,
 )
 
@@ -19,5 +21,7 @@ __all__ = [
     "DuplicateDecision",
     "DuplicatePolicy",
     "MissingDigitRecoveryPolicy",
+    "ProcessedPhotoDecision",
+    "ProcessedPhotoPolicy",
     "RecoveryDecision",
 ]

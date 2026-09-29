@@ -147,21 +147,28 @@ class DuplicateDecision:
 
 class DuplicatePolicy:
     """
-    Порядок проверок ФИКСИРОВАН докс/MIGRATION_TZ.md (раздел 2, кейсы 5-8) и
-    не подлежит изменению при рефакторинге:
+    Проверки по лицевому счёту (вызывается на шаге 4 process_photo, когда
+    серийник уже найден в таблице):
 
-      1. фото уже есть в логе                              → REPEAT
-      2. этот account_id уже обработан в текущем прогоне    → REPEAT
-      3. в таблице уже стоит показание:
-         3a. и это pre_existing запись (инициализация из таблицы) → REPEAT
-         3b. а лога для неё нет                                    → SUSPICIOUS
+      1. этот account_id уже обработан в текущем прогоне    → REPEAT
+      2. в таблице уже стоит показание:
+         2a. и это pre_existing запись (инициализация из таблицы) → REPEAT
+         2b. в логе есть PLUS/MINUS по этому счёту (auto или manual,
+             например по другому фото того же счётчика)          → REPEAT
+         2c. ни одна строка лога его не объясняет                 → SUSPICIOUS
              (рассинхронизация таблицы и лога — показания НЕ трогаем)
-      4. иначе — не дубль, идём читать показания
+      3. иначе — не дубль, идём читать показания
+
+    Проверка "это фото уже в логе" отсюда вынесена в ProcessedPhotoPolicy
+    (шаг 0, до запуска моделей) — решение владельца 2026-09-29, вариант Г,
+    см. docs/MIGRATION_STATUS.md. Пункт 2b добавлен тогда же: без него фото,
+    которое перечитывается после авто-ошибки, получало бы ложный SUSPICIOUS,
+    если счётчик уже прочитан по другому фото.
 
     Перенесено из reader.py:process_photo, Шаг 4, включая нормализацию
     account_id через int(float(...)) (pandas читает числовые колонки как
     float → "1300000013.0" вместо "1300000013").
-    Golden tests: case5, case6, case7, case8.
+    Golden tests: case6, case7, case8, case24.
     """
 
     @staticmethod
@@ -174,16 +181,11 @@ class DuplicatePolicy:
 
     def decide(
         self,
-        photo_filename: str,
         account_id: str,
         table_new_reading_filled: bool,
-        log_filenames: set,
         processed_accounts: set,
         log_rows: list,
     ) -> DuplicateDecision:
-        if photo_filename in log_filenames:
-            return DuplicateDecision(Outcome.REPEAT, f"already in log: {photo_filename}")
-
         if account_id in processed_accounts:
             return DuplicateDecision(
                 Outcome.REPEAT, f"duplicate in current run: account={account_id}"
@@ -203,8 +205,77 @@ class DuplicatePolicy:
                 Outcome.REPEAT, f"pre-existing entry in table (account={account_id})"
             )
 
+        has_reading_in_log = any(
+            r.get("outcome") in ("PLUS", "MINUS")
+            and self.normalize_account_id(str(r.get("account_id", ""))) == account_norm
+            for r in log_rows
+        )
+        if has_reading_in_log:
+            return DuplicateDecision(
+                Outcome.REPEAT, f"account already has reading in log (account={account_id})"
+            )
+
         return DuplicateDecision(
             Outcome.SUSPICIOUS,
             "аномалия: данные в таблице есть, фото не найдено в логе — "
             "возможна рассинхронизация",
         )
+
+
+# ─── Фото уже обрабатывалось? (шаг 0, вариант Г) ─────────────────────────────
+
+@dataclass
+class ProcessedPhotoDecision:
+    """skip=True — фото уже разобрано, сразу REPEAT, модели не запускаются.
+    row — строка лога, по которой принято решение (для имени файла и счёта)."""
+    skip: bool
+    reason: Optional[str] = None
+    row: Optional[dict] = None
+
+
+class ProcessedPhotoPolicy:
+    """
+    Нужно ли обрабатывать фото, которое уже встречалось в логе.
+    Решение владельца 2026-09-29 (вариант Г, docs/MIGRATION_STATUS.md):
+
+      - в логе нет строк с этим original_filename          → обрабатываем
+      - есть строка source="manual" (оператор разобрал фото
+        в program2.py: PLUS/MINUS/REPEAT/UNREADABLE/NOT_IN_DB) → REPEAT
+      - есть auto-строка с исходом PLUS/MINUS/REPEAT        → REPEAT
+      - есть только auto-строки с ошибками (NO_METER,
+        NO_SERIAL, SERIAL_LOW_CONF, SERIAL_NOT_FOUND,
+        DIGITS_ERROR, SUSPICIOUS)                            → обрабатываем заново
+
+    Зачем: разобранное оператором фото не должно снова попадать в question/
+    (иначе его обработают второй раз), а неразобранная авто-ошибка может
+    прочитаться, если модели стали лучше.
+
+    auto-REPEAT считается завершённым: повторная обработка такого фото
+    (например, второго фото того же счётчика) ничего не даёт и приводила бы
+    к ложной "рассинхронизации".
+
+    Идентичность фото — только имя файла (original_filename), как и раньше.
+    Два разных фото с одинаковым именем в разных подпапках для лога
+    неразличимы — см. "Найденные баги" в MIGRATION_STATUS.md.
+
+    Golden tests: case5, case20-case23, case25.
+    """
+
+    DONE_OUTCOMES = ("PLUS", "MINUS", "REPEAT")
+
+    def decide(self, photo_filename: str, log_rows: list) -> ProcessedPhotoDecision:
+        rows = [r for r in log_rows if r.get("original_filename") == photo_filename]
+        if not rows:
+            return ProcessedPhotoDecision(skip=False)
+
+        manual = [r for r in rows if r.get("source") == "manual"]
+        if manual:
+            return ProcessedPhotoDecision(
+                True, f"already in log: {photo_filename} (handled manually)", manual[-1]
+            )
+
+        done = [r for r in rows if r.get("outcome") in self.DONE_OUTCOMES]
+        if done:
+            return ProcessedPhotoDecision(True, f"already in log: {photo_filename}", done[-1])
+
+        return ProcessedPhotoDecision(skip=False)
