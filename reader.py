@@ -628,7 +628,8 @@ def process_photo(
     # сразу REPEAT; фото только с авто-ошибками в логе обрабатывается заново
     # (ProcessedPhotoPolicy, решение владельца 2026-09-29, вариант Г).
     _seen = _processed_photo_policy.decide(
-        Path(photo_path).name, getattr(config, "_log_rows_cache", []), photo_hash
+        Path(photo_path).name, getattr(config, "_log_rows_cache", []), photo_hash,
+        hashes_in_run=frozenset(getattr(config, "_processed_hashes_cache", ())),
     )
     if _seen.skip:
         row = _seen.row or {}
@@ -1069,6 +1070,7 @@ def run_pipeline(config: PipelineConfig) -> None:
     config._log_filenames_cache      = _log_filenames(log_rows)
     config._log_rows_cache           = log_rows   # нужен для проверки pre_existing
     config._processed_accounts_cache = set()       # account_id обработанных в этом прогоне
+    config._processed_hashes_cache   = set()       # отпечатки фото, обработанных в этом прогоне
     log.info(f"Processing log: {log_path} ({len(log_rows)} записей)")
 
     log.info("Загружаем модели...")
@@ -1181,6 +1183,7 @@ def run_pipeline(config: PipelineConfig) -> None:
             config._log_rows_cache.append(log_row)
             if result.account_id:
                 config._processed_accounts_cache.add(result.account_id)
+            config._processed_hashes_cache.add(photo_hash)
 
             # Промежуточное сохранение таблицы и лога каждые 50 фото
             if db_updated and i % 50 == 0:

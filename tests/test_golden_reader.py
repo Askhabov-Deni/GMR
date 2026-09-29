@@ -441,3 +441,50 @@ def test_case28_legacy_row_without_hash_matches_by_name(base_config):
         photo_hash="cccc",
     )
     assert result.outcome == Outcome.REPEAT
+
+
+# ─── 29-30: побайтная копия файла в текущем прогоне ───────────────────────────
+# Решение владельца 2026-09-29: копия уже обработанного в ЭТОМ прогоне файла —
+# сразу REPEAT при любом исходе первой копии. Между прогонами — правило Г.
+
+def test_case29_copy_in_current_run_is_repeat_even_after_error(base_config):
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""}]
+    base_config._processed_hashes_cache = {"aaaa"}
+    result = reader.process_photo(
+        "copy.jpg", df, base_config,
+        _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+        photo_hash="aaaa",
+    )
+    assert result.outcome == Outcome.REPEAT
+    assert "duplicate file in current run" in result.error_detail
+    assert result.new_photo_name == "copy.jpg"
+
+
+def test_case30_same_error_from_previous_run_is_reprocessed(base_config):
+    # та же строка лога, но отпечаток НЕ из этого прогона -> правило Г, перечитываем
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [_hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""}]
+    base_config._processed_hashes_cache = set()
+    result = reader.process_photo(
+        "copy.jpg", df, base_config, FakeMeterDetector([]), FakeDigitDetector([]),
+        FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95), photo_hash="aaaa",
+    )
+    assert result.outcome == Outcome.NO_METER
+
+
+def test_case31_copy_repeat_rows_do_not_block_retry(base_config):
+    # в логе: оригинал NO_METER + его копия REPEAT ("duplicate file in current run")
+    # из прошлого прогона. Строка копии не считается "разобрано" -> перечитываем.
+    df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
+    base_config._log_rows_cache = [
+        _hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""},
+        _hashed_row("copy.jpg", "REPEAT", "aaaa") | {"account_id": "",
+            "notes": "duplicate file in current run: copy.jpg"},
+    ]
+    base_config._processed_hashes_cache = set()
+    result = reader.process_photo(
+        "first.jpg", df, base_config, FakeMeterDetector([]), FakeDigitDetector([]),
+        FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95), photo_hash="aaaa",
+    )
+    assert result.outcome == Outcome.NO_METER

@@ -263,10 +263,15 @@ class ProcessedPhotoPolicy:
         нашёл исходную строку) → совпадение по original_filename, как раньше;
       - отпечаток фото неизвестен (photo_hash=None) → по имени для всех строк.
 
-    Golden tests: case5, case20-case23, case25-case28.
+    Golden tests: case5, case20-case23, case25-case30.
     """
 
     DONE_OUTCOMES = ("PLUS", "MINUS", "REPEAT")
+    # Пометка (notes / error_detail) строки-копии. Такая строка REPEAT ничего
+    # не говорит о фото — она повторяет статус первой копии, поэтому в
+    # решении "разобрано или нет" не участвует: иначе REPEAT копий навсегда
+    # закрыл бы перечитывание оригинала с авто-ошибкой (правило Г).
+    COPY_IN_RUN_NOTE = "duplicate file in current run"
 
     @staticmethod
     def row_matches(row: dict, photo_filename: str, photo_hash: Optional[str]) -> bool:
@@ -276,9 +281,27 @@ class ProcessedPhotoPolicy:
         return row.get("original_filename") == photo_filename
 
     def decide(
-        self, photo_filename: str, log_rows: list, photo_hash: Optional[str] = None
+        self,
+        photo_filename: str,
+        log_rows: list,
+        photo_hash: Optional[str] = None,
+        hashes_in_run: frozenset = frozenset(),
     ) -> ProcessedPhotoDecision:
         rows = [r for r in log_rows if self.row_matches(r, photo_filename, photo_hash)]
+
+        # Побайтная копия файла, уже обработанного В ЭТОМ прогоне, → REPEAT
+        # при любом исходе первой копии: та же модель на тех же байтах даст
+        # тот же результат, а вторая копия ошибки легла бы оператору в
+        # question/ второй раз (решение владельца 2026-09-29; в реальных
+        # данных 26 групп копий, 4 лишних фото в question/). Правило Г
+        # (перечитывать авто-ошибки) действует между прогонами, не внутри.
+        if photo_hash and photo_hash in hashes_in_run:
+            return ProcessedPhotoDecision(
+                True, f"{self.COPY_IN_RUN_NOTE}: {photo_filename}",
+                rows[-1] if rows else None,
+            )
+
+        rows = [r for r in rows if not (r.get("notes") or "").startswith(self.COPY_IN_RUN_NOTE)]
         if not rows:
             return ProcessedPhotoDecision(skip=False)
 

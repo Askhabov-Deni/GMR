@@ -109,6 +109,8 @@ class _Meter:
     def process_image(self, img_path, save_crops=False, max_per_class=1, straighten=None):
         _Meter.calls += 1
         k = _color_of(cv2.imread(img_path))
+        if k not in _BY_COLOR:          # цвет 3 — счётчика на фото нет
+            return []
         return [
             {"class": "gas_meter", "conf": 0.95, "angle": 0.0, "bbox": (0, 0, 200, 40),
              "crop": np.full((40, 200, 3), k, dtype=np.uint8), "path": None},
@@ -234,3 +236,38 @@ def test_program2_digits_error_file_renamed_to_account(tmp_path):
     program2.MainWindow.append_log(app, {c: "" for c in LOG_COLUMNS} | {
         "original_filename": "A-1.jpeg", "outcome": "PLUS", "source": "manual"})
     assert app.log_rows[-1]["photo_hash"] == "h1"
+
+
+
+# ─── 5. Побайтные копии в одном прогоне ──────────────────────────────────────
+# В реальных данных владельца 26 групп копий (одно фото переслано 2-4 раза);
+# 4 лишние копии с ошибкой ложились оператору в question/ второй раз.
+
+def test_copies_in_one_run_reach_question_once(tmp_path, models):
+    inp = tmp_path / "input"
+    (inp / "Аюб").mkdir(parents=True)
+    (inp / "Сулиман").mkdir(parents=True)
+    cv2.imwrite(str(inp / "Аюб" / "a.jpg"), _img(3))                 # NO_METER
+    data = (inp / "Аюб" / "a.jpg").read_bytes()
+    (inp / "Аюб" / "b (1).jpg").write_bytes(data)                    # копия в той же папке
+    (inp / "Сулиман" / "c.jpg").write_bytes(data)                    # копия в другой подпапке
+    table = _table(tmp_path)
+
+    rows = _run(tmp_path, inp, table)
+
+    assert [(r["source_folder"], r["original_filename"], r["outcome"]) for r in rows] == [
+        ("Аюб", "a.jpg", "NO_METER"),
+        ("Аюб", "b (1).jpg", "REPEAT"),
+        ("Сулиман", "c.jpg", "REPEAT"),
+    ]
+    assert all("duplicate file in current run" in r["notes"] for r in rows[1:])
+    assert _Meter.calls == 1
+    in_question = [p for p in (tmp_path / "out").rglob("*.jpg") if "question" in p.parts]
+    assert len(in_question) == 1
+
+    # следующий прогон: первая копия перечитывается (правило Г), остальные — нет
+    import shutil
+    shutil.rmtree(tmp_path / "out")
+    rows = _run(tmp_path, inp, table)[3:]
+    assert [r["outcome"] for r in rows] == ["NO_METER", "REPEAT", "REPEAT"]
+    assert _Meter.calls == 2
