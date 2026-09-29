@@ -1,9 +1,10 @@
 # GMR Migration — статус
 
-Текущая фаза: 3 (ML Interfaces) — НЕ НАЧАТА.
-Фазы 0–2b закрыты по критериям ТЗ. Вне фаз, решениями владельца, сделаны и
+Текущая фаза: 4 (Model migration) — НЕ НАЧАТА, ждёт подтверждения владельца.
+Фазы 0–3 закрыты по критериям ТЗ (Фаза 3 — проверена у владельца 2026-09-29:
+тесты 76/76, прогон на 1111 фото совпал с прогнозом, program2.py работает). Вне фаз, решениями владельца, сделаны и
 проверены на реальных фото: вариант Г, идентичность фото (отпечаток +
-подпапка), копии в одном прогоне. Тесты: 58/58. Перед началом работы прочитай
+подпапка), копии в одном прогоне. Перед началом работы прочитай
 раздел «Как мы работаем» в конце файла.
 Фаза 2a закрыта: подтверждена на свежем клоне с GitHub (коммит 92199d2, 19/19).
 
@@ -224,6 +225,112 @@
 Когда (и если) источник истины переключат на SQLite, этот раздел нужно
 будет переписать: откат тогда потребует выгрузки SQLite обратно в CSV.
 
+## Фаза 3 — ML Interfaces (2026-09-29)
+- [x] Контракты моделей — `src/gmr/domain/ml.py` (typing.Protocol):
+      `MeterDetector.detect(photo_path)`, `DigitDetector.detect(meter_crop)`,
+      `SerialRecognizer.recognize(crop) -> SerialPrediction(text, confidence, details)`,
+      `DigitRecognizer.recognize(crop) -> DigitPrediction(digit: str, confidence)`.
+      Детекции остались dict'ами в формате YOLOInferer (формат не менялся).
+      Без torch/cv2/numpy.
+- [x] Адаптеры — `src/gmr/ml/adapters.py`: `YoloMeterDetector`,
+      `YoloDigitDetector`, `CrnnSerialRecognizer`, `CnnDigitRecognizer`. Зовут
+      модели ровно с теми аргументами, что reader.py до Фазы 3
+      (`process_image(path, save_crops=False)`,
+      `process_array(crop, save_crops=False, max_per_class=5)`, `predict`,
+      `predict_with_details`). Сами `YOLOInferer/CNNInferer/CRNNInferer` не
+      менялись ни на строку.
+- [x] Загрузка моделей — одно место, `src/gmr/ml/loader.py::load_models(config,
+      device, resolve_path)`. Раньше тот же код был трижды: `reader.run_pipeline`,
+      `reader.test_one`, `program2.ModelBundle`. Параметры те же: детектор
+      счётчика — `straighten` по умолчанию (True), детектор цифр —
+      `straighten=False`; пороги `meter_conf_thresh`/`digit_detect_conf_thresh`.
+      Отдельный тест фиксирует и параметры, и то, что дефолт
+      `YOLOInferer(straighten=True)` не поменялся.
+- [x] Общий сервис распознавания — `src/gmr/application/recognition.py`:
+      `read_meter_digits` (тело `reader._read_meter_digits` перенесено без
+      изменений логики, модели зовутся через контракты), `find_detection`
+      (бывший `_find_crop_entry`), `recognize_photo` (шаги, которые
+      `program2.ModelBundle.run_on_photo` раньше повторял сам),
+      `digit_crops_by_position`. Слой не импортирует torch/cv2/pandas.
+- [x] `reader.process_photo` принимает модели как контракты (порядок
+      параметров тот же; имена `digit_ocr`/`serial_ocr` →
+      `digit_recognizer`/`serial_recognizer`). `reader.py` больше не импортирует
+      torch и `models.*`.
+- [x] `program2.py`: **не импортирует `_read_meter_digits` и `_find_crop_entry`**
+      (критерий ТЗ), не импортирует `models.*` и torch; `ModelBundle` грузит
+      модели через `load_models`, `run_on_photo` зовёт `recognize_photo` —
+      тот же сервис, что и `reader.process_photo`. Словарь, который
+      `run_on_photo` отдаёт окну, — прежний (те же ключи и значения).
+      Убраны ставшие ненужными `sys.path.insert` для `models/crnn`, `models/cnn`.
+- [x] Legacy оставлен (правило 3 ТЗ): `reader._read_meter_digits` — тонкая
+      обёртка (сырые модели → адаптеры → сервис → прежний кортеж),
+      `reader._find_crop_entry = find_detection`. Удалить в Фазе 6.
+- [x] Тесты 76/76 (58 прежних + 18 новых в `tests/test_ml_interfaces.py`).
+      Ожидания прежних тестов не менялись, поменялась только подстановка
+      fake-моделей: golden tests оборачивают fake теми же адаптерами, что и
+      настоящие модели (`tests/_fixtures.process_photo`), интеграционные
+      подменяют `YOLOInferer/CNNInferer/CRNNInferer` в `src.gmr.ml.loader`
+      вместо `reader`. Новые тесты: аргументы вызова моделей в адаптерах,
+      параметры `load_models`, `run_on_photo` на 5 сценариях (всё найдено /
+      ничего / нет серийника / нет счётчика / исключение модели), совпадение
+      нового сервиса со старой обёрткой, границы слоёв (AST-проверка
+      импортов `program2.py`, `domain/`, `application/`, `ml/adapters.py`).
+- [x] Мутационно 8/8: убрать `straighten=False` в загрузчике, `max_per_class`
+      5→4, не приводить цифру к str, сломать прощение хвостовых цифр в
+      сервисе, читать цифры при найденном серийнике вместо счётчика, резать
+      кропы цифр не из того кропа в program2, подменить уверенность
+      серийника, обрезать детекции в process_photo — всё ловится.
+- [x] Смоук на настоящих классах `YOLOInferer/CNNInferer/CRNNInferer` со
+      случайными весами (песочница, Python 3.12, torch 2.14.0): `load_models`
+      → `process_photo` и `program2.ModelBundle(...).run_on_photo` отрабатывают
+      без ошибок, у детектора счётчика `straighten=True`, у цифр — `False`.
+      Качество распознавания так проверить нельзя — только стыковку.
+- [x] **Проверка у владельца на реальных фото** (обязательна по gate ТЗ:
+      «рабочий путь на реальном фото не сломан»):
+      1. `python -m pytest tests/ -v` → 76 passed.
+      2. Прогон `reader.py` на той же папке `data_for_reader_test/` с тем же
+         логом. Прогноз: исходы как в прошлом прогоне
+         (`run_2026-09-29_copies_rule.txt`): REPEAT 830, SERIAL_NOT_FOUND 150,
+         NO_SERIAL 81, NO_METER 44, SERIAL_LOW_CONF 6 — если после того прогона
+         лог и таблицу не трогали (в т.ч. в program2.py). Если трогали —
+         прислать отчёт и лог, пересчитаю прогноз.
+      3. `program2.py`: открыть 2–3 фото из `question/` — серийник и цифры
+         подставляются как раньше, «Нечитаемо»/сохранение работают.
+      Результат (2026-09-29): тесты 76/76; прогноз совпал до единицы —
+      REPEAT 830, SERIAL_NOT_FOUND 150, NO_SERIAL 81, NO_METER 44,
+      SERIAL_LOW_CONF 6; по папкам question/ как в прошлом прогоне (Сулиман С
+      29, Фатима Я 9). Отчёт — `docs/audit/run_2026-09-29_phase3.txt`.
+      program2.py: серийник и цифры подставляются.
+      Заметка: program2.py показывает «0 из 0», если указать общую папку
+      `output\` — в режиме подпапок нужно указывать папку оператора
+      (`output\<оператор>`), так было и до Фазы 3. Показ всех операторов
+      сразу — новое поведение, решение владельца (кандидат в Фазу 5).
+
+### Решения Фазы 3
+- Контракты — в `domain/`, адаптеры и загрузчик — в `src/gmr/ml/`, сервис —
+  в `src/gmr/application/`. `import src.gmr.ml` не тянет torch (он только в
+  `loader.py`), поэтому адаптеры и сервис тестируются без ML-библиотек.
+- `process_photo` остался в `reader.py`: вместе с моделями он решает по
+  таблице (pandas) и логу — перенос в application-слой вместе с разбором
+  program2 логичнее в Фазе 5. Задача Фазы 3 — чтобы обе точки входа звали
+  модели одним и тем же кодом, это сделано.
+- Пороги уверенности не трогал: `MIN_CONFIDENCE=0.8` в CNN/CRNN-CLI против
+  прод-0.6 (находка 1 раздела 3bis) — по ТЗ закрывается в Фазе 4.
+- Единственное отличие `run_on_photo`, которое можно заметить: если модель
+  **упала с исключением** (не «ничего не нашла», а именно ошибка), раньше
+  кроп серийника мог успеть попасть в результат до падения, теперь при
+  ошибке результат содержит только текст ошибки. Для оператора то же
+  «⚠ Ошибка модели», разница только в том, сохранится ли по такому фото
+  тихая CRNN-разметка. Сочтено несущественным; если важно — верну.
+- `program2.py` по-прежнему импортирует из `reader.py` другие приватные
+  функции (`_load_table/_save_table`, `_load_log/_save_log/_append_log_row/
+  _log_path`, `_normalize_serial`, `_draw_annotation`, `_LOG_COLUMNS`) — это не
+  модели и не критерий Фазы 3; разбор — Фаза 5 (application-сервисы review/
+  feedback).
+- Окружение агента: `download.pytorch.org` закрыт политикой сети песочницы,
+  torch ставился с PyPI (`requirements-dev.txt` в venv на Python 3.12) —
+  все пины из `requirements.txt` установились как есть.
+
 ## Изменение поведения: повторная обработка фото (вариант Г, 2026-09-29)
 Не рефакторинг, а решение владельца. Сделано отдельным коммитом вне фаз.
 
@@ -442,7 +549,12 @@
 быстро разбирается; объяснять суть и последствия, без лишнего жаргона.
 Команды для PowerShell давать готовыми к копированию.
 
-**Что ждёт в Фазе 3** (см. ТЗ, раздел 4 и находки 1–2 в `docs/audit/utils.md`):
+**Доставка в сессии Фазы 3 (2026-09-29).** Как и раньше, патчем: push в
+ветку `claude/zealous-davinci-6vqq9u` получил 403 (нет доступа к репозиторию).
+Патч `phase3_ml_interfaces.patch` собран от `d6b4246` (последний `main`) и
+проверен на свежей копии: `git apply --check`, `git apply`, 76/76.
+
+**Что было перед Фазой 3** (исторически; сделано — см. раздел «Фаза 3»):
 - `program2.py` импортирует из `reader.py` приватные `_read_meter_digits`,
   `_find_crop_entry`, `_load_table/_save_table`, `_load_log/_save_log/
   _append_log_row/_log_path`, `_normalize_serial`, `_draw_annotation`,
@@ -456,3 +568,9 @@
   (`tests/test_shadow_run_pipeline.py`, `tests/test_photo_identity.py`) —
   при вводе интерфейсов это место подмены изменится, тесты придётся
   перенастроить, но их ожидания менять нельзя.
+  [Фаза 3: подмена теперь в `src.gmr.ml.loader`, ожидания не менялись.]
+
+**Что ждёт в Фазе 4** (ТЗ, раздел 4): перенос `models/*` в `ml/tasks/...` по
+одной модели за коммит; импорты `models.*` теперь только в
+`src/gmr/ml/loader.py` (и в самих `models/`), так что при переносе править
+придётся в одном месте. Плюс находки 1, 3, 5 из раздела 3bis ТЗ.

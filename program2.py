@@ -28,18 +28,11 @@ from typing import Optional
 import cv2
 import numpy as np
 import pandas as pd
-import torch
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
 
-# ── Добавляем пути моделей ────────────────────────────────────────────────────
 _BASE = Path(__file__).parent
-sys.path.insert(0, str(_BASE / "models" / "crnn"))
-sys.path.insert(0, str(_BASE / "models" / "cnn"))
-from models.crnn.infer_crnn import CRNNInferer
-from models.yolo_all_detect.infer_yolo import YOLOInferer
-from models.cnn.infer_cnn import CNNInferer
 
 # ── Импорт общих утилит из reader.py ──────────────────────────────────────────
 sys.path.insert(0, str(_BASE))
@@ -50,12 +43,13 @@ from reader import (
     _load_table, _save_table,
     _load_log, _save_log, _append_log_row, _log_path,
     _normalize_serial,
-    _find_crop_entry,
-    _read_meter_digits,
     _draw_annotation,
     _LOG_COLUMNS,
 )
 from src.gmr.domain import find_auto_row_for_output_file
+# Модели — через контракты и общий с reader.py сервис распознавания (Фаза 3)
+from src.gmr.application import digit_crops_by_position, recognize_photo
+from src.gmr.ml.loader import default_device, load_models
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger("program2")
@@ -229,18 +223,9 @@ class ModelBundle:
     """Все модели, загруженные один раз при старте."""
     def __init__(self, config: PipelineConfig):
         self.config = config
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = default_device()
         log.info(f"Загружаем модели на {device}...")
-        self.meter_detector = YOLOInferer(
-            _abs_model(config.meter_detect_model), conf_thresh=config.meter_conf_thresh
-        )
-        self.digit_detector = YOLOInferer(
-            _abs_model(config.digit_detect_model),
-            conf_thresh=config.digit_detect_conf_thresh,
-            straighten=False,
-        )
-        self.digit_ocr  = CNNInferer(_abs_model(config.digit_ocr_model), device=device)
-        self.serial_ocr = CRNNInferer(_abs_model(config.serial_ocr_model), device=device)
+        self.models = load_models(config, device=device, resolve_path=_abs_model)
         log.info("Модели загружены ✓")
 
     def run_on_photo(self, photo_path: str) -> dict:
@@ -248,7 +233,6 @@ class ModelBundle:
         Запускает все модели на фото. Возвращает dict с результатами.
         Вызывается из фонового потока.
         """
-        cfg = self.config
         result = {
             "serial_text": None,
             "serial_conf": None,
@@ -259,46 +243,27 @@ class ModelBundle:
             "error": None,
         }
         try:
-            crops = self.meter_detector.process_image(photo_path, save_crops=False)
-            if not crops:
+            rec = recognize_photo(self.models, photo_path, self.config)
+            if not rec.detections:
                 result["error"] = "YOLO: ничего не найдено"
                 return result
 
-            meter_entry  = _find_crop_entry(crops, "gas_meter")
-            serial_entry = _find_crop_entry(crops, "serial_number")
-
             # Серийник
-            if serial_entry is not None:
-                result["serial_crop"] = serial_entry["crop"]
-                sr = self.serial_ocr.predict_with_details(serial_entry["crop"])
-                result["serial_text"] = sr["text"]
-                result["serial_conf"] = sr["avg_confidence"]
+            if rec.serial is not None:
+                result["serial_crop"] = rec.serial["crop"]
+                result["serial_text"] = rec.serial_prediction.text
+                result["serial_conf"] = rec.serial_prediction.confidence
 
             # Цифры
-            if meter_entry is not None:
-                meter_crop = meter_entry["crop"]
-                reading, reading_str, err, digit_results, digit_bboxes = _read_meter_digits(
-                    self.digit_detector, self.digit_ocr,
-                    meter_crop,
-                    cfg.digit_conf_thresh,
-                    cfg.expected_digits,
-                    ignore_last_digits=cfg.ignore_last_digits,
-                    missing_placeholder=cfg.missing_digit_placeholder,
-                    forgiven_placeholder=cfg.forgiven_digit_placeholder,
-                )
-                result["reading_str"]  = reading_str
-                result["digit_preds"]  = digit_results
+            if rec.digits is not None:
+                result["reading_str"]  = rec.digits.reading_str
+                result["digit_preds"]  = rec.digits.digit_results
 
                 # Сохраняем кропы цифр для разметки
-                if digit_bboxes and digit_results:
-                    crops_by_pos = []
-                    for bbox in digit_bboxes:
-                        if bbox is None:
-                            crops_by_pos.append(None)
-                        else:
-                            x1, y1, x2, y2 = bbox
-                            crops_by_pos.append(meter_crop[y1:y2, x1:x2].copy())
-                    result["digit_crops"] = crops_by_pos
+                if rec.digits.digit_bboxes and rec.digits.digit_results:
+                    result["digit_crops"] = digit_crops_by_position(
+                        rec.meter["crop"], rec.digits.digit_bboxes
+                    )
 
         except Exception as e:
             result["error"] = str(e)

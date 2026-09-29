@@ -21,6 +21,7 @@ import numpy as np
 import pytest
 
 import reader
+from src.gmr.ml import loader
 from src.gmr.storage import LOG_COLUMNS, CsvLogStore, SqliteLogStore, photo_fingerprint
 
 OLD_COLUMNS = LOG_COLUMNS[:16]   # формат лога до 2026-09-29
@@ -141,11 +142,11 @@ class _SerialOCR:
 @pytest.fixture
 def models(monkeypatch):
     _Meter.calls = 0
-    monkeypatch.setattr(reader, "YOLOInferer",
+    monkeypatch.setattr(loader, "YOLOInferer",
                         lambda model, conf_thresh=0.8, straighten=True, output_dir=None:
                         _Digits() if straighten is False else _Meter())
-    monkeypatch.setattr(reader, "CNNInferer", lambda *a, **k: _DigitOCR())
-    monkeypatch.setattr(reader, "CRNNInferer", lambda *a, **k: _SerialOCR())
+    monkeypatch.setattr(loader, "CNNInferer", lambda *a, **k: _DigitOCR())
+    monkeypatch.setattr(loader, "CRNNInferer", lambda *a, **k: _SerialOCR())
 
 
 def _table(root):

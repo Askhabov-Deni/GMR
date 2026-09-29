@@ -18,6 +18,9 @@ import numpy as np
 import pandas as pd
 
 import reader  # noqa: E402  (репозиторий уже в sys.path благодаря корневому conftest.py)
+from src.gmr.ml import (
+    CnnDigitRecognizer, CrnnSerialRecognizer, YoloDigitDetector, YoloMeterDetector,
+)
 
 
 # ─── Fake-детекторы / OCR (реализуют интерфейс реальных Inferer-классов) ─────
@@ -67,6 +70,22 @@ class FakeSerialOCR:
 
     def predict_with_details(self, image_input):
         return {"text": self._text, "avg_confidence": self._avg_confidence, "details": []}
+
+
+def process_photo(photo_path, df, config, meter_detector, digit_detector,
+                  digit_ocr, serial_ocr, **kwargs):
+    """
+    reader.process_photo с fake-моделями в интерфейсе YOLOInferer/CNNInferer/
+    CRNNInferer. С Фазы 3 process_photo принимает модели в виде контрактов
+    (src/gmr/domain/ml.py) — fake оборачиваются теми же адаптерами, что и
+    реальные модели в src/gmr/ml/loader.py, так что адаптеры тоже под тестом.
+    """
+    return reader.process_photo(
+        photo_path, df, config,
+        YoloMeterDetector(meter_detector), YoloDigitDetector(digit_detector),
+        CnnDigitRecognizer(digit_ocr), CrnnSerialRecognizer(serial_ocr),
+        **kwargs,
+    )
 
 
 # ─── Вспомогательные билдеры данных ──────────────────────────────────────────

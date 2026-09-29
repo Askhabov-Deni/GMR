@@ -4,11 +4,11 @@ reader.py — главный пайплайн обработки фотогра�
 АРХИТЕКТУРА:
   process_photo(photo_path, df, config) -> PhotoResult
     │
-    ├── YOLOInferer (meter_detector)    → кроп gas_meter + кроп serial_numbers
-    ├── CRNNInferer (serial_ocr)        → текст серийного номера
+    ├── MeterDetector    (YOLO)         → кроп gas_meter + кроп serial_numbers
+    ├── SerialRecognizer (CRNN)         → текст серийного номера
     ├── lookup_in_table(serial, df)     → строка таблицы (лицевой ID, последние показания)
-    ├── YOLOInferer (digit_detector)    → bbox-ы цифр на кропе счётчика
-    ├── CNNInferer  (digit_ocr)         → класс каждой цифры → собираем число
+    ├── DigitDetector    (YOLO)         → bbox-ы цифр на кропе счётчика
+    ├── DigitRecognizer  (CNN)          → класс каждой цифры → собираем число
     └── decide_outcome(...)             → категория + действие (запись / папка)
 
 ПАПКИ-РЕЗУЛЬТАТЫ:
@@ -40,12 +40,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
-import torch
 import pandas as pd
-
-from models.crnn.infer_crnn import CRNNInferer
-from models.yolo_all_detect.infer_yolo import YOLOInferer
-from models.cnn.infer_cnn import CNNInferer
 
 from src.gmr.domain import (
     PipelineConfig,
@@ -53,23 +48,33 @@ from src.gmr.domain import (
     OUTCOME_FOLDER,
     PhotoResult,
     DeltaThresholdPolicy,
-    DigitForgivenessPolicy,
     DuplicatePolicy,
-    MissingDigitRecoveryPolicy,
     ProcessedPhotoPolicy,
+    DigitDetector,
+    DigitRecognizer,
+    MeterDetector,
+    SerialRecognizer,
 )
+from src.gmr.application import (
+    RecognitionModels,
+    find_detection,
+    read_meter_digits,
+    read_meter_digits_for_config,
+)
+from src.gmr.ml import (
+    CnnDigitRecognizer, YoloDigitDetector,
+)
+from src.gmr.ml.loader import default_device, load_models
 from src.gmr.storage import (
     LOG_COLUMNS, CsvLogStore, ShadowLogStore, SqliteLogStore, photo_fingerprint,
 )
 
-# reader.py продолжает быть единственным местом, где вызываются модели —
-# domain-слой (src/gmr/domain/) не знает ни про torch, ни про cv2, ни про
-# YOLOInferer/CNNInferer/CRNNInferer (Фаза 2a, docs/MIGRATION_TZ.md).
+# Модели вызываются только через контракты src/gmr/domain/ml.py (Фаза 3):
+# загрузка — src/gmr/ml/loader.py, чтение цифр — src/gmr/application/.
+# domain-слой не знает ни про torch, ни про cv2, ни про YOLO/CNN/CRNN.
 # PipelineConfig, Outcome, PhotoResult, OUTCOME_FOLDER реэкспортируются из
 # reader.py намеренно: program2.py импортирует их отсюда напрямую
 # (см. docs/MIGRATION_STATUS.md), это не трогаем в этой фазе.
-_recovery_policy    = MissingDigitRecoveryPolicy()
-_forgiveness_policy = DigitForgivenessPolicy()
 _delta_policy        = DeltaThresholdPolicy()
 _duplicate_policy    = DuplicatePolicy()
 _processed_photo_policy = ProcessedPhotoPolicy()
@@ -294,12 +299,8 @@ def _find_crop(crops: list[dict], class_name: str) -> Optional[np.ndarray]:
     return None
 
 
-def _find_crop_entry(crops: list[dict], class_name: str) -> Optional[dict]:
-    """Возвращает весь dict кропа (включая bbox), а не только crop."""
-    for c in crops:
-        if c["class"] == class_name:
-            return c
-    return None
+# Legacy-имя (Фаза 3): логика переехала в src.gmr.application.find_detection.
+_find_crop_entry = find_detection
 
 
 def _draw_annotation(img: np.ndarray, result: PhotoResult) -> None:
@@ -432,8 +433,8 @@ def _save_digit_debug(
 # ─── Чтение цифр счётчика ────────────────────────────────────────────────────
 
 def _read_meter_digits(
-    digit_detector: YOLOInferer,
-    digit_ocr: CNNInferer,
+    digit_detector,
+    digit_ocr,
     meter_crop: np.ndarray,
     conf_thresh: float,
     expected_digits: int,
@@ -442,124 +443,20 @@ def _read_meter_digits(
     forgiven_placeholder: str = "0",
 ) -> tuple[Optional[int], Optional[str], Optional[str], Optional[list], Optional[list]]:
     """
-    Прогоняет кроп счётчика через детектор цифр + CNN классификатор.
-
-    Возвращает кортеж:
-      (number, reading_str, error_msg, digit_results, digit_bboxes)
-
-    - number:         int   если все значимые цифры распознаны успешно, иначе None
-    - reading_str:    строка вида "56?76" — всегда заполняется при частичном/полном
-                      успехе (? на месте нераспознанных позиций), None только если
-                      детектор вернул ноль кропов
-    - error_msg:      описание ошибки или None при успехе
-    - digit_results:  список dict для каждой позиции (для debug), None при
-                      фатальной ошибке до классификации
-    - digit_bboxes:   список (x1,y1,x2,y2) в координатах кропа для каждой позиции
-                      (None для заглушек), None при фатальной ошибке
-
-    missing_placeholder  — символ/цифра для восстановленной пропущенной позиции
-    forgiven_placeholder — символ/цифра для прощённых хвостовых позиций
-
-    ignore_last_digits — сколько последних позиций прощаем при низком конфидансе.
-
-    При ровно 4 найденных цифрах пытается восстановить пропущенную позицию
-    (только если пропала 3-я, 4-я или 5-я цифра).
+    Legacy-обёртка (Фаза 3): принимает сырые YOLOInferer / CNNInferer, как до
+    Фазы 3, и возвращает кортеж
+      (number, reading_str, error_msg, digit_results, digit_bboxes).
+    Логика — src.gmr.application.read_meter_digits (описание полей там же,
+    в DigitReading). Новому коду вызывать её напрямую через контракты.
+    Удалить после того, как новая реализация отработает фазу (правило 3 ТЗ).
     """
-    digit_crops = digit_detector.process_array(meter_crop, save_crops=False, max_per_class=5)
-
-    if not digit_crops:
-        return None, None, "digit detector found nothing", None, None
-
-    digit_crops_sorted = sorted(digit_crops, key=lambda c: c["bbox"][0])
-    n = len(digit_crops_sorted)
-
-    if n == expected_digits:
-        pass  # всё хорошо
-
-    elif n == expected_digits - 1:
-        centers = [(c["bbox"][0] + c["bbox"][2]) // 2 for c in digit_crops_sorted]
-        decision = _recovery_policy.decide(centers, meter_crop.shape[1], expected_digits)
-
-        if decision.reason == "gap not found":
-            return None, None, f"expected {expected_digits} digits, got {n} (gap not found)", None, None
-
-        if decision.reason == "critical position":
-            return None, None, (
-                f"expected {expected_digits} digits, got {n} "
-                f"(missing digit at critical position {decision.missing_idx})"
-            ), None, None
-
-        digit_crops_sorted.insert(decision.missing_idx, None)  # None = заглушка
-
-    else:
-        return None, None, f"expected {expected_digits} digits, got {n}", None, None
-
-    # ── Классифицируем цифры ──────────────────────────────────────────────────
-    forgiven_positions = _forgiveness_policy.forgiven_positions(expected_digits, ignore_last_digits)
-
-    digits        = []
-    digit_results = []
-    digit_bboxes  = []   # (x1,y1,x2,y2) в координатах кропа, None для заглушек
-    has_error     = False
-
-    for pos, dc in enumerate(digit_crops_sorted):
-        if dc is None:
-            # Заглушка восстановленной позиции
-            digits.append(missing_placeholder)
-            digit_results.append({
-                "position":   pos,
-                "digit":      missing_placeholder,
-                "confidence": None,
-                "ok":         True,
-                "note":       "inserted placeholder",
-            })
-            digit_bboxes.append(None)
-            continue
-
-        pred = digit_ocr.predict(dc["crop"])
-        conf = pred["confidence"]
-        digit_char = str(pred["digit"])
-        ok = conf >= conf_thresh
-
-        if not ok and _forgiveness_policy.is_forgiven(pos, conf, conf_thresh, forgiven_positions):
-            digit_results.append({
-                "position":   pos,
-                "digit":      digit_char,
-                "confidence": round(float(conf), 4),
-                "ok":         False,
-                "note":       f"forgiven→{forgiven_placeholder}",
-            })
-            digits.append(forgiven_placeholder)
-        else:
-            digit_results.append({
-                "position":   pos,
-                "digit":      digit_char,
-                "confidence": round(float(conf), 4),
-                "ok":         ok,
-            })
-            if ok:
-                digits.append(digit_char)
-            else:
-                digits.append("?")
-                has_error = True
-
-        digit_bboxes.append(dc["bbox"])
-
-    reading_str = "".join(digits)
-
-    if has_error:
-        bad = [
-            f"pos{r['position']}(pred={r['digit']},conf={r['confidence']:.3f})"
-            for r in digit_results
-            if not r["ok"]
-            and r.get("note", "").startswith("forgiven") is False
-            and r.get("confidence") is not None
-        ]
-        error_msg = f"low conf digits: {', '.join(bad)}  →  '{reading_str}'"
-        return None, reading_str, error_msg, digit_results, digit_bboxes
-
-    number = int(reading_str)
-    return number, reading_str, None, digit_results, digit_bboxes
+    return read_meter_digits(
+        YoloDigitDetector(digit_detector), CnnDigitRecognizer(digit_ocr),
+        meter_crop, conf_thresh, expected_digits,
+        ignore_last_digits=ignore_last_digits,
+        missing_placeholder=missing_placeholder,
+        forgiven_placeholder=forgiven_placeholder,
+    ).as_tuple()
 
 
 def _digit_bboxes_to_orig(
@@ -607,10 +504,10 @@ def process_photo(
     photo_path: str,
     df: pd.DataFrame,
     config: PipelineConfig,
-    meter_detector: YOLOInferer,
-    digit_detector: YOLOInferer,
-    digit_ocr: CNNInferer,
-    serial_ocr: CRNNInferer,
+    meter_detector: MeterDetector,
+    digit_detector: DigitDetector,
+    digit_recognizer: DigitRecognizer,
+    serial_recognizer: SerialRecognizer,
     photo_hash: Optional[str] = None,
 ) -> PhotoResult:
     """
@@ -619,7 +516,16 @@ def process_photo(
 
     photo_hash — отпечаток содержимого фото (photo_fingerprint). Если задан,
     шаг 0 узнаёт фото в логе по нему, иначе по имени файла.
+
+    Модели — в виде контрактов src/gmr/domain/ml.py (Фаза 3); реальные
+    модели создаёт src.gmr.ml.loader.load_models.
     """
+    models = RecognitionModels(
+        meter_detector=meter_detector,
+        digit_detector=digit_detector,
+        digit_recognizer=digit_recognizer,
+        serial_recognizer=serial_recognizer,
+    )
     result = PhotoResult(photo_path=photo_path, outcome=Outcome.NO_METER)
     ext = Path(photo_path).suffix
 
@@ -641,14 +547,14 @@ def process_photo(
         return result
 
     # ── Шаг 1: детекция трёх классов ─────────────────────────────────────────
-    crops = meter_detector.process_image(photo_path, save_crops=False)
+    crops = meter_detector.detect(photo_path)
     if not crops:
         result.outcome = Outcome.NO_METER
         result.error_detail = "YOLO returned no crops"
         return result
 
-    meter_entry  = _find_crop_entry(crops, "gas_meter")
-    serial_entry = _find_crop_entry(crops, "serial_number")
+    meter_entry  = find_detection(crops, "gas_meter")
+    serial_entry = find_detection(crops, "serial_number")
 
     # Сохраняем все найденные детекции для отрисовки боксов
     result.meter_crops_raw = crops
@@ -668,9 +574,9 @@ def process_photo(
     meter_bbox  = meter_entry["bbox"]   # (x1,y1,x2,y2) в оригинале
 
     # ── Шаг 2: читаем серийный номер ─────────────────────────────────────────
-    serial_res  = serial_ocr.predict_with_details(serial_crop)
-    serial_text = serial_res["text"]
-    serial_conf = serial_res["avg_confidence"]
+    serial_res  = serial_recognizer.recognize(serial_crop)
+    serial_text = serial_res.text
+    serial_conf = serial_res.confidence
 
     result.serial_text = serial_text
     result.serial_conf = serial_conf
@@ -679,15 +585,7 @@ def process_photo(
         result.outcome = Outcome.SERIAL_LOW_CONF
         result.error_detail = f"serial conf={serial_conf:.3f} < {config.serial_conf_thresh}"
         # Читаем цифры для информативной аннотации
-        _r, _rs, _, _, _bboxes = _read_meter_digits(
-            digit_detector, digit_ocr,
-            meter_crop,
-            config.digit_conf_thresh,
-            config.expected_digits,
-            ignore_last_digits=config.ignore_last_digits,
-            missing_placeholder=config.missing_digit_placeholder,
-            forgiven_placeholder=config.forgiven_digit_placeholder,
-        )
+        _r, _rs, _, _, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
         result.reading_str = _rs
         result.reading     = _r
         if _bboxes is not None:
@@ -728,15 +626,7 @@ def process_photo(
             f"serial '{serial_text}' not in table "
             f"(tried: {', '.join(repr(c) for c in serial_candidates)})"
         )
-        _r, _rs, _, _, _bboxes = _read_meter_digits(
-            digit_detector, digit_ocr,
-            meter_crop,
-            config.digit_conf_thresh,
-            config.expected_digits,
-            ignore_last_digits=config.ignore_last_digits,
-            missing_placeholder=config.missing_digit_placeholder,
-            forgiven_placeholder=config.forgiven_digit_placeholder,
-        )
+        _r, _rs, _, _, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
         result.reading_str = _rs
         result.reading     = _r
         if _bboxes is not None:
@@ -792,14 +682,8 @@ def process_photo(
         return result
 
     # ── Шаг 5: читаем показания счётчика ─────────────────────────────────────
-    reading, reading_str, err, digit_results, digit_bboxes = _read_meter_digits(
-        digit_detector, digit_ocr,
-        meter_crop,
-        config.digit_conf_thresh,
-        config.expected_digits,
-        ignore_last_digits=config.ignore_last_digits,
-        missing_placeholder=config.missing_digit_placeholder,
-        forgiven_placeholder=config.forgiven_digit_placeholder,
+    reading, reading_str, err, digit_results, digit_bboxes = (
+        read_meter_digits_for_config(models, meter_crop, config).as_tuple()
     )
 
     result.reading_str = reading_str
@@ -822,7 +706,7 @@ def process_photo(
                 / "question/digits_error"
                 / account_id
             )
-            _raw_crops = digit_detector.process_array(meter_crop, save_crops=False, max_per_class=5)
+            _raw_crops = digit_detector.detect(meter_crop)
 
             if _raw_crops:
                 _sorted = sorted(_raw_crops, key=lambda c: c["bbox"][0])
@@ -860,32 +744,21 @@ def process_photo(
 def test_one(photo_path: str, config: PipelineConfig = None):
     """Быстрый тест одного фото — без таблицы, папок и перемещений."""
     config = config or PipelineConfig()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    models = load_models(config)
 
-    meter_detector = YOLOInferer(config.meter_detect_model, conf_thresh=config.meter_conf_thresh)
-    digit_detector = YOLOInferer(config.digit_detect_model, conf_thresh=config.digit_detect_conf_thresh, straighten=False)
-    digit_ocr      = CNNInferer(config.digit_ocr_model, device=device)
-    serial_ocr     = CRNNInferer(config.serial_ocr_model, device=device)
-
-    crops = meter_detector.process_image(photo_path, save_crops=False)
+    crops = models.meter_detector.detect(photo_path)
     print("Найденные классы:", [c['class'] for c in crops] if crops else "ничего")
 
-    meter_entry  = _find_crop_entry(crops, "gas_meter")
-    serial_entry = _find_crop_entry(crops, "serial_number")
+    meter_entry  = find_detection(crops, "gas_meter")
+    serial_entry = find_detection(crops, "serial_number")
 
     serial_crop = serial_entry["crop"] if serial_entry else None
-    serial_res  = serial_ocr.predict_with_details(serial_crop)
-    print(f"Серийник: '{serial_res['text']}'  conf={serial_res['avg_confidence']:.3f}")
+    serial_res  = models.serial_recognizer.recognize(serial_crop)
+    print(f"Серийник: '{serial_res.text}'  conf={serial_res.confidence:.3f}")
 
     meter_crop = meter_entry["crop"] if meter_entry else None
-    reading, reading_str, err, digit_results, digit_bboxes = _read_meter_digits(
-        digit_detector, digit_ocr,
-        meter_crop,
-        config.digit_conf_thresh,
-        config.expected_digits,
-        ignore_last_digits=config.ignore_last_digits,
-        missing_placeholder=config.missing_digit_placeholder,
-        forgiven_placeholder=config.forgiven_digit_placeholder,
+    reading, reading_str, err, digit_results, digit_bboxes = (
+        read_meter_digits_for_config(models, meter_crop, config).as_tuple()
     )
     print(f"Показания: {reading}  строка: {reading_str!r}  ошибка: {err or '—'}")
     if digit_results:
@@ -1074,13 +947,10 @@ def run_pipeline(config: PipelineConfig) -> None:
     log.info(f"Processing log: {log_path} ({len(log_rows)} записей)")
 
     log.info("Загружаем модели...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = default_device()
     log.info(f"Устройство: {device}")
 
-    meter_detector = YOLOInferer(config.meter_detect_model,  conf_thresh=config.meter_conf_thresh)
-    digit_detector = YOLOInferer(config.digit_detect_model,  conf_thresh=config.digit_detect_conf_thresh, straighten=False)
-    digit_ocr      = CNNInferer(config.digit_ocr_model,      device=device)
-    serial_ocr     = CRNNInferer(config.serial_ocr_model,    device=device)
+    models = load_models(config, device=device)
     log.info("Модели загружены ✓")
 
     if config.ignore_last_digits > 0:
@@ -1137,7 +1007,8 @@ def run_pipeline(config: PipelineConfig) -> None:
             photo_hash = photo_fingerprint(str(photo_path))
             result = process_photo(
                 str(photo_path), df, config,
-                meter_detector, digit_detector, digit_ocr, serial_ocr,
+                models.meter_detector, models.digit_detector,
+                models.digit_recognizer, models.serial_recognizer,
                 photo_hash=photo_hash,
             )
             stats[result.outcome] += 1

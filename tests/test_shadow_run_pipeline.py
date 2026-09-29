@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 
 import reader
+from src.gmr.ml import loader
 
 # имя фото -> (серийник, 5 цифр или None, есть ли счётчик на фото)
 _PHOTOS = {
@@ -86,9 +87,9 @@ class _SerialOCR:
 def fake_models(monkeypatch):
     def yolo(model, conf_thresh=0.8, straighten=True, output_dir=None):
         return _DigitDetector() if straighten is False else _MeterDetector()
-    monkeypatch.setattr(reader, "YOLOInferer", yolo)
-    monkeypatch.setattr(reader, "CNNInferer", lambda *a, **k: _DigitOCR())
-    monkeypatch.setattr(reader, "CRNNInferer", lambda *a, **k: _SerialOCR())
+    monkeypatch.setattr(loader, "YOLOInferer", yolo)
+    monkeypatch.setattr(loader, "CNNInferer", lambda *a, **k: _DigitOCR())
+    monkeypatch.setattr(loader, "CRNNInferer", lambda *a, **k: _SerialOCR())
 
 
 def _image(name):

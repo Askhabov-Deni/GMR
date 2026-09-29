@@ -1,4 +1,12 @@
 from .config import PipelineConfig
+from .ml import (
+    DigitDetector,
+    DigitPrediction,
+    DigitRecognizer,
+    MeterDetector,
+    SerialPrediction,
+    SerialRecognizer,
+)
 from .models import Outcome, OUTCOME_FOLDER, PhotoResult
 from .policies import (
     DeltaThresholdPolicy,
@@ -26,4 +34,10 @@ __all__ = [
     "ProcessedPhotoPolicy",
     "RecoveryDecision",
     "find_auto_row_for_output_file",
+    "MeterDetector",
+    "SerialRecognizer",
+    "DigitDetector",
+    "DigitRecognizer",
+    "SerialPrediction",
+    "DigitPrediction",
 ]

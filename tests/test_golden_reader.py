@@ -13,7 +13,7 @@ Golden tests для reader.py — docs/MIGRATION_TZ.md, раздел 2.
 Нумерация кейсов 1-16 соответствует таблице в MIGRATION_TZ.md §2.
 """
 from tests._fixtures import (
-    FakeDigitDetector, FakeDigitOCR, FakeMeterDetector, FakeSerialOCR,
+    FakeDigitDetector, FakeDigitOCR, FakeMeterDetector, FakeSerialOCR, process_photo,
     make_crop, make_df, make_digit_crops_with_centers, make_meter_crops,
 )
 import reader
@@ -37,7 +37,7 @@ def _run(config, df, meter_crops, digit_detector, digit_ocr, serial_text, serial
           photo_name="photo1.jpg"):
     meter_detector = FakeMeterDetector(meter_crops)
     serial_ocr = FakeSerialOCR(serial_text, serial_conf)
-    return reader.process_photo(
+    return process_photo(
         photo_name, df, config,
         meter_detector, digit_detector, digit_ocr, serial_ocr,
     )
@@ -332,7 +332,7 @@ def _log_row(fname, outcome, source="auto", account=ACCOUNT, final=""):
 def test_case20_done_photo_skips_models(base_config):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
     base_config._log_rows_cache = [_log_row("photo1.jpg", "MINUS", final=f"{ACCOUNT}.jpg")]
-    result = reader.process_photo(
+    result = process_photo(
         "photo1.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
     )
@@ -348,7 +348,7 @@ def test_case21_manual_row_skips_even_after_auto_error(base_config):
         _log_row("photo1.jpg", "NO_METER", account=""),
         _log_row("photo1.jpg", "UNREADABLE", source="manual", account=""),
     ]
-    result = reader.process_photo(
+    result = process_photo(
         "photo1.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
     )
@@ -394,7 +394,7 @@ def test_case24_table_filled_explained_by_log_is_repeat_not_suspicious(base_conf
 def test_case25_auto_repeat_counts_as_done(base_config):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
     base_config._log_rows_cache = [_log_row("photo1.jpg", "REPEAT")]
-    result = reader.process_photo(
+    result = process_photo(
         "photo1.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
     )
@@ -413,7 +413,7 @@ def test_case26_same_name_other_hash_is_processed(base_config):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
     base_config._log_rows_cache = [_hashed_row("photo1.jpg", "PLUS", "aaaa")]
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
-    result = reader.process_photo(
+    result = process_photo(
         "photo1.jpg", df, base_config, FakeMeterDetector(make_meter_crops()), dd, docr,
         FakeSerialOCR(SERIAL, 0.95), photo_hash="bbbb",
     )
@@ -423,7 +423,7 @@ def test_case26_same_name_other_hash_is_processed(base_config):
 def test_case27_same_hash_other_name_skips_models(base_config):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
     base_config._log_rows_cache = [_hashed_row("original.jpg", "PLUS", "aaaa")]
-    result = reader.process_photo(
+    result = process_photo(
         "renamed.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
         photo_hash="aaaa",
@@ -435,7 +435,7 @@ def test_case28_legacy_row_without_hash_matches_by_name(base_config):
     # строки, записанные до 2026-09-29, отпечатка не имеют — узнаём по имени
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
     base_config._log_rows_cache = [_log_row("photo1.jpg", "PLUS")]
-    result = reader.process_photo(
+    result = process_photo(
         "photo1.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
         photo_hash="cccc",
@@ -451,7 +451,7 @@ def test_case29_copy_in_current_run_is_repeat_even_after_error(base_config):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
     base_config._log_rows_cache = [_hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""}]
     base_config._processed_hashes_cache = {"aaaa"}
-    result = reader.process_photo(
+    result = process_photo(
         "copy.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
         photo_hash="aaaa",
@@ -466,7 +466,7 @@ def test_case30_same_error_from_previous_run_is_reprocessed(base_config):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
     base_config._log_rows_cache = [_hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""}]
     base_config._processed_hashes_cache = set()
-    result = reader.process_photo(
+    result = process_photo(
         "copy.jpg", df, base_config, FakeMeterDetector([]), FakeDigitDetector([]),
         FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95), photo_hash="aaaa",
     )
@@ -483,7 +483,7 @@ def test_case31_copy_repeat_rows_do_not_block_retry(base_config):
             "notes": "duplicate file in current run: copy.jpg"},
     ]
     base_config._processed_hashes_cache = set()
-    result = reader.process_photo(
+    result = process_photo(
         "first.jpg", df, base_config, FakeMeterDetector([]), FakeDigitDetector([]),
         FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95), photo_hash="aaaa",
     )
