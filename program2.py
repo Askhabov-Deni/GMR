@@ -47,6 +47,7 @@ from reader import (
     _LOG_COLUMNS,
 )
 from src.gmr.domain import find_auto_row_for_output_file
+from src.gmr.domain.serial_match import alphabet_for, one_char_matches
 # Модели — через контракты и общий с reader.py сервис распознавания (Фаза 3)
 from src.gmr.application import digit_crops_by_position, recognize_photo
 from src.gmr.ml.loader import default_device, load_models
@@ -426,6 +427,59 @@ def apply_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row
     })
 
 
+# ─── Подсказка «похожие номера в базе» (решение владельца 2026-09-30) ─────────
+# Если серийника нет в таблице, но есть номер, отличающийся одним символом, —
+# это почти всегда тот же счётчик: модель ошиблась при чтении или в базе
+# опечатка. На ответах оператора (Сулиман С) — 7 из 7. Подсказка только
+# заполняет лицевой счёт; решает оператор: «Принять» (модель ошиблась),
+# «Серийник в базе с ошибкой» или «Нет в базе».
+HINT_NOTE = "подсказка"
+
+
+@dataclass
+class SerialIndex:
+    """Серийники таблицы для поиска похожих: номер → (лицевой счёт, последнее показание)."""
+    by_serial: dict
+    alphabet:  str
+
+
+@dataclass
+class SerialHint:
+    serial:       str               # номер в таблице
+    account:      str
+    last_reading: Optional[float]
+    delta:        Optional[float]   # показание − последнее показание
+
+
+def build_serial_index(df: Optional[pd.DataFrame], cfg: PipelineConfig) -> Optional[SerialIndex]:
+    if df is None:
+        return None
+    by_serial = {}
+    for serial, account, last in zip(df[cfg.col_serial], df[cfg.col_account_id], df[cfg.col_last_reading]):
+        key = _normalize_serial(str(serial))
+        if key and key != "nan" and key not in by_serial:
+            by_serial[key] = (str(account).strip(), _to_float(last))
+    return SerialIndex(by_serial, alphabet_for(set(by_serial)))
+
+
+def serial_hints(serial: str, reading_str: str, index: Optional[SerialIndex], limit: int = 3) -> list[SerialHint]:
+    """
+    Номера из таблицы «в одном символе» от serial. Первыми — с наименьшим
+    расходом (|показание − последнее|), если показание прочитано полностью.
+    """
+    serial = (serial or "").strip()
+    if index is None or len(serial) < 3:
+        return []
+    reading = int(reading_str) if reading_str and reading_str.isdigit() else None
+    hints = []
+    for t in sorted({t for _, t in one_char_matches(serial, set(index.by_serial), index.alphabet)}):
+        account, last = index.by_serial[t]
+        delta = (reading - last) if reading is not None and last is not None else None
+        hints.append(SerialHint(t, account, last, delta))
+    hints.sort(key=lambda h: (h.delta is None, abs(h.delta) if h.delta is not None else 0))
+    return hints[:limit]
+
+
 # ─── «Серийник в базе с ошибкой» (решение владельца 2026-09-30) ───────────────
 # На фото серийник верный, по лицевому счёту понятно, что счётчик тот же, но в
 # базе номер записан с опечаткой. Показание в таблицу НЕ пишется — только после
@@ -732,6 +786,7 @@ class MainWindow(tk.Tk):
             save_settings(self.settings)
 
     def _load_data(self):
+        self._serial_index = None   # таблица могла смениться — индекс подсказки строится заново
         if self.settings.table_path and Path(self.settings.table_path).exists():
             try:
                 self.df = _load_table(self.settings.table_path)
@@ -798,6 +853,13 @@ class MainWindow(tk.Tk):
         self.log_rows.append(row)
         log_p = _log_path(self.settings.table_path)
         _append_log_row(log_p, row)
+
+    def serial_index(self) -> Optional[SerialIndex]:
+        """Индекс серийников таблицы для подсказки (строится один раз: номера,
+        лицевые счета и последние показания program2 не меняет)."""
+        if getattr(self, "_serial_index", None) is None and self.df is not None:
+            self._serial_index = build_serial_index(self.df, self.config)
+        return getattr(self, "_serial_index", None)
 
     def save_table(self):
         if self.df is not None and self.settings.table_path:
@@ -1120,6 +1182,12 @@ class EditScreen(ttk.Frame):
         ttk.Label(parent, textvariable=self._serial_match_var,
                   font=("Segoe UI", 8), foreground=CLR_GREEN).pack(anchor="w", pady=(0, 6))
 
+        # Подсказка: похожие номера в базе (заполняется, если номера нет в таблице)
+        self._hint_frame = ttk.Frame(parent)
+        self._hint_frame.pack(anchor="w", fill=tk.X)
+        self._hints: list[SerialHint] = []
+        self._hint_used: Optional[SerialHint] = None
+
         ttk.Label(parent, text="Account ID", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         self._account_var = tk.StringVar()
         self._account_var.trace_add("write", lambda *a: self._on_account_change())
@@ -1413,6 +1481,8 @@ class EditScreen(ttk.Frame):
 
     def _lookup_by_serial(self, serial: str):
         self._serial_match_var.set("")
+        for w in self._hint_frame.winfo_children():   # подсказка — только для ненайденного номера
+            w.destroy()
 
         if self.app.df is None or not serial:
             self._update_accept_state()
@@ -1450,8 +1520,46 @@ class EditScreen(ttk.Frame):
                 return
 
         self._serial_match_var.set("⚠ не найден в базе")
+        self._show_hints(serial)
         self._update_delta()
         self._update_accept_state()
+
+    def _current_reading_str(self) -> str:
+        if self._reading_widget.is_complete():
+            return self._reading_widget.get_string()
+        return getattr(self, "_model_reading", "") or ""
+
+    def _show_hints(self, serial: str):
+        for w in self._hint_frame.winfo_children():
+            w.destroy()
+        self._hints = serial_hints(serial, self._current_reading_str(), self.app.serial_index())
+        if not self._hints:
+            return
+        ttk.Label(self._hint_frame, text="Похожие номера в базе:",
+                  font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        for i, h in enumerate(self._hints):
+            last = f"{h.last_reading:.0f}" if h.last_reading is not None else "—"
+            delta = f"{h.delta:+.0f}" if h.delta is not None else "—"
+            tk.Button(
+                self._hint_frame,
+                text=f"{h.serial}   л/с {h.account}\nпосл. {last}   расход {delta}",
+                font=("Segoe UI", 9), relief="groove", anchor="w", justify="left",
+                command=lambda h=h: self._use_hint(h),
+            ).pack(anchor="w", fill=tk.X, pady=1)
+        ttk.Label(self._hint_frame,
+                  text="Клик — подставить лицевой счёт. Дальше: «Принять», если это он "
+                       "(модель ошиблась), или «Серийник в базе с ошибкой».",
+                  font=("Segoe UI", 8), foreground=CLR_GRAY,
+                  wraplength=280, justify="left").pack(anchor="w", pady=(0, 6))
+
+    def _use_hint(self, h: SerialHint):
+        """Подставляет лицевой счёт кандидата (серийник подтянется из таблицы)."""
+        self._hint_used = h
+        self._account_var.set(h.account)
+        self._lookup_by_account(h.account)
+
+    def _hint_note(self) -> str:
+        return f" | {HINT_NOTE}: {self._hint_used.serial}" if self._hint_used else ""
 
     def _lookup_by_account(self, account: str):
         self._account_match_var.set("")
@@ -1647,7 +1755,7 @@ class EditScreen(ttk.Frame):
             "processed_at":      now_iso(),
             "model_serial_conf": f"{mr.get('serial_conf', ''):.4f}" if mr.get("serial_conf") else "",
             "model_reading_str": mr.get("reading_str") or "",
-            "notes":             self.reason,
+            "notes":             self.reason + self._hint_note(),
         })
         self.app.append_log(row)
 
@@ -1845,7 +1953,8 @@ class EditScreen(ttk.Frame):
             "processed_at":      now_iso(),
             "model_serial_conf": f"{mr.get('serial_conf', ''):.4f}" if mr.get("serial_conf") else "",
             "model_reading_str": mr.get("reading_str") or "",
-            "notes":             f"серийник в базе с ошибкой: в базе {db_serial}, на фото {photo_serial}",
+            "notes":             f"серийник в базе с ошибкой: в базе {db_serial}, на фото {photo_serial}"
+                                 + self._hint_note(),
         })
         self.app.append_log(row)
         append_db_serial_fix(str(Path(dst_dir) / DB_SERIAL_FIX_LIST), {

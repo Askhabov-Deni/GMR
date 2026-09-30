@@ -30,6 +30,7 @@ from typing import Optional
 
 from src.gmr.application.recognition import SUBSTITUTED_PREFIX
 from src.gmr.domain import PipelineConfig
+from src.gmr.domain.serial_match import alphabet_for, one_char_matches, one_edit_neighbors  # noqa: F401
 
 READ_OK = {"PLUS", "MINUS", "SUSPICIOUS"}          # серийник найден, цифры прочитаны
 SERIAL_FOUND = READ_OK | {"DIGITS_ERROR"}          # серийник найден в таблице
@@ -136,31 +137,8 @@ def _conf(r: dict) -> Optional[float]:
         return None
 
 
-def one_edit_neighbors(s: str, alphabet: str) -> set[str]:
-    """Все строки, отличающиеся от s одной заменой, вставкой или удалением."""
-    out = set()
-    for i in range(len(s) + 1):
-        if i < len(s):
-            out.add(s[:i] + s[i + 1:])                         # удаление
-            out.update(s[:i] + c + s[i + 1:] for c in alphabet if c != s[i])   # замена
-        out.update(s[:i] + c + s[i:] for c in alphabet)       # вставка
-    return out
-
-
 def _alphabet(table_serials: set[str]) -> str:
-    return "".join(sorted(set("".join(table_serials)) | set("0123456789")))
-
-
-def one_char_matches(serial: str, table_serials: set[str], alphabet: str = "") -> list[tuple[str, str]]:
-    """
-    Пары (прочитанный вариант, номер из таблицы), отличающиеся одним символом.
-    Варианты — как в reader.py: сам номер, '0'+номер, '00'+номер.
-    """
-    alphabet = alphabet or _alphabet(table_serials)
-    pairs = set()
-    for v in (serial, "0" + serial, "00" + serial):
-        pairs.update((v, t) for t in one_edit_neighbors(v, alphabet) & table_serials)
-    return sorted(pairs)
+    return alphabet_for(table_serials)
 
 
 def describe_edit(read: str, true: str) -> str:
@@ -351,6 +329,9 @@ def operator_accuracy(rows: list[dict], table_serials: Optional[set[str]] = None
         "snf_with_answer": len(snf),
         "snf_found": len(snf_found),
         "snf_not_in_db": len(snf_not_in_db),
+        # program2 дописывает «| подсказка: <номер>», если оператор выбрал номер из подсказки
+        "hint_used": dict(Counter(m["outcome"] for m in manual
+                                  if "| подсказка: " in m.get("notes", "")).most_common()),
     }
     if table_serials is not None and last_readings is not None and rng is not None:
         alphabet = _alphabet(table_serials)
@@ -486,6 +467,8 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
           f"{_pct(a['manual_model_reading_ok'], a['manual_full_model_reading'])}")
         w(f"  SERIAL_NOT_FOUND с ответом оператора: {a['snf_with_answer']}; счётчик найден "
           f"оператором: {a['snf_found']}; «нет в базе»: {a['snf_not_in_db']}")
+        if a["hint_used"]:
+            w(f"  подсказка «похожие номера в базе» использована: {a['hint_used']}")
         if "guess" in a:
             g = a["guess"]
             w(f"  угадывание серийника (один похожий номер, подходит по расходу) на этих ответах:")

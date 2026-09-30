@@ -318,3 +318,12 @@ def test_db_serial_fix_counts_as_found_and_compared_by_account():
     assert d[0]["verdict"] == "ВЕРНО"
     # без лицевых счетов — сравнение по серийнику, опечатка выглядит как «другой номер»
     assert al.operator_accuracy(rows, table, last, (0.0, 200.0))["guess"]["wrong"] == 1
+
+
+def test_hint_usage_counted():
+    rows = [row("a", "PLUS", source="manual", notes="serial_not_found | подсказка: 1234567"),
+            row("b", "DB_SERIAL_FIX", source="manual",
+                notes="серийник в базе с ошибкой: в базе 1, на фото 2 | подсказка: 1"),
+            row("c", "PLUS", source="manual", notes="digits_error")]
+    assert al.operator_accuracy(rows)["hint_used"] == {"PLUS": 1, "DB_SERIAL_FIX": 1}
+    assert "подсказка «похожие номера в базе» использована" in al.build_report(rows, CFG)

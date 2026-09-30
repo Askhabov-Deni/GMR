@@ -346,3 +346,58 @@ def test_db_serial_fix_refuses_same_serial_and_unknown_account(edit_app, monkeyp
     scr._db_serial_fix()
     assert photo.exists() and not (photos / "db_serial_fix").exists()
     assert all(r["outcome"] != "DB_SERIAL_FIX" for r in app.log_rows)
+
+
+# ─── Подсказка «похожие номера в базе» ───────────────────────────────────────
+
+def test_serial_hints_sorted_by_delta():
+    df = table([("1234567", "A1", "1000", ""), ("1234568", "A2", "5000", ""),
+                ("7654321", "A3", "", ""), ("9999999", "A4", "0", "")])
+    idx = program2.build_serial_index(df, CFG)
+    hints = program2.serial_hints("1234569", "05100", idx)
+    assert [(h.serial, h.account, h.delta) for h in hints] == [
+        ("1234568", "A2", 100.0), ("1234567", "A1", 4100.0)]
+    # показание не дочитано — расход неизвестен, но номера показываются
+    assert {h.serial for h in program2.serial_hints("1234569", "0?100", idx)} == {"1234567", "1234568"}
+    # у кандидата нет последнего показания
+    (h,) = program2.serial_hints("7654320", "00100", idx)
+    assert (h.account, h.last_reading, h.delta) == ("A3", None, None)
+    assert program2.serial_hints("5555555", "00100", idx) == []
+    assert program2.serial_hints("12", "00100", idx) == []            # слишком короткий
+    assert program2.serial_hints("1234569", "00100", None) == []
+
+
+def test_serial_hints_leading_zeros_like_reader():
+    df = table([("0034567", "A1", "10", "")])
+    idx = program2.build_serial_index(df, CFG)
+    assert [h.serial for h in program2.serial_hints("34568", "", idx)] == ["0034567"]
+
+
+@needs_display
+def test_hint_shown_for_unknown_serial_and_fills_account(edit_app):
+    app, photos, photo = edit_app
+    app.open_edit_screen(str(photo), "serial_not_found")
+    scr = app._current_screen
+    scr._reading_widget.set_digits("01050", None)
+    scr._lookup_by_serial("1284569")          # в базе 1284567 (A1)
+    assert [h.account for h in scr._hints] == ["A1"]
+    assert any(isinstance(w, program2.tk.Button) for w in scr._hint_frame.winfo_children())
+    scr._use_hint(scr._hints[0])
+    assert scr._account_var.get() == "A1" and scr._serial_var.get() == "1284567"
+    # номер найден — подсказка исчезает
+    scr._lookup_by_serial("1284567")
+    assert scr._hint_frame.winfo_children() == []
+
+
+@needs_display
+def test_accept_after_hint_writes_note(edit_app):
+    app, photos, photo = edit_app
+    app.open_edit_screen(str(photo), "serial_not_found")
+    scr = app._current_screen
+    scr._reading_widget.set_digits("01050", None)
+    scr._lookup_by_serial("1284569")
+    scr._use_hint(scr._hints[0])
+    scr._accept()
+    r = app.log_rows[-1]
+    assert r["outcome"] == "PLUS" and r["account_id"] == "A1" and r["serial_id"] == "1284567"
+    assert "подсказка: 1284567" in r["notes"]
