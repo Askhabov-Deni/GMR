@@ -288,25 +288,35 @@ def list_question_photos(photos_dir: str) -> list[tuple[str, str, str]]:
                 result.append((subfolder, p.name, str(p)))
     return result
 
-def list_verify_photos(photos_dir: str, log_rows: list[dict]) -> list[dict]:
-    """
-    Возвращает фото из plus/ и minus/ где source=auto и verified_by="".
-    Ищет совпадение по original_filename ИЛИ final_filename.
-    """
-    # Строим два индекса: по оригинальному и по финальному имени
-    log_by_original: dict[str, dict] = {}
-    log_by_final: dict[str, dict] = {}
-    for r in log_rows:
-        orig = r.get("original_filename", "")
-        final = r.get("final_filename", "")
-        if orig:
-            log_by_original[orig] = r
-            # Также индексируем без расширения
-            log_by_original[Path(orig).stem] = r
-        if final:
-            log_by_final[final] = r
-            log_by_final[Path(final).stem] = r
+# Папка в output/ → исход строки лога, которую проверяют в этой папке
+VERIFY_FOLDER_OUTCOME = {"plus": "PLUS", "minus": "MINUS"}
+CORRECTED_NOTE = "исправлено при проверке"   # по этой пометке tools/analyze_log.py считает исправления
 
+
+def find_verify_row(log_rows: list[dict], file_name: str, folder: str) -> Optional[dict]:
+    """
+    Авто-строка лога для фото из plus/ или minus/: исход — как у папки
+    (PLUS/MINUS), имя файла совпадает с final_filename или original_filename
+    (с расширением или без). Строки REPEAT не подходят: у второго фото того же
+    счётчика final_filename тот же, но показаний в строке нет (ошибка до
+    2026-09-30 — вкладка «Проверка» брала последнюю строку с этим именем).
+    Среди подходящих — последняя.
+    """
+    wanted = VERIFY_FOLDER_OUTCOME.get(folder)
+    stem = Path(file_name).stem
+    found = None
+    for r in log_rows:
+        if r.get("source") != "auto" or r.get("outcome") != wanted:
+            continue
+        names = {n for n in (r.get("final_filename", ""), r.get("original_filename", "")) if n}
+        names |= {Path(n).stem for n in names}
+        if file_name in names or stem in names:
+            found = r
+    return found
+
+
+def list_verify_photos(photos_dir: str, log_rows: list[dict]) -> list[dict]:
+    """Фото из plus/ и minus/, у которых авто-строка PLUS/MINUS ещё не проверена."""
     result = []
     for folder in ("plus", "minus"):
         d = Path(photos_dir) / folder
@@ -315,16 +325,116 @@ def list_verify_photos(photos_dir: str, log_rows: list[dict]) -> list[dict]:
         for p in sorted(d.iterdir()):
             if not (p.is_file() and p.suffix.lower() in PHOTO_EXTS):
                 continue
-            # Ищем запись в логе: сначала по имени файла, потом по stem
-            row = (
-                log_by_final.get(p.name)
-                or log_by_final.get(p.stem)
-                or log_by_original.get(p.name)
-                or log_by_original.get(p.stem)
-            )
-            if row and row.get("source") == "auto" and not row.get("verified_by"):
+            row = find_verify_row(log_rows, p.name, folder)
+            if row is not None and not row.get("verified_by"):
                 result.append({"path": str(p), "log_row": row, "folder": folder})
     return result
+
+
+def _to_float(v) -> Optional[float]:
+    s = str(v).strip() if v is not None else ""
+    if s in ("", "nan", "None"):
+        return None
+    try:
+        return float(s.replace(",", "."))
+    except ValueError:
+        return None
+
+
+@dataclass
+class VerifyCorrection:
+    """Что изменится, если сохранить исправление на вкладке «Проверка»."""
+    error:           Optional[str] = None     # не сохранять, показать оператору
+    serial:          str = ""
+    reading:         int = 0
+    old_account:     str = ""
+    new_account:     str = ""
+    last_reading:    Optional[float] = None   # последнее показание (нового) абонента
+    delta:           Optional[float] = None
+    outcome:         str = "PLUS"
+    new_account_has_reading: str = ""         # уже записанное показание у нового абонента
+
+    @property
+    def account_changed(self) -> bool:
+        return self.new_account != self.old_account
+
+
+def plan_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row: dict,
+                           new_serial: str, new_reading_str: str) -> VerifyCorrection:
+    """
+    Исправление при проверке. Серийник тот же — меняется только показание
+    этого абонента. Серийник другой — ищем его в таблице (как reader.py:
+    номер, '0'+номер, '00'+номер); фото принадлежит найденному абоненту,
+    показание переносится к нему.
+    """
+    serial = new_serial.strip()
+    c = VerifyCorrection(serial=serial, reading=int(new_reading_str),
+                         old_account=row.get("account_id", ""),
+                         new_account=row.get("account_id", ""),
+                         last_reading=_to_float(row.get("last_reading")))
+    if _normalize_serial(serial) != _normalize_serial(row.get("serial_id", "")):
+        if df is None:
+            return VerifyCorrection(error="Таблица не загружена — сменить абонента нельзя.")
+        match = None
+        for cand in (serial, "0" + serial, "00" + serial):
+            m = df[df[cfg.col_serial].apply(lambda x: _normalize_serial(str(x)) == _normalize_serial(cand))]
+            if not m.empty:
+                match = m.iloc[0]
+                break
+        if match is None:
+            return VerifyCorrection(error=f"Серийного номера {serial} нет в таблице.")
+        c.new_account = str(match[cfg.col_account_id]).strip()
+        c.last_reading = _to_float(match[cfg.col_last_reading])
+        if c.account_changed:
+            existing = _to_float(match[cfg.col_new_reading])
+            c.new_account_has_reading = str(match[cfg.col_new_reading]).strip() if existing is not None else ""
+    c.delta = (c.reading - c.last_reading) if c.last_reading is not None else None
+    c.outcome = "MINUS" if c.delta is not None and c.delta < 0 else "PLUS"
+    return c
+
+
+def apply_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row: dict,
+                            c: VerifyCorrection, operator: str) -> None:
+    """
+    Записывает исправление в таблицу и строку лога (файл фото переносит
+    вызывающий код). При смене абонента у прежнего абонента показание
+    стирается, только если там всё ещё то, что записал reader.py.
+    """
+    if df is not None:
+        acc = df[cfg.col_account_id].apply(lambda x: str(x).strip())
+        if c.account_changed:
+            old = acc == c.old_account
+            if old.any() and _to_float(df.loc[old, cfg.col_new_reading].iloc[0]) == _to_float(row.get("reading")):
+                df.loc[old, cfg.col_new_reading] = ""
+        df.loc[acc == c.new_account, cfg.col_new_reading] = str(c.reading)
+
+    note = CORRECTED_NOTE
+    if c.account_changed:
+        note += f" (абонент {c.old_account} → {c.new_account})"
+    ext = Path(row.get("final_filename") or row.get("original_filename", "")).suffix
+    row.update({
+        "serial_id":    c.serial,
+        "account_id":   c.new_account,
+        "reading":      str(c.reading),
+        "last_reading": str(c.last_reading) if c.last_reading is not None else "",
+        "delta":        str(c.delta) if c.delta is not None else "",
+        "outcome":      c.outcome,
+        "final_filename": f"{c.new_account}{ext}" if c.account_changed else row.get("final_filename", ""),
+        "verified_by":  operator,
+        "verified_at":  now_iso(),
+        "notes":        (row.get("notes", "") + " | " + note).strip(" |"),
+    })
+
+
+def free_photo_path(dst_dir: str, name: str, current: str) -> str:
+    """Путь для фото в dst_dir; если имя занято другим файлом — добавляется _2, _3…"""
+    p = Path(dst_dir) / name
+    k = 2
+    while p.exists() and p.resolve() != Path(current).resolve():
+        p = Path(dst_dir) / f"{Path(name).stem}_{k}{Path(name).suffix}"
+        k += 1
+    return str(p)
+
 
 def move_photo(src: str, dst_dir: str, new_name: Optional[str] = None) -> str:
     """Перемещает фото в dst_dir, возвращает новый путь."""
@@ -670,11 +780,29 @@ class MainWindow(tk.Tk):
         screen.pack(fill=tk.BOTH, expand=True)
         self._current_screen = screen
 
-    def open_verify_screen(self, item: dict):
+    def open_verify_screen(self, item: dict, index: int = 0):
         self._notebook.pack_forget()
-        screen = VerifyScreen(self, item, on_back=self._back_from_screen)
+        screen = VerifyScreen(self, item, on_back=self._back_from_screen, index=index)
         screen.pack(fill=tk.BOTH, expand=True)
         self._current_screen = screen
+
+    def open_verify_at(self, index: int):
+        """
+        Следующее фото на вкладке «Проверка» — как во вкладке «Обработка».
+        Список строится заново: проверенное фото из него выпадает, поэтому
+        после «Верно»/«Сохранить» следующее стоит на том же номере.
+        """
+        items = list_verify_photos(self.settings.photos_dir, self.log_rows)
+        if hasattr(self, "_current_screen"):
+            self._current_screen.pack_forget()
+            self._current_screen.destroy()
+            del self._current_screen
+        if index < len(items):
+            self.open_verify_screen(items[index], index)
+        else:
+            self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+            self.refresh_tabs()
+            messagebox.showinfo("Готово", "Все фото на проверке просмотрены.")
 
     def _back_from_screen(self):
         if hasattr(self, "_current_screen"):
@@ -860,7 +988,7 @@ class VerifyTab(ttk.Frame):
             return
         idx = self._tree.index(sel[0])
         if idx < len(self._items):
-            self.app.open_verify_screen(self._items[idx])
+            self.app.open_verify_screen(self._items[idx], idx)
 
 # ─── Вспомогательный миксин ───────────────────────────────────────────────────
 def bind_tree(widget, seq, callback):
@@ -1603,10 +1731,11 @@ class EditScreen(ttk.Frame):
 # ─── Экран проверки ──────────────────────────────────────────────────────────
 class VerifyScreen(ttk.Frame):
     """Проверка фото из plus/ minus/ которые обработал reader.py автоматически."""
-    def __init__(self, parent: MainWindow, item: dict, on_back):
+    def __init__(self, parent: MainWindow, item: dict, on_back, index: int = 0):
         super().__init__(parent)
         self.app      = parent
         self.item     = item
+        self.index    = index        # номер фото в списке «Проверки» — для перехода к следующему
         self._on_back = on_back
         self._tk_img: Optional[ImageTk.PhotoImage] = None
         self._edit_mode = False
@@ -1696,12 +1825,13 @@ class VerifyScreen(ttk.Frame):
         bottom = ttk.Frame(self)
         bottom.pack(fill=tk.X, padx=12, pady=(6, 10))
 
-        tk.Button(
+        self._ok_btn = tk.Button(
             bottom, text="✓  Верно  [Enter]",
             bg=CLR_GREEN, fg="white", font=("Segoe UI", 11, "bold"),
             relief="flat", padx=16, pady=8,
             command=self._verify_ok,
-        ).pack(side=tk.LEFT, padx=(0, 8))
+        )
+        self._ok_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self._edit_btn = tk.Button(
             bottom, text="✎  Исправить  [E]",
@@ -1712,7 +1842,7 @@ class VerifyScreen(ttk.Frame):
         self._edit_btn.pack(side=tk.LEFT, padx=4)
 
         self._save_edit_btn = tk.Button(
-            bottom, text="💾  Сохранить правку",
+            bottom, text="💾  Сохранить правку  [Enter]",
             bg="#6A1B9A", fg="white", font=("Segoe UI", 10),
             relief="flat", padx=12, pady=8,
             command=self._save_edit,
@@ -1727,11 +1857,12 @@ class VerifyScreen(ttk.Frame):
 
     def _bind_keys(self):
         # ИСПРАВЛЕНО: убраны пробелы
-        self.app.bind_all("<Return>", lambda e: self._verify_ok())
+        # Enter: «Верно», а в режиме исправления — «Сохранить правку»
+        self.app.bind_all("<Return>", lambda e: self._on_return())
         self.app.bind_all("<Escape>", lambda e: self._back())
-        self.app.bind_all("<e>",      lambda e: self._enter_edit())
-        self.app.bind_all("<E>",      lambda e: self._enter_edit())
-        self.app.bind_all("<Right>",  lambda e: self._skip())
+        self.app.bind_all("<e>",      lambda e: None if self._edit_mode else self._enter_edit())
+        self.app.bind_all("<E>",      lambda e: None if self._edit_mode else self._enter_edit())
+        self.app.bind_all("<Right>",  lambda e: None if self._edit_mode else self._skip())
 
     def _unbind_keys(self):
         # ИСПРАВЛЕНО: убраны пробелы
@@ -1801,60 +1932,84 @@ class VerifyScreen(ttk.Frame):
         finally:
             self._unbind_keys()
 
+    def _on_return(self):
+        if self._edit_mode:
+            self._save_edit()
+        else:
+            self._verify_ok()
+
     def _skip(self):
-        try:
-            self._on_back()
-        finally:
-            self._unbind_keys()
+        self._unbind_keys()
+        self.app.open_verify_at(self.index + 1)
 
     def _verify_ok(self):
+        # Отметка — ровно в ту строку, по которой фото попало в список
+        # (раньше искалась первая строка с тем же original_filename).
         r = self.item["log_row"]
-        for i, row in enumerate(self.app.log_rows):
-            if row.get("original_filename") == r.get("original_filename"):
-                self.app.log_rows[i]["verified_by"] = self.app.settings.operator_name
-                self.app.log_rows[i]["verified_at"] = now_iso()
-                break
-
-        log_p = _log_path(self.app.settings.table_path)
-        _save_log(log_p, self.app.log_rows)
-
-        try:
-            self._on_back()
-        finally:
-            self._unbind_keys()
+        r["verified_by"] = self.app.settings.operator_name
+        r["verified_at"] = now_iso()
+        _save_log(_log_path(self.app.settings.table_path), self.app.log_rows)
+        self._unbind_keys()
+        self.app.open_verify_at(self.index)
 
     def _enter_edit(self):
         if self._edit_mode:
             return
         self._edit_mode = True
         self._edit_frame.pack(fill=tk.X, pady=(12, 0))
+        # «Верно» в режиме исправления прячем: её нажатие выбрасывало правку
+        self._ok_btn.pack_forget()
         self._edit_btn.pack_forget()
         self._save_edit_btn.pack(side=tk.LEFT, padx=4)
 
     def _save_edit(self):
-        r        = self.item["log_row"]
-        new_ser  = self._serial_var.get().strip()
-        new_read = self._reading_widget.get_string()
+        r = self.item["log_row"]
         if not self._reading_widget.is_complete():
             messagebox.showwarning("Ошибка", "Введите все 5 цифр показаний.", parent=self.app)
             return
+        cfg = self.app.config
+        c = plan_verify_correction(self.app.df, cfg, r,
+                                   self._serial_var.get(), self._reading_widget.get_string())
+        if c.error:
+            messagebox.showwarning("Нельзя сохранить", c.error, parent=self.app)
+            return
+        if c.account_changed:
+            if not messagebox.askyesno(
+                "Другой абонент",
+                f"Серийный номер {c.serial} принадлежит абоненту {c.new_account}.\n\n"
+                f"Показание {c.reading} будет записано ему, а у абонента {c.old_account} "
+                f"показание, записанное автоматически, будет стёрто.\n\nПродолжить?",
+                parent=self.app,
+            ):
+                return
+            if c.new_account_has_reading and not messagebox.askyesno(
+                "У абонента уже есть показание",
+                f"У абонента {c.new_account} уже записано показание {c.new_account_has_reading}.\n\n"
+                f"Заменить его на {c.reading}?",
+                parent=self.app,
+            ):
+                return
 
-        for i, row in enumerate(self.app.log_rows):
-            if row.get("original_filename") == r.get("original_filename"):
-                self.app.log_rows[i]["serial_id"]   = new_ser
-                self.app.log_rows[i]["reading"]      = new_read
-                self.app.log_rows[i]["verified_by"]  = self.app.settings.operator_name
-                self.app.log_rows[i]["verified_at"]  = now_iso()
-                notes = self.app.log_rows[i].get("notes", "")
-                self.app.log_rows[i]["notes"] = (notes + " | исправлено при проверке").strip(" |")
-                break
+        old_path = self.item["path"]
+        apply_verify_correction(self.app.df, cfg, r, c, self.app.settings.operator_name)
+        self.app.save_table()
 
+        # Фото — в папку по новому исходу и под именем нового абонента
+        folder = "minus" if c.outcome == "MINUS" else "plus"
+        dst_dir = str(Path(self.app.settings.photos_dir) / folder)
+        name = r.get("final_filename") or Path(old_path).name
+        try:
+            dst = free_photo_path(dst_dir, name, old_path)
+            if Path(dst).resolve() != Path(old_path).resolve():
+                dst = move_photo(old_path, dst_dir, Path(dst).name)
+            r["final_filename"] = Path(dst).name
+            redraw_annotation(dst, c.serial, f"{c.reading:05d}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось переместить фото:\n{e}", parent=self.app)
         _save_log(_log_path(self.app.settings.table_path), self.app.log_rows)
 
-        try:
-            self._on_back()
-        finally:
-            self._unbind_keys()
+        self._unbind_keys()
+        self.app.open_verify_at(self.index)
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":

@@ -275,17 +275,38 @@ def _as_int(s: str) -> Optional[int]:
         return None
 
 
-def operator_accuracy(rows: list[dict]) -> dict:
+def guess_serial(serial: str, reading_str: str, table_serials: set[str], last_readings: dict,
+                 rng: tuple[float, float], alphabet: str = "") -> Optional[str]:
+    """
+    Догадка для SERIAL_NOT_FOUND: номер из таблицы, отличающийся одним
+    символом, у которого «показание − последнее показание» в обычном расходе.
+    Возвращает номер, только если такой кандидат ровно один; иначе None.
+    """
+    if not reading_str or not reading_str.isdigit():
+        return None
+    lo, hi = rng
+    cands = {t for _, t in one_char_matches(serial, table_serials, alphabet)}
+    fits = [t for t in cands
+            if (last := last_readings.get(t)) is not None and lo <= int(reading_str) - last <= hi]
+    return fits[0] if len(fits) == 1 else None
+
+
+def operator_accuracy(rows: list[dict], table_serials: Optional[set[str]] = None,
+                      last_readings: Optional[dict] = None,
+                      rng: Optional[tuple[float, float]] = None) -> dict:
     """
     Правильные ответы в логе появляются только из program2.py:
       - проверка (вкладка «Проверка»): у авто-строки PLUS/MINUS заполняется
         verified_by; при исправлении reading меняется, model_reading_str — нет,
-        в notes дописывается «исправлено при проверке»;
+        в notes дописывается «исправлено при проверке». Считаются только
+        строки PLUS/MINUS/SUSPICIOUS: до исправления program2 отметка могла
+        попасть в строку REPEAT того же счётчика — такие не учитываются;
       - ручная обработка фото из question/: новая строка source=manual;
         её model_reading_str — то, что прочитала модель (program2 запускает
         те же модели), reading/serial_id — ответ оператора.
     """
-    verified = [r for r in rows if r.get("source") == "auto" and r.get("verified_by")]
+    verified_all = [r for r in rows if r.get("source") == "auto" and r.get("verified_by")]
+    verified = [r for r in verified_all if r["outcome"] in READ_OK]
     v_changed_reading = [r for r in verified
                          if _as_int(r.get("reading")) != _as_int(r.get("model_reading_str"))]
     v_corrected = [r for r in verified if CORRECTED_NOTE in r.get("notes", "")]
@@ -297,11 +318,14 @@ def operator_accuracy(rows: list[dict]) -> dict:
 
     auto_by_hash = {r["photo_hash"]: r for r in rows
                     if r.get("source") == "auto" and r.get("photo_hash")}
-    serial_pairs = [(auto_by_hash[m["photo_hash"]], m) for m in manual
-                    if m.get("photo_hash") in auto_by_hash and m.get("serial_id")]
-    snf = [(a, m) for a, m in serial_pairs if a["outcome"] == "SERIAL_NOT_FOUND"]
-    return {
+    snf = [(auto_by_hash[m["photo_hash"]], m) for m in manual
+           if m.get("photo_hash") in auto_by_hash
+           and auto_by_hash[m["photo_hash"]]["outcome"] == "SERIAL_NOT_FOUND"]
+    snf_found = [(a, m) for a, m in snf if m["outcome"] in READ_OK and m.get("serial_id")]
+    snf_not_in_db = [(a, m) for a, m in snf if m["outcome"] == "NOT_IN_DB"]
+    res = {
         "verified": len(verified),
+        "verified_other": len(verified_all) - len(verified),
         "verified_reading_ok": len(verified) - len(v_changed_reading),
         "verified_corrected": len(v_corrected),
         "manual": len(manual),
@@ -309,8 +333,56 @@ def operator_accuracy(rows: list[dict]) -> dict:
         "manual_full_model_reading": len(m_read),
         "manual_model_reading_ok": len(m_read_ok),
         "snf_with_answer": len(snf),
-        "snf_model_serial_ok": sum(a["serial_id"].strip() == m["serial_id"].strip() for a, m in snf),
+        "snf_found": len(snf_found),
+        "snf_not_in_db": len(snf_not_in_db),
     }
+    if table_serials is not None and last_readings is not None and rng is not None:
+        alphabet = _alphabet(table_serials)
+
+        def guess(a):
+            return guess_serial(a["serial_id"], a.get("model_reading_str", ""),
+                                table_serials, last_readings, rng, alphabet)
+        g_found = [(guess(a), m["serial_id"].strip()) for a, m in snf_found]
+        res["guess"] = {
+            "right": sum(g == truth for g, truth in g_found),
+            "wrong": sum(g is not None and g != truth for g, truth in g_found),
+            "no_guess": sum(g is None for g, _ in g_found),
+            "false_on_not_in_db": sum(guess(a) is not None for a, _ in snf_not_in_db),
+        }
+    return res
+
+
+def guess_details(rows: list[dict], table_serials: set[str], last_readings: dict,
+                  rng: tuple[float, float]) -> list[dict]:
+    """
+    Для --details: каждое фото SERIAL_NOT_FOUND с ответом оператора — что
+    прочитала модель, какой номер угадала бы программа и что ответил оператор.
+    Только для экрана (с номерами и именами файлов), в отчёт не попадает.
+    """
+    alphabet = _alphabet(table_serials)
+    auto_by_hash = {r["photo_hash"]: r for r in rows
+                    if r.get("source") == "auto" and r.get("photo_hash")}
+    out = []
+    for m in rows:
+        a = auto_by_hash.get(m.get("photo_hash")) if m.get("source") == "manual" else None
+        if a is None or a["outcome"] != "SERIAL_NOT_FOUND":
+            continue
+        g = guess_serial(a["serial_id"], a.get("model_reading_str", ""),
+                         table_serials, last_readings, rng, alphabet)
+        last = last_readings.get(g) if g else None
+        reading = a.get("model_reading_str", "")
+        out.append({
+            "file": f"{a.get('source_folder', '')}/{a.get('original_filename', '')}".lstrip("/"),
+            "model_serial": a["serial_id"], "model_reading": reading,
+            "guess": g or "—",
+            "guess_delta": f"{int(reading) - last:+.0f}" if g and last is not None else "",
+            "operator": m["outcome"], "operator_serial": m.get("serial_id", ""),
+            "verdict": ("—" if g is None else
+                        "ВЕРНО" if m["outcome"] in READ_OK and g == m.get("serial_id", "").strip() else
+                        "ЛОЖНАЯ (оператор: нет в базе)" if m["outcome"] == "NOT_IN_DB" else
+                        "ДРУГОЙ НОМЕР" if m["outcome"] in READ_OK else "?"),
+        })
+    return out
 
 
 # ─── Отчёт ───────────────────────────────────────────────────────────────────
@@ -327,7 +399,8 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
     by_outcome = Counter(r["outcome"] for r in photos)
     d = digit_stats(photos, cfg)
     s = serial_stats(photos, table_serials, last_readings)
-    a = operator_accuracy(rows)
+    rng = plausible_delta_range(photos)
+    a = operator_accuracy(rows, table_serials, last_readings, rng)
     L = []
     w = L.append
     w("=" * 64)
@@ -387,14 +460,23 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
         w("посчитать не по чему. Правильные ответы появляются, когда оператор")
         w("проверяет фото на вкладке «Проверка» и разбирает question/ в program2.py.")
     else:
-        w(f"Проверено авто-показаний: {a['verified']}; модель прочитала верно: "
+        w(f"Проверено авто-показаний (PLUS/MINUS/SUSPICIOUS): {a['verified']}; модель прочитала верно: "
           f"{_pct(a['verified_reading_ok'], a['verified'])}; исправлено при проверке: {a['verified_corrected']}")
+        if a["verified_other"]:
+            w(f"  не учтено: {a['verified_other']} отметок попали в строки REPEAT и др. "
+              f"(ошибка вкладки «Проверка» в program2.py)")
         w(f"Ручных строк: {a['manual']} {a['manual_outcomes']}")
         w(f"  модель прочитала все цифры: {a['manual_full_model_reading']}; из них верно: "
           f"{_pct(a['manual_model_reading_ok'], a['manual_full_model_reading'])}")
-        w(f"  SERIAL_NOT_FOUND с ответом оператора: {a['snf_with_answer']}; модель прочитала "
-          f"серийник верно (значит, его нет в таблице): "
-          f"{_pct(a['snf_model_serial_ok'], a['snf_with_answer'])}")
+        w(f"  SERIAL_NOT_FOUND с ответом оператора: {a['snf_with_answer']}; счётчик найден "
+          f"оператором: {a['snf_found']}; «нет в базе»: {a['snf_not_in_db']}")
+        if "guess" in a:
+            g = a["guess"]
+            w(f"  угадывание серийника (один похожий номер, подходит по расходу) на этих ответах:")
+            w(f"    счётчик найден оператором ({a['snf_found']}): угадала бы верно — {g['right']}, "
+              f"угадала бы ДРУГОЙ номер — {g['wrong']}, не стала бы угадывать — {g['no_guess']}")
+            w(f"    «нет в базе» ({a['snf_not_in_db']}): всё равно угадала бы какой-то номер — "
+              f"{g['false_on_not_in_db']}")
     w("=" * 64)
     return "\n".join(L)
 
@@ -422,6 +504,9 @@ def main(argv=None) -> str:
     p.add_argument("log", help="лог обработки (<таблица>_log.csv)")
     p.add_argument("--table", default=None, help="таблица счётчиков — для разбора SERIAL_NOT_FOUND")
     p.add_argument("--out", default=None, help="сохранить отчёт в файл")
+    p.add_argument("--details", action="store_true",
+                   help="с --table: список SERIAL_NOT_FOUND с ответом оператора и догадкой программы "
+                        "(только на экран, в --out не пишется)")
     args = p.parse_args(argv)
 
     cfg = PipelineConfig()
@@ -432,6 +517,13 @@ def main(argv=None) -> str:
     if args.out:
         Path(args.out).write_text(report + "\n", encoding="utf-8")
         print(f"\nСохранено: {args.out}")
+    if args.details and serials is not None:
+        rng = plausible_delta_range(list(last_state_per_photo(rows).values()))
+        print("\nSERIAL_NOT_FOUND с ответом оператора (догадка программы):")
+        for d in guess_details(rows, serials, last, rng) if rng else []:
+            print(f"  {d['file']}: модель {d['model_serial']} / {d['model_reading']} → догадка "
+                  f"{d['guess']} {d['guess_delta']}; оператор: {d['operator']} {d['operator_serial']}"
+                  f"  [{d['verdict']}]")
     return report
 
 

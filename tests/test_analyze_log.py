@@ -147,12 +147,48 @@ def test_operator_accuracy():
         # DIGITS_ERROR, оператор ввёл показание; модель прочитала не все цифры —
         # в точность «модель прочитала все цифры» не входит
         row("f", "PLUS", source="manual", reading="700", model_reading_str="?0700"),
+        # отметка «проверено» попала в строку REPEAT (ошибка program2) — не учитывается
+        row("g", "REPEAT", verified_by="Оператор"),
     ]
     a = al.operator_accuracy(rows)
     assert a["verified"] == 2 and a["verified_reading_ok"] == 1 and a["verified_corrected"] == 1
+    assert a["verified_other"] == 1
     assert a["manual"] == 3 and a["manual_outcomes"] == {"PLUS": 2, "NOT_IN_DB": 1}
     assert a["manual_full_model_reading"] == 1 and a["manual_model_reading_ok"] == 1
-    assert a["snf_with_answer"] == 2 and a["snf_model_serial_ok"] == 1
+    assert a["snf_with_answer"] == 2 and a["snf_found"] == 1 and a["snf_not_in_db"] == 1
+    assert "guess" not in a   # без таблицы угадывание не проверяется
+
+
+def test_guess_serial():
+    table = {"1234567", "1234568", "7654321"}
+    last = {"1234567": 1000.0, "1234568": 5000.0, "7654321": 300.0}
+    rng = (0.0, 200.0)
+    assert al.guess_serial("1234569", "01050", table, last, rng) == "1234567"   # из двух подходит один
+    assert al.guess_serial("7654320", "09000", table, last, rng) is None       # расход не подходит
+    assert al.guess_serial("7654320", "0?300", table, last, rng) is None       # показание не дочитано
+    assert al.guess_serial("5555555", "00100", table, last, rng) is None       # похожих нет
+
+
+def test_guess_checked_against_operator_answers():
+    table = {"1234567", "1234568", "7654321", "1111111"}
+    last = {"1234567": 1000.0, "1234568": 5000.0, "7654321": 300.0, "1111111": 0.0}
+    rows = [
+        # оператор нашёл 1234567 — догадка совпала
+        row("a", "SERIAL_NOT_FOUND", serial_id="1234569", model_reading_str="01050", photo_hash="h1"),
+        row("a", "PLUS", source="manual", serial_id="1234567", reading="1050", photo_hash="h1"),
+        # оператор нашёл 1234568 — догадка была бы 1234567 (ошибка)
+        row("b", "SERIAL_NOT_FOUND", serial_id="1234569", model_reading_str="01050", photo_hash="h2"),
+        row("b", "MINUS", source="manual", serial_id="1234568", reading="1050", photo_hash="h2"),
+        # оператор нашёл, а догадки нет (расход не подходит)
+        row("c", "SERIAL_NOT_FOUND", serial_id="7654320", model_reading_str="09000", photo_hash="h3"),
+        row("c", "PLUS", source="manual", serial_id="7654321", reading="9000", photo_hash="h3"),
+        # «нет в базе», но догадка была бы — ложная
+        row("d", "SERIAL_NOT_FOUND", serial_id="7654320", model_reading_str="00400", photo_hash="h4"),
+        row("d", "NOT_IN_DB", source="manual", serial_id="7654320", photo_hash="h4"),
+    ]
+    a = al.operator_accuracy(rows, table, last, (0.0, 200.0))
+    assert a["snf_found"] == 3 and a["snf_not_in_db"] == 1
+    assert a["guess"] == {"right": 1, "wrong": 1, "no_guess": 1, "false_on_not_in_db": 1}
 
 
 def test_report_without_operator_rows_says_so():
@@ -247,3 +283,20 @@ def test_load_table_last_readings(tmp_path):
     serials, last = al.load_table(table, cfg)
     assert serials == {"0045618", "9076647"}
     assert last == {"0045618": 12345.5, "9076647": None}
+
+
+def test_guess_details():
+    table = {"1234567", "7654321"}
+    last = {"1234567": 1000.0, "7654321": 300.0}
+    rows = [
+        row("a.jpg", "SERIAL_NOT_FOUND", serial_id="1234569", model_reading_str="01050",
+            photo_hash="h1", folder="Аюб"),
+        row("a.jpg", "PLUS", source="manual", serial_id="1234567", photo_hash="h1"),
+        row("b.jpg", "SERIAL_NOT_FOUND", serial_id="7654320", model_reading_str="00400", photo_hash="h2"),
+        row("b.jpg", "NOT_IN_DB", source="manual", serial_id="7654320", photo_hash="h2"),
+    ]
+    d = al.guess_details(rows, table, last, (0.0, 200.0))
+    assert [(x["file"], x["guess"], x["guess_delta"], x["verdict"]) for x in d] == [
+        ("Аюб/a.jpg", "1234567", "+50", "ВЕРНО"),
+        ("b.jpg", "7654321", "+100", "ЛОЖНАЯ (оператор: нет в базе)"),
+    ]
