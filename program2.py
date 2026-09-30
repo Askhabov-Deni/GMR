@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk
 
 _BASE = Path(__file__).parent
@@ -424,6 +424,38 @@ def apply_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row
         "verified_at":  now_iso(),
         "notes":        (row.get("notes", "") + " | " + note).strip(" |"),
     })
+
+
+# ─── «Серийник в базе с ошибкой» (решение владельца 2026-09-30) ───────────────
+# На фото серийник верный, по лицевому счёту понятно, что счётчик тот же, но в
+# базе номер записан с опечаткой. Показание в таблицу НЕ пишется — только после
+# исправления базы. Фото — в <папка контролёра>/db_serial_fix/, рядом список.
+DB_SERIAL_FIX_OUTCOME = "DB_SERIAL_FIX"
+DB_SERIAL_FIX_DIR     = "db_serial_fix"
+DB_SERIAL_FIX_LIST    = "db_serial_fix.csv"
+DB_SERIAL_FIX_COLUMNS = ["Фото", "Контролёр", "Лицевой счёт", "Серийник в базе",
+                         "Серийник на фото", "Показание", "Дата", "Оператор"]
+
+
+def table_serial_for_account(df: Optional[pd.DataFrame], cfg: PipelineConfig, account: str) -> Optional[str]:
+    """Серийник абонента в таблице (None — лицевого счёта нет)."""
+    if df is None or not account:
+        return None
+    m = df[df[cfg.col_account_id].apply(lambda x: str(x).strip() == account.strip())]
+    return None if m.empty else _normalize_serial(str(m.iloc[0][cfg.col_serial]))
+
+
+def append_db_serial_fix(list_path: str, entry: dict) -> None:
+    """Дописывает строку в список для исправления базы (CSV «;», открывается в Excel)."""
+    import csv
+    p = Path(list_path)
+    new = not p.exists()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a", encoding="utf-8-sig" if new else "utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=DB_SERIAL_FIX_COLUMNS, delimiter=";")
+        if new:
+            w.writeheader()
+        w.writerow({k: entry.get(k, "") for k in DB_SERIAL_FIX_COLUMNS})
 
 
 def free_photo_path(dst_dir: str, name: str, current: str) -> str:
@@ -1156,6 +1188,13 @@ class EditScreen(ttk.Frame):
         ).pack(side=tk.LEFT, padx=4)
 
         tk.Button(
+            bottom, text="≠  Серийник в базе с ошибкой  [B]",
+            bg="#8D6E63", fg="white", font=("Segoe UI", 10),
+            relief="flat", padx=12, pady=8,
+            command=self._db_serial_fix,
+        ).pack(side=tk.LEFT, padx=4)
+
+        tk.Button(
             bottom, text="→  Пропустить  [Esc]",
             bg=CLR_GRAY, fg="white", font=("Segoe UI", 10),
             relief="flat", padx=12, pady=8,
@@ -1174,13 +1213,15 @@ class EditScreen(ttk.Frame):
             ("<D>",        self._hotkey_duplicate),
             ("<n>",        self._hotkey_not_in_db),
             ("<N>",        self._hotkey_not_in_db),
+            ("<b>",        self._hotkey_db_serial_fix),
+            ("<B>",        self._hotkey_db_serial_fix),
         ]:
             self.app.bind_all(seq, cb)
 
     def _unbind_keys(self):
         # ИСПРАВЛЕНО: убраны пробелы
         for seq in ("<Return>", "<KP_Enter>", "<Escape>", "<Delete>",
-                    "<d>", "<D>", "<n>", "<N>"):
+                    "<d>", "<D>", "<n>", "<N>", "<b>", "<B>"):
             try:
                 self.app.unbind_all(seq)
             except Exception:
@@ -1229,6 +1270,12 @@ class EditScreen(ttk.Frame):
         if self._is_in_text_entry() or self._is_in_reading_entry():
             return
         self._not_in_db()
+        return "break"
+
+    def _hotkey_db_serial_fix(self, event):
+        if self._is_in_text_entry() or self._is_in_reading_entry():
+            return
+        self._db_serial_fix()
         return "break"
 
     def _on_mousewheel(self, event):
@@ -1723,6 +1770,96 @@ class EditScreen(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
             return
+        try:
+            self.app.open_next_or_back(self.photo_path)
+        finally:
+            self._unbind_keys()
+
+    def _ask_photo_serial(self, suggested: str) -> Optional[str]:
+        return simpledialog.askstring(
+            "Серийник на фото",
+            "Серийный номер — как на фото (не как в базе):",
+            initialvalue=suggested, parent=self.app,
+        )
+
+    def _db_serial_fix(self):
+        """
+        «Серийник в базе с ошибкой»: счётчик найден по лицевому счёту, серийник
+        на фото отличается от записанного в базе. Показание в таблицу не пишется.
+        """
+        cfg = self.app.config
+        account = self._account_var.get().strip()
+        db_serial = table_serial_for_account(self.app.df, cfg, account)
+        if db_serial is None:
+            messagebox.showwarning(
+                "Нужен лицевой счёт",
+                "Укажите лицевой счёт абонента (поле Account ID) — он должен быть в таблице.",
+                parent=self.app)
+            return
+        mr = self._model_result or {}
+        photo_serial = self._ask_photo_serial(mr.get("serial_text") or "")
+        if photo_serial is None:
+            return
+        photo_serial = photo_serial.strip()
+        if not photo_serial:
+            return
+        if _normalize_serial(photo_serial) == db_serial:
+            messagebox.showwarning(
+                "Серийник совпадает с базой",
+                "Номер на фото совпадает с номером в базе — используйте «Принять».",
+                parent=self.app)
+            return
+        reading_s = self._reading_widget.get_string() if self._reading_widget.is_complete() else ""
+        if not messagebox.askyesno(
+            "Серийник в базе с ошибкой",
+            f"Лицевой счёт: {account}\n"
+            f"Серийник в базе: {db_serial}\n"
+            f"Серийник на фото: {photo_serial}\n"
+            f"Показание: {reading_s or '—'}\n\n"
+            f"Показание в таблицу не записывается — только после исправления базы.\n"
+            f"Фото уйдёт в папку «{DB_SERIAL_FIX_DIR}». Продолжить?",
+            parent=self.app,
+        ):
+            return
+
+        photos_dir = self.app.settings.photos_dir
+        dst_dir = str(Path(photos_dir) / DB_SERIAL_FIX_DIR)
+        ext = Path(self.photo_path).suffix
+        try:
+            dst = free_photo_path(dst_dir, f"{account}{ext}", self.photo_path)
+            dst = move_photo(self.photo_path, dst_dir, Path(dst).name)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось переместить фото:\n{e}", parent=self.app)
+            return
+
+        row = {k: "" for k in _LOG_COLUMNS}
+        row.update({
+            "original_filename": Path(self.photo_path).name,
+            "final_filename":    Path(dst).name,
+            "serial_id":         photo_serial,
+            "account_id":        account,
+            "reading":           str(int(reading_s)) if reading_s else "",
+            "outcome":           DB_SERIAL_FIX_OUTCOME,
+            "source":            "manual",
+            "processed_by":      self.app.settings.operator_name,
+            "processed_at":      now_iso(),
+            "model_serial_conf": f"{mr.get('serial_conf', ''):.4f}" if mr.get("serial_conf") else "",
+            "model_reading_str": mr.get("reading_str") or "",
+            "notes":             f"серийник в базе с ошибкой: в базе {db_serial}, на фото {photo_serial}",
+        })
+        self.app.append_log(row)
+        append_db_serial_fix(str(Path(dst_dir) / DB_SERIAL_FIX_LIST), {
+            "Фото":             Path(dst).name,
+            "Контролёр":        Path(photos_dir).name,
+            "Лицевой счёт":     account,
+            "Серийник в базе":  db_serial,
+            "Серийник на фото": photo_serial,
+            "Показание":        reading_s,
+            "Дата":             now_iso()[:10],
+            "Оператор":         self.app.settings.operator_name,
+        })
+        # номер на фото верный — годится в разметку для дообучения CRNN
+        self._save_markup_silent(photo_serial, reading_s, mr)
         try:
             self.app.open_next_or_back(self.photo_path)
         finally:

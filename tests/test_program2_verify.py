@@ -262,3 +262,87 @@ def test_edit_serial_cancelled_changes_nothing(app):
     scr._save_edit()
     assert app.log_rows[0]["verified_by"] == "" and app.log_rows[0]["account_id"] == "A1"
     assert os.path.exists(os.path.join(app.settings.photos_dir, "plus", "A1.jpg"))
+
+
+# ─── «Серийник в базе с ошибкой» ─────────────────────────────────────────────
+
+def test_table_serial_for_account():
+    df = table([("0045618", "A1", "10", ""), ("1234567", "A2", "5", "")])
+    assert program2.table_serial_for_account(df, CFG, "A1") == "0045618"
+    assert program2.table_serial_for_account(df, CFG, " A2 ") == "1234567"
+    assert program2.table_serial_for_account(df, CFG, "A9") is None
+    assert program2.table_serial_for_account(None, CFG, "A1") is None
+
+
+def test_append_db_serial_fix(tmp_path):
+    lst = tmp_path / "db_serial_fix" / "db_serial_fix.csv"
+    program2.append_db_serial_fix(str(lst), {"Фото": "A1.jpg", "Контролёр": "Сулиман С",
+                                             "Лицевой счёт": "A1", "Серийник в базе": "1284567",
+                                             "Серийник на фото": "1234567"})
+    program2.append_db_serial_fix(str(lst), {"Фото": "A2.jpg", "Контролёр": "Аюб"})
+    raw = lst.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf") and raw.count(b"\xef\xbb\xbf") == 1   # BOM один раз — для Excel
+    lines = raw.decode("utf-8-sig").splitlines()
+    assert lines[0] == ";".join(program2.DB_SERIAL_FIX_COLUMNS)
+    assert lines[1].startswith("A1.jpg;Сулиман С;A1;1284567;1234567")
+    assert len(lines) == 3
+
+
+@pytest.fixture
+def edit_app(tmp_path, monkeypatch):
+    """MainWindow + одно фото в question/serial_not_found (без моделей)."""
+    import cv2
+    photos = tmp_path / "Сулиман С"
+    q = photos / "question" / "serial_not_found"
+    q.mkdir(parents=True)
+    cv2.imwrite(str(q / "w.jpg"), np.full((50, 50, 3), 100, np.uint8))
+    tbl = tmp_path / "meters_table.csv"
+    table([("1284567", "A1", "1000", ""), ("7654321", "A2", "5", "")]).to_csv(tbl, index=False)
+    settings = program2.AppSettings(operator_name="Оператор", photos_dir=str(photos),
+                                    table_path=str(tbl), training_dir="")
+    monkeypatch.setattr(program2, "load_settings", lambda: settings)
+    monkeypatch.setattr(program2, "save_settings", lambda s: None)
+    monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
+    monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
+    for name in ("askyesno", "showinfo", "showwarning", "showerror"):
+        monkeypatch.setattr(program2.messagebox, name, lambda *a, **k: True)
+    w = program2.MainWindow()
+    w.withdraw()
+    yield w, photos, q / "w.jpg"
+    w.destroy()
+
+
+@needs_display
+def test_db_serial_fix_moves_photo_writes_list_not_table(edit_app, monkeypatch):
+    app, photos, photo = edit_app
+    app.open_edit_screen(str(photo), "serial_not_found")
+    scr = app._current_screen
+    scr._account_var.set("A1")
+    scr._reading_widget.set_digits("01050", None)
+    monkeypatch.setattr(scr, "_ask_photo_serial", lambda suggested: "1234567")
+    scr._db_serial_fix()
+
+    fixed = photos / "db_serial_fix" / "A1.jpg"
+    assert fixed.exists() and not photo.exists()
+    lst = (photos / "db_serial_fix" / "db_serial_fix.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert lst[1].split(";")[:6] == ["A1.jpg", "Сулиман С", "A1", "1284567", "1234567", "01050"]
+    r = app.log_rows[-1]
+    assert (r["outcome"], r["source"], r["serial_id"], r["account_id"], r["reading"]) == (
+        "DB_SERIAL_FIX", "manual", "1234567", "A1", "1050")
+    assert "в базе 1284567, на фото 1234567" in r["notes"]
+    df = pd.read_csv(app.settings.table_path, dtype=str, keep_default_na=False)
+    assert df.loc[df[CFG.col_account_id] == "A1", CFG.col_new_reading].item() == ""   # таблица не тронута
+
+
+@needs_display
+def test_db_serial_fix_refuses_same_serial_and_unknown_account(edit_app, monkeypatch):
+    app, photos, photo = edit_app
+    app.open_edit_screen(str(photo), "serial_not_found")
+    scr = app._current_screen
+    monkeypatch.setattr(scr, "_ask_photo_serial", lambda suggested: "1284567")
+    scr._account_var.set("A9")                 # нет такого лицевого счёта
+    scr._db_serial_fix()
+    scr._account_var.set("A1")                 # номер как в базе — не опечатка
+    scr._db_serial_fix()
+    assert photo.exists() and not (photos / "db_serial_fix").exists()
+    assert all(r["outcome"] != "DB_SERIAL_FIX" for r in app.log_rows)

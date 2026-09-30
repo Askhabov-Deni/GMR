@@ -35,6 +35,21 @@ READ_OK = {"PLUS", "MINUS", "SUSPICIOUS"}          # серийник найде
 SERIAL_FOUND = READ_OK | {"DIGITS_ERROR"}          # серийник найден в таблице
 _LOW_CONF = re.compile(r"pos(\d+)\(pred=(\d),conf=([\d.]+)\)")
 CORRECTED_NOTE = "исправлено при проверке"         # program2.VerifyScreen._save_edit
+DB_SERIAL_FIX = "DB_SERIAL_FIX"                    # program2: «Серийник в базе с ошибкой»
+# ручные исходы, при которых оператор нашёл счётчик в таблице
+OPERATOR_FOUND = READ_OK | {DB_SERIAL_FIX}
+
+
+def _guess_is_right(guess: str, manual: dict, accounts: Optional[dict]) -> bool:
+    """
+    Догадка верна, если это тот же абонент, что выбрал оператор. Сравнение по
+    лицевому счёту: при опечатке в базе (DB_SERIAL_FIX) серийник оператора —
+    как на фото и с номером из таблицы не совпадает. Без таблицы лицевых
+    счетов — сравнение по серийнику.
+    """
+    if accounts is not None and guess in accounts and manual.get("account_id"):
+        return accounts[guess] == manual["account_id"].strip()
+    return guess == manual.get("serial_id", "").strip()
 
 
 def load_log(path: Path) -> list[dict]:
@@ -293,7 +308,8 @@ def guess_serial(serial: str, reading_str: str, table_serials: set[str], last_re
 
 def operator_accuracy(rows: list[dict], table_serials: Optional[set[str]] = None,
                       last_readings: Optional[dict] = None,
-                      rng: Optional[tuple[float, float]] = None) -> dict:
+                      rng: Optional[tuple[float, float]] = None,
+                      accounts: Optional[dict] = None) -> dict:
     """
     Правильные ответы в логе появляются только из program2.py:
       - проверка (вкладка «Проверка»): у авто-строки PLUS/MINUS заполняется
@@ -321,7 +337,7 @@ def operator_accuracy(rows: list[dict], table_serials: Optional[set[str]] = None
     snf = [(auto_by_hash[m["photo_hash"]], m) for m in manual
            if m.get("photo_hash") in auto_by_hash
            and auto_by_hash[m["photo_hash"]]["outcome"] == "SERIAL_NOT_FOUND"]
-    snf_found = [(a, m) for a, m in snf if m["outcome"] in READ_OK and m.get("serial_id")]
+    snf_found = [(a, m) for a, m in snf if m["outcome"] in OPERATOR_FOUND]
     snf_not_in_db = [(a, m) for a, m in snf if m["outcome"] == "NOT_IN_DB"]
     res = {
         "verified": len(verified),
@@ -342,10 +358,10 @@ def operator_accuracy(rows: list[dict], table_serials: Optional[set[str]] = None
         def guess(a):
             return guess_serial(a["serial_id"], a.get("model_reading_str", ""),
                                 table_serials, last_readings, rng, alphabet)
-        g_found = [(guess(a), m["serial_id"].strip()) for a, m in snf_found]
+        g_found = [(guess(a), m) for a, m in snf_found]
         res["guess"] = {
-            "right": sum(g == truth for g, truth in g_found),
-            "wrong": sum(g is not None and g != truth for g, truth in g_found),
+            "right": sum(g is not None and _guess_is_right(g, m, accounts) for g, m in g_found),
+            "wrong": sum(g is not None and not _guess_is_right(g, m, accounts) for g, m in g_found),
             "no_guess": sum(g is None for g, _ in g_found),
             "false_on_not_in_db": sum(guess(a) is not None for a, _ in snf_not_in_db),
         }
@@ -353,7 +369,7 @@ def operator_accuracy(rows: list[dict], table_serials: Optional[set[str]] = None
 
 
 def guess_details(rows: list[dict], table_serials: set[str], last_readings: dict,
-                  rng: tuple[float, float]) -> list[dict]:
+                  rng: tuple[float, float], accounts: Optional[dict] = None) -> list[dict]:
     """
     Для --details: каждое фото SERIAL_NOT_FOUND с ответом оператора — что
     прочитала модель, какой номер угадала бы программа и что ответил оператор.
@@ -378,9 +394,9 @@ def guess_details(rows: list[dict], table_serials: set[str], last_readings: dict
             "guess_delta": f"{int(reading) - last:+.0f}" if g and last is not None else "",
             "operator": m["outcome"], "operator_serial": m.get("serial_id", ""),
             "verdict": ("—" if g is None else
-                        "ВЕРНО" if m["outcome"] in READ_OK and g == m.get("serial_id", "").strip() else
+                        "ВЕРНО" if m["outcome"] in OPERATOR_FOUND and _guess_is_right(g, m, accounts) else
                         "ЛОЖНАЯ (оператор: нет в базе)" if m["outcome"] == "NOT_IN_DB" else
-                        "ДРУГОЙ НОМЕР" if m["outcome"] in READ_OK else "?"),
+                        "ДРУГОЙ НОМЕР" if m["outcome"] in OPERATOR_FOUND else "?"),
         })
     return out
 
@@ -392,7 +408,7 @@ def _pct(a: int, b: int) -> str:
 
 
 def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[set[str]] = None,
-                 last_readings: Optional[dict] = None,
+                 last_readings: Optional[dict] = None, accounts: Optional[dict] = None,
                  title: str = "") -> str:
     state = last_state_per_photo(rows)
     photos = list(state.values())
@@ -400,7 +416,7 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
     d = digit_stats(photos, cfg)
     s = serial_stats(photos, table_serials, last_readings)
     rng = plausible_delta_range(photos)
-    a = operator_accuracy(rows, table_serials, last_readings, rng)
+    a = operator_accuracy(rows, table_serials, last_readings, rng, accounts)
     L = []
     w = L.append
     w("=" * 64)
@@ -481,17 +497,23 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
     return "\n".join(L)
 
 
-def load_table(path: Path, cfg: PipelineConfig) -> tuple[set[str], dict[str, Optional[float]]]:
-    """Серийники таблицы и последнее показание по каждому (первая строка с этим номером)."""
+def load_table(path: Path, cfg: PipelineConfig) -> tuple[set[str], dict[str, Optional[float]], dict[str, str]]:
+    """
+    Серийники таблицы, последнее показание и лицевой счёт по каждому
+    (первая строка с этим номером).
+    """
     from reader import _load_table, _normalize_serial   # те же правила чтения, что в reader.py
     df = _load_table(str(path))
     last: dict[str, Optional[float]] = {}
+    accounts: dict[str, str] = {}
     lasts = df[cfg.col_last_reading] if cfg.col_last_reading in df.columns else [""] * len(df)
-    for serial, value in zip(df[cfg.col_serial], lasts):
+    accs = df[cfg.col_account_id] if cfg.col_account_id in df.columns else [""] * len(df)
+    for serial, value, acc in zip(df[cfg.col_serial], lasts, accs):
         key = _normalize_serial(str(serial))
         if key and key != "nan" and key not in last:
             last[key] = _float(value) if str(value).strip() not in ("", "nan") else None
-    return set(last), last
+            accounts[key] = str(acc).strip()
+    return set(last), last, accounts
 
 
 def load_table_serials(path: Path, cfg: PipelineConfig) -> set[str]:
@@ -511,8 +533,8 @@ def main(argv=None) -> str:
 
     cfg = PipelineConfig()
     rows = load_log(Path(args.log))
-    serials, last = load_table(Path(args.table), cfg) if args.table else (None, None)
-    report = build_report(rows, cfg, serials, last)
+    serials, last, accounts = load_table(Path(args.table), cfg) if args.table else (None, None, None)
+    report = build_report(rows, cfg, serials, last, accounts)
     print(report)
     if args.out:
         Path(args.out).write_text(report + "\n", encoding="utf-8")
@@ -520,7 +542,7 @@ def main(argv=None) -> str:
     if args.details and serials is not None:
         rng = plausible_delta_range(list(last_state_per_photo(rows).values()))
         print("\nSERIAL_NOT_FOUND с ответом оператора (догадка программы):")
-        for d in guess_details(rows, serials, last, rng) if rng else []:
+        for d in guess_details(rows, serials, last, rng, accounts) if rng else []:
             print(f"  {d['file']}: модель {d['model_serial']} / {d['model_reading']} → догадка "
                   f"{d['guess']} {d['guess_delta']}; оператор: {d['operator']} {d['operator_serial']}"
                   f"  [{d['verdict']}]")

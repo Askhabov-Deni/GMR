@@ -280,7 +280,8 @@ def test_load_table_last_readings(tmp_path):
     table.write_text(
         f"{cfg.col_serial},{cfg.col_account_id},{cfg.col_last_reading},{cfg.col_new_reading}\n"
         "0045618,1,\"12345,5\",\n9076647,2,,\n0045618,3,1,\n", encoding="utf-8")
-    serials, last = al.load_table(table, cfg)
+    serials, last, accounts = al.load_table(table, cfg)
+    assert accounts == {"0045618": "1", "9076647": "2"}
     assert serials == {"0045618", "9076647"}
     assert last == {"0045618": 12345.5, "9076647": None}
 
@@ -300,3 +301,20 @@ def test_guess_details():
         ("Аюб/a.jpg", "1234567", "+50", "ВЕРНО"),
         ("b.jpg", "7654321", "+100", "ЛОЖНАЯ (оператор: нет в базе)"),
     ]
+
+
+def test_db_serial_fix_counts_as_found_and_compared_by_account():
+    # в базе 1234567 (опечатка), на фото 1234569; программа догадалась 1234567 → тот же абонент
+    table = {"1234567", "7654321"}
+    last = {"1234567": 1000.0, "7654321": 300.0}
+    accounts = {"1234567": "A1", "7654321": "A2"}
+    rows = [
+        row("a.jpg", "SERIAL_NOT_FOUND", serial_id="1234569", model_reading_str="01050", photo_hash="h1"),
+        row("a.jpg", "DB_SERIAL_FIX", source="manual", serial_id="1234569", account_id="A1", photo_hash="h1"),
+    ]
+    a = al.operator_accuracy(rows, table, last, (0.0, 200.0), accounts)
+    assert a["snf_found"] == 1 and a["guess"]["right"] == 1 and a["guess"]["wrong"] == 0
+    d = al.guess_details(rows, table, last, (0.0, 200.0), accounts)
+    assert d[0]["verdict"] == "ВЕРНО"
+    # без лицевых счетов — сравнение по серийнику, опечатка выглядит как «другой номер»
+    assert al.operator_accuracy(rows, table, last, (0.0, 200.0))["guess"]["wrong"] == 1
