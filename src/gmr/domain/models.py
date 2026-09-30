@@ -61,3 +61,7 @@ class PhotoResult:
     meter_crops_raw: Optional[list] = None
     # digit_bboxes_in_orig — боксы цифр в координатах оригинала [(x1,y1,x2,y2), ...]
     digit_bboxes_in_orig: Optional[list] = None
+    # ↓ Какие цифры в reading_str не прочитаны, а подставлены (заглушка на месте
+    #   пропущенной цифры, прощённые хвостовые) — пишется в notes лога.
+    #   None — подстановок не было. Решение владельца 2026-09-30 (вариант А).
+    digit_notes:    Optional[str]   = None

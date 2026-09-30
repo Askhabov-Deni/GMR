@@ -60,6 +60,7 @@ from src.gmr.application import (
     find_detection,
     read_meter_digits,
     read_meter_digits_for_config,
+    describe_substitutions,
 )
 from src.gmr.ml import (
     CnnDigitRecognizer, YoloDigitDetector,
@@ -286,7 +287,8 @@ def _make_log_row(
         "verified_at":       "",
         "model_serial_conf": f"{result.serial_conf:.4f}" if result.serial_conf is not None else "",
         "model_reading_str": result.reading_str or "",
-        "notes":             result.error_detail or "",
+        # notes: причина исхода + какие цифры подставлены (вариант А, 2026-09-30)
+        "notes":             " | ".join(n for n in (result.error_detail, result.digit_notes) if n),
         "photo_hash":        photo_hash,
         "source_folder":     source_folder,
     }
@@ -585,9 +587,10 @@ def process_photo(
         result.outcome = Outcome.SERIAL_LOW_CONF
         result.error_detail = f"serial conf={serial_conf:.3f} < {config.serial_conf_thresh}"
         # Читаем цифры для информативной аннотации
-        _r, _rs, _, _, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
+        _r, _rs, _, _dres, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
         result.reading_str = _rs
         result.reading     = _r
+        result.digit_notes = describe_substitutions(_dres)
         if _bboxes is not None:
             result.digit_bboxes_in_orig = _digit_bboxes_to_orig(
                 _bboxes, meter_bbox, meter_crop.shape
@@ -626,9 +629,10 @@ def process_photo(
             f"serial '{serial_text}' not in table "
             f"(tried: {', '.join(repr(c) for c in serial_candidates)})"
         )
-        _r, _rs, _, _, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
+        _r, _rs, _, _dres, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
         result.reading_str = _rs
         result.reading     = _r
+        result.digit_notes = describe_substitutions(_dres)
         if _bboxes is not None:
             result.digit_bboxes_in_orig = _digit_bboxes_to_orig(
                 _bboxes, meter_bbox, meter_crop.shape
@@ -687,6 +691,7 @@ def process_photo(
     )
 
     result.reading_str = reading_str
+    result.digit_notes = describe_substitutions(digit_results)
 
     # Пересчитываем digit bbox-ы в координаты оригинала (для отрисовки)
     if digit_bboxes is not None:

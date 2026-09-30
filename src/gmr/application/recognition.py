@@ -194,6 +194,28 @@ def read_meter_digits(
     return DigitReading(number, reading_str, None, digit_results, digit_bboxes)
 
 
+SUBSTITUTED_PREFIX = "подставлено:"
+
+
+def describe_substitutions(digit_results: Optional[list]) -> Optional[str]:
+    """
+    Какие позиции в показании не прочитаны моделью, а подставлены — для notes
+    лога. Например:
+      "подставлено: pos2='5' (цифра не найдена), pos4='0' (прочитано 7, conf=0.412)"
+    None — если подстановок не было. Позиции — с 0, как в "low conf digits".
+    """
+    parts = []
+    for r in digit_results or []:
+        note = r.get("note", "")
+        if note == "inserted placeholder":
+            parts.append(f"pos{r['position']}='{r['digit']}' (цифра не найдена)")
+        elif note.startswith("forgiven→"):
+            placeholder = note[len("forgiven→"):]
+            parts.append(f"pos{r['position']}='{placeholder}' "
+                         f"(прочитано {r['digit']}, conf={r['confidence']:.3f})")
+    return f"{SUBSTITUTED_PREFIX} " + ", ".join(parts) if parts else None
+
+
 def read_meter_digits_for_config(
     models: RecognitionModels, meter_crop: Any, config: PipelineConfig,
 ) -> DigitReading:

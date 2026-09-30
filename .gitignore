@@ -44,3 +44,9 @@ settings.json
 
 # Результаты tools/inspect_model.py
 inspect_out/
+
+# Copies of working data (data_for_reader_test, data_for_reader_notes, ...)
+data_for_reader_*/
+# Windows thumbnails and WhatsApp videos
+Thumbs.db
+*.mp4

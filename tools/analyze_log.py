@@ -28,6 +28,7 @@ from pathlib import Path
 from statistics import quantiles
 from typing import Optional
 
+from src.gmr.application.recognition import SUBSTITUTED_PREFIX
 from src.gmr.domain import PipelineConfig
 
 READ_OK = {"PLUS", "MINUS", "SUSPICIOUS"}          # серийник найден, цифры прочитаны
@@ -84,7 +85,12 @@ def digit_stats(photos: list[dict], cfg: PipelineConfig) -> dict:
             errors["неуверенные цифры" if note.startswith("low conf")
                    else "не 5 цифр / не найдены" if note else "без пояснения"] += 1
     forgiven_from = cfg.expected_digits - cfg.ignore_last_digits
+    read = [r for r in photos if r["outcome"] in READ_OK]
+    marked = [r["notes"] for r in read if SUBSTITUTED_PREFIX in r.get("notes", "")]
     return {
+        "substituted": {"photos": len(marked), "of": len(read),
+                        "missing": sum(n.count("(цифра не найдена)") for n in marked),
+                        "forgiven": sum(n.count("(прочитано ") for n in marked)},
         "with_reading": len(readings),
         "with_unsure": sum("?" in s for s in readings),
         "only_first_unsure": sum(s.startswith("?") and "?" not in s[1:] for s in readings),
@@ -343,9 +349,13 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
     w(f"  что модель видела на позиции 0: {d['low_conf_pos0_pred']}")
     w(f"Ошибки DIGITS_ERROR: {d['errors']}")
     w(f"Первая цифра у прочитанных показаний: {d['first_digit_read']}")
-    w(f"Позиции {d['forgiven_positions']} при низкой уверенности не дают '?' — туда молча "
-      f"подставляется '{cfg.forgiven_digit_placeholder}' (ignore_last_digits={cfg.ignore_last_digits}); "
-      f"по логу не видно, как часто.")
+    sub = d["substituted"]
+    w(f"Позиции {d['forgiven_positions']} при низкой уверенности не дают '?' — туда "
+      f"подставляется '{cfg.forgiven_digit_placeholder}' (ignore_last_digits={cfg.ignore_last_digits}), "
+      f"а пропущенная детектором цифра заменяется на '{cfg.missing_digit_placeholder}'.")
+    w(f"Показания с подставленными цифрами (PLUS/MINUS/SUSPICIOUS): {_pct(sub['photos'], sub['of'])}; "
+      f"пропущенных цифр — {sub['missing']}, прощённых хвостовых — {sub['forgiven']}")
+    w("  (пометки в notes пишутся с 2026-09-30 — у строк, записанных раньше, их нет)")
 
     w("")
     w("── Серийные номера " + "─" * 45)
