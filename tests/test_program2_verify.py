@@ -460,3 +460,29 @@ def test_window_start_backs_up_table_and_log(app, tmp_path):
     copies = list((tmp_path / "gmr_backups" / "meters_table").iterdir())
     assert len(copies) == 1
     assert sorted(p.name for p in copies[0].iterdir()) == ["meters_table.csv", "meters_table_log.csv"]
+
+
+# ─── Номер у нескольких абонентов (2026-10-01) ───────────────────────────────
+
+def test_serial_choices_one_per_account_in_table_order():
+    df = table([("44444", "A4", "10", ""), ("44444", "A5", "20", ""), ("44444", "A4", "10", "")])
+    choices = program2.serial_choices(df, CFG, "00025")
+    assert [(c.account, c.last_reading, c.delta) for c in choices] == [("A4", 10.0, 15.0), ("A5", 20.0, 5.0)]
+
+
+@needs_display
+def test_ambiguous_serial_operator_chooses_account(edit_app):
+    app, photos, photo = edit_app
+    app.df = pd.concat([app.df, table([("1284567", "A9", "900", "")])], ignore_index=True)
+    app.open_edit_screen(str(photo), "serial_ambiguous")
+    scr = app._current_screen
+    scr._reading_widget.set_digits("01050", None)
+    scr._lookup_by_serial("1284567")                         # в таблице у A1 и A9
+    assert scr._account_var.get() == ""                      # сам не выбирает
+    assert [h.account for h in scr._hints] == ["A1", "A9"]
+    assert "нескольких" in scr._serial_match_var.get()
+    scr._use_choice(scr._hints[1])
+    assert scr._account_var.get() == "A9"
+    scr._accept()
+    r = app.log_rows[-1]
+    assert r["account_id"] == "A9" and f"{program2.CHOICE_NOTE}: л/с A9" in r["notes"]

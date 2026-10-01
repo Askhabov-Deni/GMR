@@ -43,6 +43,10 @@ class ExportLocked(Exception):
     """Файл выгрузки открыт в Excel — Windows не даёт его заменить."""
 
 
+class NotAMonth(ValueError):
+    """Папка — не месяц: база не создана (сначала `gmr.py month … --table …`)."""
+
+
 def normalize_account(text: str) -> str:
     """Лицевой счёт как текст: без пробелов и без «.0» (так его пишет pandas)."""
     text = (text or "").strip()

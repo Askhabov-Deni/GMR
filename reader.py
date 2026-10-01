@@ -28,6 +28,7 @@ reader.py — главный пайплайн обработки фотогра�
     digits_error/    — не удалось прочитать 5 цифр
     suspicious/      — отклонение > DELTA_THRESHOLD
     error/           — программа упала на этом фото (битый файл, ошибка модели)
+    serial_ambiguous/— номер счётчика в таблице у нескольких абонентов
 
 DEBUG-РЕЖИМ (config.debug_digits = True):
   question/digits_error/<account_id или photo_stem>/
@@ -38,6 +39,7 @@ DEBUG-РЕЖИМ (config.debug_digits = True):
 import os
 import json
 import shutil
+import sqlite3
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,12 +69,15 @@ from src.gmr.application import (
     describe_substitutions,
 )
 from src.gmr.ml.loader import default_device, load_models
+from src.gmr.application.month import ExportLocked, NotAMonth, export_month, is_month
 from src.gmr.console import safe_console
+from src.gmr.domain.photo_date import reading_date
+from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
 from src.gmr.storage import (
     CsvLogStore, ShadowLogStore, SqliteLogStore, backup_dir_for, backup_files,
     photo_fingerprint, append_log_row, load_table, log_path_for, save_table,
 )
-from src.gmr.storage.backup import KEEP, remove_old
+from src.gmr.storage.backup import KEEP, backup_sqlite, remove_old
 from src.gmr.domain.serial_match import normalize_serial
 from src.gmr.render import draw_annotation, read_image, write_image
 
@@ -484,6 +489,20 @@ def process_photo(
 
     result.serial_text = serial_used
 
+    # Номер в таблице у нескольких лицевых счетов — у одной записи в базе номер
+    # с ошибкой; чей счётчик, решает оператор (решение владельца 2026-10-01).
+    accounts = list(dict.fromkeys(str(a).strip() for a in matches[config.col_account_id]))
+    if len(accounts) > 1:
+        result.outcome = Outcome.SERIAL_AMBIGUOUS
+        result.error_detail = f"номер {serial_used} у нескольких абонентов: {', '.join(accounts)}"
+        _r, _rs, _, _dres, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
+        result.reading_str = _rs
+        result.reading     = _r
+        result.digit_notes = describe_substitutions(_dres)
+        if _bboxes is not None:
+            result.digit_bboxes_in_orig = _digit_bboxes_to_orig(_bboxes, meter_bbox, meter_crop.shape)
+        return result
+
     row_idx    = matches.index[0]
     account_id = str(df.at[row_idx, config.col_account_id])
     last_val   = df.at[row_idx, config.col_last_reading]
@@ -636,6 +655,7 @@ _QUESTION_OUTCOMES = (
     Outcome.DIGITS_ERROR,
     Outcome.SUSPICIOUS,
     Outcome.ERROR,
+    Outcome.SERIAL_AMBIGUOUS,
 )
 
 
@@ -731,14 +751,29 @@ _LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"
 
 def run_pipeline(config: PipelineConfig) -> None:
     """
-    Прогон папки с фото. Перед ним — копия таблицы и лога
-    (src/gmr/storage/backup.py). Всё, что прогон пишет в консоль, пишется и в
+    Прогон папки с фото. Перед ним — копия таблицы и лога (или базы месяца,
+    src/gmr/storage/backup.py). Всё, что прогон пишет в консоль, пишется и в
     журнал `<папка результатов>/run_logs/run_<дата_время>.txt` (последние 30),
     вместе с причиной, если прогон прервался (2026-10-01).
+
+    Два режима (этап 2.2b):
+      - config.month_dir задан — папка месяца: фото из <месяц>/фото, результат
+        в <месяц>/результат, абоненты, показания и лог — в базе gmr.sqlite;
+        показание и строка лога пишутся одной транзакцией; в конце — выгрузка
+        показания.xlsx (_MonthRun);
+      - иначе — как раньше: таблица config.table_path и CSV-лог рядом (_TableRun).
     """
     logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt="%H:%M:%S")
     log = logging.getLogger("reader")
     log.setLevel(logging.INFO)
+
+    month = MonthFolder(Path(config.month_dir)) if config.month_dir else None
+    if month is not None:
+        if not is_month(month):
+            raise NotAMonth(f"Месяц не создан: {month.root}. Сначала: "
+                            f"python gmr.py month \"{month.root}\" --table <таблица компании>")
+        config.input_dir = str(month.photos)
+        config.output_base_dir = str(month.results)
 
     run_logs = Path(config.output_base_dir) / "run_logs"
     run_logs.mkdir(parents=True, exist_ok=True)
@@ -748,8 +783,16 @@ def run_pipeline(config: PipelineConfig) -> None:
     log.addHandler(handler)
     try:
         log.info(f"Журнал прогона: {journal}")
-        _backup_before_run(config, log)
-        _run_pipeline(config, log)
+        if month is not None:
+            _backup_month(month, log)
+            store = _MonthRun(config, log, month)
+        else:
+            _backup_before_run(config, log)
+            store = _TableRun(config, log)
+        try:
+            _run_pipeline(config, log, store)
+        finally:
+            store.close()
     except BaseException:
         log.exception("Прогон прерван")
         raise
@@ -771,36 +814,156 @@ def _backup_before_run(config: PipelineConfig, log: logging.Logger) -> None:
         log.info(f"Копия таблицы и лога: {dest}")
 
 
-def _run_pipeline(config: PipelineConfig, log: logging.Logger) -> None:
-    log.info(f"Загружаем таблицу: {config.table_path}")
-    df = load_table(config.table_path)
-    log.info(f"Строк в таблице: {len(df)}")
+def _backup_month(month: MonthFolder, log: logging.Logger) -> None:
+    try:
+        dest = backup_sqlite(month.db, month.backups)
+    except (OSError, sqlite3.Error) as e:
+        log.warning(f"Не удалось сделать копию базы месяца: {e}")
+        return
+    if dest is not None:
+        log.info(f"Копия базы месяца: {dest}")
 
-    # ── Лог обработки ────────────────────────────────────────────────────────
-    log_path = log_path_for(config.table_path)
-    if CsvLogStore(log_path).upgrade_if_needed():
-        log.info(f"Лог переведён на новый формат (столбцы photo_hash, source_folder): {log_path}")
 
-    # Фаза 2b: в shadow-run режиме каждая запись лога дублируется в SQLite.
-    # CSV (log_path) остаётся источником истины — чтение идёт только из него.
-    shadow_store = None
-    if config.shadow_sqlite_log:
-        sqlite_path = str(Path(log_path).with_suffix(".sqlite"))
-        if Path(sqlite_path).exists():
-            # SQLite от прошлого shadow-прогона пересоздаём из текущего CSV,
-            # иначе после ручных правок CSV (program2.py) сверка расходилась
-            # бы не из-за бага, а из-за устаревшей копии.
-            Path(sqlite_path).unlink()
-        shadow_store = ShadowLogStore(CsvLogStore(log_path), SqliteLogStore(sqlite_path))
-        if Path(log_path).exists():
-            shadow_store.shadow.save(shadow_store.primary.load())
-        log.info(f"Shadow-run: SQLite-лог → {sqlite_path}")
+class _TableRun:
+    """Прогон по таблице и CSV-логу рядом с ней — как до этапа 2.2b."""
 
-    log_rows = _maybe_init_log(config.table_path, log_path, df, config, store=shadow_store)
-    config._log_rows_cache           = log_rows   # нужен для проверки pre_existing
-    config._processed_accounts_cache = set()       # account_id обработанных в этом прогоне
-    config._processed_hashes_cache   = set()       # отпечатки фото, обработанных в этом прогоне
-    log.info(f"Processing log: {log_path} ({len(log_rows)} записей)")
+    def __init__(self, config: PipelineConfig, log: logging.Logger):
+        self.config, self.log = config, log
+        log.info(f"Загружаем таблицу: {config.table_path}")
+        self.df = load_table(config.table_path)
+        log.info(f"Строк в таблице: {len(self.df)}")
+
+        self.log_path = log_path_for(config.table_path)
+        if CsvLogStore(self.log_path).upgrade_if_needed():
+            log.info(f"Лог переведён на новый формат (столбцы photo_hash, source_folder): {self.log_path}")
+
+        # Фаза 2b: в shadow-run режиме каждая запись лога дублируется в SQLite.
+        # CSV (log_path) остаётся источником истины — чтение идёт только из него.
+        self.shadow_store = None
+        if config.shadow_sqlite_log:
+            sqlite_path = str(Path(self.log_path).with_suffix(".sqlite"))
+            if Path(sqlite_path).exists():
+                # SQLite от прошлого shadow-прогона пересоздаём из текущего CSV,
+                # иначе после ручных правок CSV (program2.py) сверка расходилась
+                # бы не из-за бага, а из-за устаревшей копии.
+                Path(sqlite_path).unlink()
+            self.shadow_store = ShadowLogStore(CsvLogStore(self.log_path), SqliteLogStore(sqlite_path))
+            if Path(self.log_path).exists():
+                self.shadow_store.shadow.save(self.shadow_store.primary.load())
+            log.info(f"Shadow-run: SQLite-лог → {sqlite_path}")
+
+        self.log_rows = _maybe_init_log(config.table_path, self.log_path, self.df, config,
+                                        store=self.shadow_store)
+        log.info(f"Processing log: {self.log_path} ({len(self.log_rows)} записей)")
+        self.updated = False
+
+    def start_folder(self) -> None:
+        self.updated = False
+
+    def record(self, result: PhotoResult, log_row: dict, photo_name: str) -> None:
+        cfg = self.config
+        if result.outcome in (Outcome.PLUS, Outcome.MINUS) and result.account_id:
+            serial_norm = normalize_serial(result.serial_text or "")
+            mask = self.df[cfg.col_serial].apply(lambda x: normalize_serial(str(x)) == serial_norm)
+            self.df.loc[mask, cfg.col_new_reading] = str(result.reading)
+            self.updated = True
+            self.log.info(f"  ✅ Записано в таблицу: account={result.account_id}, reading={result.reading}")
+        if self.shadow_store is not None:
+            self.shadow_store.append(log_row)
+        else:
+            append_log_row(self.log_path, log_row)
+
+    def after_photo(self, i: int) -> None:
+        # Промежуточное сохранение таблицы каждые 50 фото
+        if self.updated and i % 50 == 0:
+            save_table(self.df, self.config.table_path)
+            self.log.info(f"  💾 Промежуточное сохранение таблицы ({i} фото обработано)")
+
+    def end_folder(self) -> None:
+        if self.updated:
+            save_table(self.df, self.config.table_path)
+            self.log.info(f"\n💾 Таблица сохранена: {self.config.table_path}")
+
+    def finish(self) -> None:
+        if self.shadow_store is not None:
+            _report_shadow_run(self.shadow_store, self.log_path, self.log)
+
+    def close(self) -> None:
+        pass
+
+
+class _MonthRun:
+    """
+    Прогон по папке месяца (этап 2.2b). Абоненты и показания — из базы;
+    показание (PLUS/MINUS), запись в журнал изменений и строка лога — одной
+    транзакцией: сбой посреди прогона не теряет показаний, при перезапуске
+    фото узнаётся по логу. Таблицу во время прогона никто не пишет, поэтому
+    открытый Excel ему не мешает; в конце — выгрузка показания.xlsx (если
+    файл открыт — показания остаются в базе, выгрузить позже: gmr.py export).
+    """
+
+    def __init__(self, config: PipelineConfig, log: logging.Logger, month: MonthFolder):
+        self.config, self.log, self.month = config, log, month
+        self.db = MonthDB(month.db)
+        abonents = self.db.abonents(only_in_table=True)
+        readings = self.db.readings()
+        cfg = config
+        self.df = pd.DataFrame(
+            [{cfg.col_serial: a.serial, cfg.col_account_id: a.account,
+              cfg.col_last_reading: a.last_reading,
+              cfg.col_new_reading: readings[a.account].value if a.account in readings else ""}
+             for a in abonents.values()],
+            columns=[cfg.col_serial, cfg.col_account_id, cfg.col_last_reading, cfg.col_new_reading],
+        )
+        # Показания, которые были в таблице при загрузке, — как строки
+        # pre_existing старого лога: по такому счёту новое фото → REPEAT
+        # (DuplicatePolicy). В базу эти строки не пишутся.
+        self.log_rows = self.db.log_rows() + [
+            {"original_filename": "__pre_existing__", "source": "pre_existing",
+             "outcome": "UNKNOWN", "account_id": account}
+            for account, r in readings.items() if r.source == "table"
+        ]
+        log.info(f"Месяц: {month.root}; абонентов: {len(abonents)}, с показанием: "
+                 f"{sum(1 for a in abonents if a in readings)}, строк лога: {len(self.log_rows)}")
+
+    def start_folder(self) -> None:
+        pass
+
+    def record(self, result: PhotoResult, log_row: dict, photo_name: str) -> None:
+        cfg = self.config
+        with self.db.transaction():
+            if result.outcome in (Outcome.PLUS, Outcome.MINUS) and result.account_id:
+                account, value = result.account_id, str(result.reading)
+                old = self.db.reading(account)
+                self.db.put_reading(Reading(account, value, reading_date(photo_name), "auto",
+                                            photo_name, now_text(), "auto"))
+                self.db.add_change("auto", "показание записано", account, cfg.col_new_reading,
+                                   old.value if old else "", value, note=photo_name)
+                self.df.loc[self.df[cfg.col_account_id] == account, cfg.col_new_reading] = value
+                self.log.info(f"  ✅ Записано в базу: account={account}, reading={value}")
+            self.db.append_log_rows([log_row])
+
+    def after_photo(self, i: int) -> None:
+        pass
+
+    def end_folder(self) -> None:
+        pass
+
+    def finish(self) -> None:
+        try:
+            self.log.info(export_month(str(self.month.root), self.config).text())
+        except ExportLocked as e:
+            self.log.warning(f"⚠️  {e} Показания сохранены в базе.")
+
+    def close(self) -> None:
+        self.db.close()
+
+
+def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
+    df = store.df
+    config._log_rows_cache           = store.log_rows   # нужен для проверки pre_existing
+    config._processed_accounts_cache = set()            # account_id обработанных в этом прогоне
+    config._processed_hashes_cache   = set()            # отпечатки фото, обработанных в этом прогоне
 
     log.info("Загружаем модели...")
     device = default_device()
@@ -854,7 +1017,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger) -> None:
         log.info(f"Найдено фото: {len(photos)}\n")
 
         stats: dict[Outcome, int] = {o: 0 for o in Outcome}
-        db_updated = False
+        store.start_folder()
 
         for i, photo_path_obj in enumerate(photos, 1):
             photo_path = photo_path_obj  # совместимость с process_photo (ожидает str)
@@ -888,16 +1051,6 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger) -> None:
                 f"→ {result.outcome.name}  {detail}"
             )
 
-            # Записываем в таблицу (только для PLUS / MINUS)
-            if result.outcome in (Outcome.PLUS, Outcome.MINUS) and result.account_id:
-                serial_norm = normalize_serial(result.serial_text or "")
-                mask = df[config.col_serial].apply(
-                    lambda x: normalize_serial(str(x)) == serial_norm
-                )
-                df.loc[mask, config.col_new_reading] = str(result.reading)
-                db_updated = True
-                log.info(f"  ✅ Записано в таблицу: account={result.account_id}, reading={result.reading}")
-
             # Сохраняем аннотированное фото в нужную папку
             dst_dir  = str(Path(output_base) / OUTCOME_FOLDER[result.outcome])
             new_name = result.new_photo_name or photo_path.name
@@ -914,28 +1067,19 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger) -> None:
                 log.exception(f"  Не удалось скопировать {photo_path.name} в {dst_dir}")
             log.info(f"  📁 → {output_base}/{OUTCOME_FOLDER[result.outcome]}/{new_name}")
 
-            # Запись в лог после каждого фото
+            # Показание (PLUS/MINUS) и строка лога — после каждого фото
             log_row = _make_log_row(
                 photo_path_obj.name, result, config,
                 photo_hash=photo_hash, source_folder=subfolder_name,
             )
-            if shadow_store is not None:
-                shadow_store.append(log_row)
-            else:
-                append_log_row(log_path, log_row)
+            store.record(result, log_row, photo_path_obj.name)
             config._log_rows_cache.append(log_row)
             if result.account_id:
                 config._processed_accounts_cache.add(result.account_id)
             config._processed_hashes_cache.add(photo_hash)
+            store.after_photo(i)
 
-            # Промежуточное сохранение таблицы и лога каждые 50 фото
-            if db_updated and i % 50 == 0:
-                save_table(df, config.table_path)
-                log.info(f"  💾 Промежуточное сохранение таблицы ({i} фото обработано)")
-
-        if db_updated:
-            save_table(df, config.table_path)
-            log.info(f"\n💾 Таблица сохранена: {config.table_path}")
+        store.end_folder()
 
         per_folder_stats[subfolder_name or Path(config.input_dir).name] = stats
 
@@ -958,8 +1102,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger) -> None:
         log.info("\n" + overall_report_text)
         log.info(f"💾 Общий отчёт сохранён: {overall_report_path}")
 
-    if shadow_store is not None:
-        _report_shadow_run(shadow_store, log_path, log)
+    store.finish()
 
 
 def _report_shadow_run(shadow_store: ShadowLogStore, log_path: str, log: logging.Logger) -> None:

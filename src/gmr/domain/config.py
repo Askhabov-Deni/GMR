@@ -57,6 +57,12 @@ class PipelineConfig:
     expected_digits:          int   = 5
     delta_threshold:          float = 10_000.0
 
+    # Папка месяца (этап 2.2b): если задана — фото из <месяц>/фото, результат в
+    # <месяц>/результат, абоненты, показания и лог — в базе <месяц>/gmr.sqlite,
+    # в конце — выгрузка показания.xlsx (src/gmr/storage/month.py). input_dir,
+    # output_base_dir и table_path тогда не используются.
+    month_dir:                str   = ""
+
     # Прочее
     move_photos:              bool  = False  # True=перемещать, False=копировать
 

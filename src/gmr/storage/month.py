@@ -179,6 +179,10 @@ class MonthDB:
     def readings(self) -> dict[str, Reading]:
         return {r["account"]: Reading(**dict(r)) for r in self.conn.execute("SELECT * FROM readings")}
 
+    def reading(self, account: str) -> Optional[Reading]:
+        row = self.conn.execute("SELECT * FROM readings WHERE account=?", (account,)).fetchone()
+        return Reading(**dict(row)) if row else None
+
     def put_reading(self, r: Reading) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO readings (account, value, date, source, photo, updated_at, updated_by) "

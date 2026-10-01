@@ -79,6 +79,7 @@ QUESTION_SUBFOLDERS = [
     "no_serial",
     "no_meter",
     "error",
+    "serial_ambiguous",
 ]
 
 # Читаемые названия причин
@@ -90,6 +91,7 @@ REASON_LABELS = {
     "no_serial":         "Нет серийника",
     "no_meter":          "Нет счётчика",
     "error":             "Ошибка программы",
+    "serial_ambiguous":  "Номер у нескольких абонентов",
 }
 
 # Цвета
@@ -474,6 +476,7 @@ def apply_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row
 # заполняет лицевой счёт; решает оператор: «Принять» (модель ошиблась),
 # «Серийник в базе с ошибкой» или «Нет в базе».
 HINT_NOTE = "подсказка"
+CHOICE_NOTE = "номер у нескольких абонентов, выбран"   # notes: выбор оператора (2026-10-01)
 
 
 @dataclass
@@ -489,6 +492,24 @@ class SerialHint:
     account:      str
     last_reading: Optional[float]
     delta:        Optional[float]   # показание − последнее показание
+
+
+def serial_choices(matches: pd.DataFrame, cfg: PipelineConfig, reading_str: str) -> list[SerialHint]:
+    """Абоненты, у которых в таблице записан этот номер (по одному на лицевой
+    счёт, в порядке таблицы). Больше одного — у одной записи в базе номер с
+    ошибкой, выбирает оператор (решение владельца 2026-10-01)."""
+    reading = int(reading_str) if reading_str and reading_str.isdigit() else None
+    out, seen = [], set()
+    for serial, account, last in zip(matches[cfg.col_serial], matches[cfg.col_account_id],
+                                     matches[cfg.col_last_reading]):
+        account = str(account).strip()
+        if account in seen:
+            continue
+        seen.add(account)
+        last = _to_float(last)
+        delta = (reading - last) if reading is not None and last is not None else None
+        out.append(SerialHint(str(serial).strip(), account, last, delta))
+    return out
 
 
 def build_serial_index(df: Optional[pd.DataFrame], cfg: PipelineConfig) -> Optional[SerialIndex]:
@@ -1545,6 +1566,13 @@ class EditScreen(ttk.Frame):
             )
             matches = self.app.df[mask]
             if not matches.empty:
+                choices = serial_choices(matches, cfg, self._current_reading_str())
+                if len(choices) > 1:
+                    self._serial_match_var.set(f"⚠ номер у нескольких абонентов ({len(choices)})")
+                    self._show_choices(choices)
+                    self._update_delta()
+                    self._update_accept_state()
+                    return
                 row     = matches.iloc[0]
                 account = str(row.get(cfg.col_account_id, ""))
                 last    = row.get(cfg.col_last_reading)
@@ -1602,6 +1630,35 @@ class EditScreen(ttk.Frame):
                   font=("Segoe UI", 8), foreground=CLR_GRAY,
                   wraplength=280, justify="left").pack(anchor="w", pady=(0, 6))
 
+    def _show_choices(self, choices: list[SerialHint]):
+        """Номер в таблице у нескольких абонентов — кнопки выбора."""
+        for w in self._hint_frame.winfo_children():
+            w.destroy()
+        self._hints = choices
+        ttk.Label(self._hint_frame, text="Этот номер в базе у нескольких абонентов:",
+                  font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        for h in choices:
+            last = f"{h.last_reading:.0f}" if h.last_reading is not None else "—"
+            delta = f"{h.delta:+.0f}" if h.delta is not None else "—"
+            tk.Button(
+                self._hint_frame,
+                text=f"л/с {h.account}\nпосл. {last}   расход {delta}",
+                font=("Segoe UI", 9), relief="groove", anchor="w", justify="left",
+                command=lambda h=h: self._use_choice(h),
+            ).pack(anchor="w", fill=tk.X, pady=1)
+        ttk.Label(self._hint_frame,
+                  text="Клик — выбрать абонента, потом «Принять». У другой записи в базе "
+                       "номер с ошибкой.",
+                  font=("Segoe UI", 8), foreground=CLR_GRAY,
+                  wraplength=280, justify="left").pack(anchor="w", pady=(0, 6))
+
+    def _use_choice(self, h: SerialHint):
+        """Выбран абонент из нескольких с одним номером (как подсказка: лицевой
+        счёт подставляется, остальное подтягивается из таблицы)."""
+        self._choice_used = h
+        self._account_var.set(h.account)
+        self._lookup_by_account(h.account)
+
     def _use_hint(self, h: SerialHint):
         """Подставляет лицевой счёт кандидата (серийник подтянется из таблицы)."""
         self._hint_used = h
@@ -1609,6 +1666,8 @@ class EditScreen(ttk.Frame):
         self._lookup_by_account(h.account)
 
     def _hint_note(self) -> str:
+        if getattr(self, "_choice_used", None):
+            return f" | {CHOICE_NOTE}: л/с {self._choice_used.account}"
         return f" | {HINT_NOTE}: {self._hint_used.serial}" if self._hint_used else ""
 
     def _lookup_by_account(self, account: str):

@@ -5,6 +5,7 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py month <папка> --table <файл>  создать месяц из таблицы компании / загрузить обновлённую
   python gmr.py month <папка>                 сводка месяца
   python gmr.py export <папка>                выгрузить показания.xlsx и лог.csv ещё раз
+  python gmr.py process <папка месяца>        прогон по папке месяца: фото\ → результат\, база, выгрузка
   python gmr.py process                       прогон reader.py (как `python reader.py`)
   python gmr.py process --input <папка> --output <папка> --table <таблица>
   python gmr.py analyze <лог.csv> [--table <таблица>] [--details]   качество по логу
@@ -22,12 +23,15 @@ import sys
 from typing import Optional
 
 
-def _process(argv: list[str]) -> None:
+def _process(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         prog="python gmr.py process",
-        description="Автоматическая обработка папки с фото (reader.py). "
-                    "Без параметров — пути из PipelineConfig / GMR_INPUT_DIR, GMR_OUTPUT_DIR, GMR_TABLE_PATH.",
+        description="Автоматическая обработка папки с фото (reader.py). С папкой месяца — фото из "
+                    "<месяц>\\фото, результат в <месяц>\\результат, показания и лог — в базе месяца, "
+                    "в конце — выгрузка показания.xlsx. Без параметров — пути из PipelineConfig / "
+                    "GMR_INPUT_DIR, GMR_OUTPUT_DIR, GMR_TABLE_PATH (таблица и CSV-лог, как раньше).",
     )
+    p.add_argument("month", nargs="?", help="папка месяца (создаётся командой `gmr.py month`)")
     p.add_argument("--input", help="папка с фото (в ней фото или подпапки контролёров)")
     p.add_argument("--output", help="куда раскладывать результаты")
     p.add_argument("--table", help="таблица счётчиков (CSV/XLSX); лог — рядом: <таблица>_log.csv")
@@ -35,9 +39,13 @@ def _process(argv: list[str]) -> None:
     p.add_argument("--shadow-sqlite", action="store_true",
                    help="дублировать лог в SQLite и сверять (режим Фазы 2b)")
     args = p.parse_args(argv)
+    if args.month and (args.input or args.output or args.table or args.shadow_sqlite):
+        p.error("либо папка месяца, либо --input/--output/--table (старый режим)")
 
     import reader
     overrides = {}
+    if args.month:
+        overrides["month_dir"] = args.month
     if args.input:
         overrides["input_dir"] = args.input
     if args.output:
@@ -48,7 +56,12 @@ def _process(argv: list[str]) -> None:
         overrides["move_photos"] = True
     if args.shadow_sqlite:
         overrides["shadow_sqlite_log"] = True
-    reader.run_pipeline(reader.PipelineConfig(**overrides))
+    try:
+        reader.run_pipeline(reader.PipelineConfig(**overrides))
+    except reader.NotAMonth as e:
+        print(f"ОШИБКА: {e}")
+        return 1
+    return 0
 
 
 def _month(argv):

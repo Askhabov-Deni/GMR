@@ -29,6 +29,13 @@
 `program2.py` работает с **одной** папкой контролёра: «Папка с фото» =
 `output/<контролёр>`. Если указать общую `output/`, увидите «0 из 0».
 
+**Папка месяца (этап 2.2b).** `python gmr.py process <папка месяца>`: фото из
+`<месяц>/фото/<контролёр>`, раскладка — в `<месяц>/результат/<контролёр>/…` (те
+же папки, что выше), абоненты, показания и лог — в базе `<месяц>/gmr.sqlite`
+(`src/gmr/storage/month.py`), в конце — выгрузка `показания.xlsx` и `лог.csv`.
+`program2.py` с базой месяца **пока не работает** (этап 2.3): до этого в работе —
+старый режим с таблицей и CSV-логом.
+
 ## 2. Таблица
 
 Столбцы задаются в `PipelineConfig` (`src/gmr/domain/config.py`):
@@ -50,7 +57,7 @@ CSV пишется с `QUOTE_ALL`). Поиск серийника у обоих 
 |---|---|---|
 | `plus/`, `minus/` | `reader.py` (PLUS/MINUS), `program2.py` («Принять», исправление) | показание записано в таблицу; файл `<лицевой счёт>.jpg` |
 | `repeat/` | `reader.py` (REPEAT), `program2.py` («Дубль») | дубль |
-| `question/<причина>/` | `reader.py` | на ручной разбор. Причины: `digits_error`, `suspicious`, `serial_low_conf`, `serial_not_found`, `no_serial`, `no_meter`, `error` (`OUTCOME_FOLDER`; `error` — программа упала на этом фото, с 2026-10-01). Порядок очереди в `program2.py` — по этому списку (`QUESTION_SUBFOLDERS`) |
+| `question/<причина>/` | `reader.py` | на ручной разбор. Причины: `digits_error`, `suspicious`, `serial_low_conf`, `serial_not_found`, `no_serial`, `no_meter`, `error`, `serial_ambiguous` (`OUTCOME_FOLDER`; `error` — программа упала на этом фото, `serial_ambiguous` — номер в таблице у нескольких лицевых счетов, оба с 2026-10-01). Порядок очереди в `program2.py` — по этому списку (`QUESTION_SUBFOLDERS`) |
 | `unreadable/` | `program2.py` («Нечитаемо») | |
 | `not_in_db/` | `program2.py` («Нет в базе») | |
 | `db_serial_fix/` + `db_serial_fix.csv` | `program2.py` («Серийник в базе с ошибкой») | показание **не** записано; список для исправления базы («;», Excel): Фото; Контролёр; Лицевой счёт; Серийник в базе; Серийник на фото; Показание; Дата; Оператор |
@@ -58,7 +65,8 @@ CSV пишется с `QUOTE_ALL`). Поиск серийника у обоих 
 
 Имя файла в `question/`: `final_filename` авто-строки, а если он пустой —
 `original_filename`. Для NO_METER, NO_SERIAL, SERIAL_LOW_CONF,
-SERIAL_NOT_FOUND и ERROR он пустой, потому что лицевой счёт ещё не известен.
+SERIAL_NOT_FOUND, ERROR и SERIAL_AMBIGUOUS он пустой, потому что лицевой счёт
+ещё не известен.
 По этому имени `program2.py` находит авто-строку, породившую файл
 (`find_auto_row_for_output_file`).
 
@@ -80,9 +88,11 @@ photo_hash, source_folder`.
 
 ### outcome
 - `source=auto`: `PLUS, MINUS, REPEAT, NO_METER, NO_SERIAL, SERIAL_LOW_CONF,
-  SERIAL_NOT_FOUND, DIGITS_ERROR, SUSPICIOUS, ERROR` (`ERROR` — с 2026-10-01:
-  программа упала на фото; `notes` — «ошибка программы: …»; при следующем
-  прогоне фото читается заново, как любая авто-ошибка).
+  SERIAL_NOT_FOUND, DIGITS_ERROR, SUSPICIOUS, ERROR, SERIAL_AMBIGUOUS` (`ERROR` —
+  с 2026-10-01: программа упала на фото; `notes` — «ошибка программы: …»;
+  `SERIAL_AMBIGUOUS` — с 2026-10-01: номер в таблице у нескольких лицевых
+  счетов, `notes` — «номер N у нескольких абонентов: A, B», показание не
+  пишется; при следующем прогоне оба читаются заново, как любая авто-ошибка).
 - `source=manual`: `PLUS, MINUS` («Принять»; SUSPICIOUS после подтверждения
   становится PLUS/MINUS), `REPEAT` («Дубль»), `UNREADABLE`, `NOT_IN_DB`,
   `DB_SERIAL_FIX`.

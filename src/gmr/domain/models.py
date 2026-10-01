@@ -29,6 +29,10 @@ class Outcome(Enum):
     # программа упала на этом фото (битый файл, ошибка модели) — прогон идёт
     # дальше, фото ждёт оператора (решение владельца 2026-10-01)
     ERROR            = auto()
+    # номер счётчика в таблице у нескольких лицевых счетов (у одной записи в
+    # базе номер с ошибкой) — показание не пишется, выбирает оператор
+    # (решение владельца 2026-10-01)
+    SERIAL_AMBIGUOUS = auto()
 
 
 OUTCOME_FOLDER = {
@@ -42,6 +46,7 @@ OUTCOME_FOLDER = {
     Outcome.DIGITS_ERROR:     "question/digits_error",
     Outcome.SUSPICIOUS:       "question/suspicious",
     Outcome.ERROR:            "question/error",
+    Outcome.SERIAL_AMBIGUOUS: "question/serial_ambiguous",
 }
 
 
