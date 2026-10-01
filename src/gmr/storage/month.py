@@ -163,6 +163,11 @@ class MonthDB:
                                       r["row_order"], json.loads(r["data"]))
                 for r in self.conn.execute(sql)}
 
+    def abonent(self, account: str) -> Optional[Abonent]:
+        r = self.conn.execute("SELECT * FROM abonents WHERE account=?", (account,)).fetchone()
+        return Abonent(r["account"], r["serial"], r["last_reading"], bool(r["in_table"]),
+                       r["row_order"], json.loads(r["data"])) if r else None
+
     def put_abonent(self, a: Abonent) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO abonents (account, serial, last_reading, in_table, row_order, data) "
@@ -170,6 +175,9 @@ class MonthDB:
             (a.account, a.serial, a.last_reading, int(a.in_table), a.row_order,
              json.dumps(a.data, ensure_ascii=False)),
         )
+
+    def set_serial(self, account: str, serial: str) -> None:
+        self.conn.execute("UPDATE abonents SET serial=? WHERE account=?", (serial, account))
 
     def accounts_by_serial(self, serial: str) -> list[str]:
         return [r[0] for r in self.conn.execute(
@@ -190,6 +198,9 @@ class MonthDB:
             (r.account, r.value, r.date, r.source, r.photo, r.updated_at, r.updated_by),
         )
 
+    def delete_reading(self, account: str) -> None:
+        self.conn.execute("DELETE FROM readings WHERE account=?", (account,))
+
     # ─── журнал изменений ───────────────────────────────────────────────────
     def add_change(self, who: str, action: str, account: str = "", field: str = "",
                    old: str = "", new: str = "", note: str = "") -> None:
@@ -202,9 +213,25 @@ class MonthDB:
         return [dict(r) for r in self.conn.execute("SELECT * FROM changes ORDER BY id")]
 
     # ─── лог обработки ──────────────────────────────────────────────────────
-    def log_rows(self) -> list[dict]:
+    def log_rows(self, with_id: bool = False) -> list[dict]:
+        """Строки лога по порядку. with_id — с ключом "_id" (номер строки в базе:
+        по нему окно оператора меняет отметку проверки и исправления)."""
         cols = ", ".join(f'"{c}"' for c in LOG_COLUMNS)
-        return [dict(r) for r in self.conn.execute(f"SELECT {cols} FROM processing_log ORDER BY id")]
+        rows = self.conn.execute(f"SELECT id, {cols} FROM processing_log ORDER BY id")
+        out = []
+        for r in rows:
+            d = dict(r)
+            row_id = d.pop("id")
+            if with_id:
+                d["_id"] = row_id
+            out.append(d)
+        return out
+
+    def update_log_row(self, row_id: int, fields: dict) -> None:
+        fields = {k: str(v or "") for k, v in fields.items() if k in LOG_COLUMNS}
+        if fields:
+            sets = ", ".join(f'"{k}"=?' for k in fields)
+            self.conn.execute(f"UPDATE processing_log SET {sets} WHERE id=?", (*fields.values(), row_id))
 
     def append_log_rows(self, rows: list[dict]) -> None:
         cols = ", ".join(f'"{c}"' for c in LOG_COLUMNS)

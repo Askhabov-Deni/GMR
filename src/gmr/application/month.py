@@ -39,6 +39,11 @@ from src.gmr.storage.register import clean_serial, read_register
 _LIST_LIMIT = 20          # сколько строк списка показывать в отчёте
 
 
+# журнал изменений: оператор исправил номер счётчика в базе («Серийник в базе с
+# ошибкой», 2026-10-01); при обновлении таблицы такое исправление сохраняется
+SERIAL_FIX_ACTION = "номер исправлен оператором"
+
+
 class ExportLocked(Exception):
     """Файл выгрузки открыт в Excel — Windows не даёт его заменить."""
 
@@ -93,6 +98,7 @@ class LoadReport:
     no_account: int = 0
     duplicate_accounts: list = field(default_factory=list)
     readings_kept: list = field(default_factory=list)         # (счёт, в базе, в таблице)
+    serial_fixes_kept: list = field(default_factory=list)     # (счёт, в таблице, исправлен оператором)
     log_rows: int = 0
 
     report_file: str = ""                                      # полный отчёт в таблицы/
@@ -123,6 +129,9 @@ class LoadReport:
                          lambda x: f"л/с {x[0]}: номер счётчика «{x[1]}» → «{x[2]}»")
             if self.last_changed:
                 out.append(f"Изменилось прошлое показание: {self.last_changed}")
+            out += lines("Номер, исправленный оператором, сохранён (в новой таблице прежний)",
+                         self.serial_fixes_kept,
+                         lambda x: f"л/с {x[0]}: в таблице «{x[1]}», в базе «{x[2]}»")
             out += lines("В новой таблице другое показание — оставлено показание из базы",
                          self.readings_kept, lambda x: f"л/с {x[0]}: в базе {x[1]}, в таблице {x[2]}")
         out += lines("Номер счётчика с лишними знаками по краям — очищен в базе (исходный файл не менялся)",
@@ -189,7 +198,12 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
             old = db.abonents()
             readings = db.readings()
             stamp = now_text()
+            fixes = {c["account"]: c["new"] for c in db.changes() if c["action"] == SERIAL_FIX_ACTION}
             for account, a in incoming.items():
+                fixed = fixes.get(account)
+                if fixed is not None and a.serial != fixed:
+                    rep.serial_fixes_kept.append((account, a.serial, fixed))
+                    a.serial = fixed
                 prev = old.get(account)
                 if prev is None:
                     if not created:

@@ -1,8 +1,10 @@
 """
 program2.py — окно оператора: ручной разбор фото из question/, с которыми не
 справился reader.py, и выборочная проверка его автоматических результатов.
-Запуск: `python program2.py`. «Папка с фото» — папка ОДНОГО контролёра
-(output/<контролёр>). Что program2 читает и пишет (таблица, лог, папки) —
+Запуск: `python program2.py`. В настройках — «Папка месяца» (её создаёт
+`python gmr.py month`): окно показывает фото всех контролёров из
+<месяц>/результат, показания и лог пишет в базу месяца (gmr.sqlite) через
+src/gmr/application/operator.py. Что program2 читает и пишет —
 docs/contract_reader_program2.md.
 
 АРХИТЕКТУРА:
@@ -13,7 +15,7 @@ MainWindow (Tk root)
 ├── VerifyTab           — фото из plus/ minus/, авто-строка PLUS/MINUS ещё не проверена
 ├── EditScreen          — разбор одного фото: Принять / Дубль / Нечитаемо / Нет в базе /
 │                         Серийник в базе с ошибкой; подсказка «похожие номера в базе»
-└── VerifyScreen        — проверка одного фото: Верно / Исправить (→ таблица) / Пропустить
+└── VerifyScreen        — проверка одного фото: Верно / Исправить (→ база) / Пропустить
 ТИХАЯ РАЗМЕТКА (оператор не видит): если оператор исправил модель —
 CRNN: кроп serial_number + правильный текст (.txt) в <папка разметки>/crnn/images
 CNN:  кропы изменённых цифр в <папка разметки>/cnn/<цифра>
@@ -23,6 +25,7 @@ import logging
 import queue
 import shutil
 import sys
+import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass, asdict
@@ -46,17 +49,11 @@ from src.gmr.domain import PipelineConfig, PhotoResult, Outcome
 from src.gmr.domain.serial_match import normalize_serial as _normalize_serial
 from src.gmr.render import draw_annotation as _draw_annotation, read_image, write_image
 from src.gmr.console import safe_console
-from src.gmr.storage import (
-    LOG_COLUMNS as _LOG_COLUMNS,
-    append_log_row as _append_log_row,
-    backup_dir_for,
-    backup_files,
-    load_log as _load_log,
-    load_table as _load_table,
-    log_path_for as _log_path,
-    save_log as _save_log,
-    save_table as _save_table,
-)
+from src.gmr.storage import LOG_COLUMNS as _LOG_COLUMNS
+# С этапа 2.3 окно работает с базой папки месяца (src/gmr/storage/month.py):
+# каждое действие — одна транзакция (src/gmr/application/operator.py).
+from src.gmr.application.month import ExportLocked, NotAMonth
+from src.gmr.application.operator import OperatorSession
 from src.gmr.domain import find_auto_row_for_output_file
 from src.gmr.domain.serial_match import alphabet_for, one_char_matches
 # Модели — через контракты и общий с reader.py сервис распознавания (Фаза 3)
@@ -107,8 +104,7 @@ CLR_WHITE  = "#ffffff"
 @dataclass
 class AppSettings:
     operator_name: str = ""
-    photos_dir:    str = ""   # корень: рядом лежат question/, plus/, minus/, ...
-    table_path:    str = ""
+    month_dir:     str = ""   # папка месяца (gmr.py month): база, фото, результат
     training_dir:  str = ""
 
 def load_settings() -> AppSettings:
@@ -149,8 +145,7 @@ class SettingsDialog(tk.Toplevel):
 
         fields = [
             ("Ваше имя:",            "name",     None),
-            ("Папка с фото:",        "photos",    "dir"),
-            ("Таблица (CSV/Excel):",  "table",    "file"),
+            ("Папка месяца:",        "month",    "dir"),
             ("Папка для разметки:",  "training",  "dir"),
         ]
 
@@ -158,8 +153,7 @@ class SettingsDialog(tk.Toplevel):
         for i, (label, key, mode) in enumerate(fields, start=1):
             ttk.Label(f, text=label).grid(row=i, column=0, sticky="w", **pad)
             var = tk.StringVar(value=getattr(s, {
-                "name":  "operator_name",  "photos":  "photos_dir",
-                "table":  "table_path",   "training":  "training_dir"
+                "name": "operator_name", "month": "month_dir", "training": "training_dir",
             }[key]))
             self._vars[key] = var
             entry = ttk.Entry(f, textvariable=var, width=42)
@@ -175,13 +169,7 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(btns, text="Отмена",    command=self._cancel).pack(side=tk.LEFT, padx=6)
 
     def _browse(self, var: tk.StringVar, mode: str):
-        if mode == "dir":
-            p = filedialog.askdirectory(title="Выберите папку")
-        else:
-            p = filedialog.askopenfilename(
-                title="Выберите таблицу",
-                filetypes=[("Таблицы", "*.csv *.xlsx *.xls"), ("Все файлы", "*.*")]
-            )
+        p = filedialog.askdirectory(title="Выберите папку")
         if p:
             var.set(p)
 
@@ -192,8 +180,7 @@ class SettingsDialog(tk.Toplevel):
             return
         self.result = AppSettings(
             operator_name=name,
-            photos_dir=self._vars["photos"].get().strip(),
-            table_path=self._vars["table"].get().strip(),
+            month_dir=self._vars["month"].get().strip(),
             training_dir=self._vars["training"].get().strip(),
         )
         self.destroy()
@@ -288,89 +275,106 @@ class ModelBundle:
         return result
 
 # ─── Утилиты ──────────────────────────────────────────────────────────────────
-def list_question_photos(photos_dir: str) -> list[tuple[str, str, str]]:
+RESULT_SUBFOLDERS = ("question", "plus", "minus", "repeat")
+
+
+def controller_dirs(results_dir: str) -> list[Path]:
     """
-    Возвращает список (reason, filename, full_path) из question/ подпапок.
-    Сортировка по приоритету QUESTION_SUBFOLDERS.
+    Папки контролёров в «результате» месяца (<месяц>/результат/<контролёр>), а
+    если фото лежали без подпапок — сама папка результата. С этапа 2.3 окно
+    показывает всех контролёров сразу («0 из 0» больше не бывает).
+    """
+    base = Path(results_dir) if results_dir else None
+    if base is None or not base.is_dir():
+        return []
+    dirs = [base] if any((base / f).is_dir() for f in RESULT_SUBFOLDERS) else []
+    dirs += sorted(d for d in base.iterdir()
+                   if d.is_dir() and any((d / f).is_dir() for f in RESULT_SUBFOLDERS))
+    return dirs
+
+
+def controller_dir(photo_path: str) -> Path:
+    """Папка контролёра, в которой лежит фото (…/<контролёр>/question/<причина>/фото
+    или …/<контролёр>/plus/фото)."""
+    p = Path(photo_path)
+    for parent in p.parents:
+        if parent.name in RESULT_SUBFOLDERS:
+            return parent.parent
+    return p.parent
+
+
+def controller_name(photo_path: str, results_dir: str) -> str:
+    """Имя подпапки контролёра (source_folder в логе); "" — фото без подпапок."""
+    d = controller_dir(photo_path)
+    return "" if Path(results_dir) == d else d.name
+
+
+def list_question_photos(results_dir: str) -> list[tuple[str, str, str]]:
+    """
+    Возвращает список (reason, filename, full_path) из question/ всех
+    контролёров. Сортировка: по приоритету QUESTION_SUBFOLDERS, затем по
+    контролёру и имени.
     """
     result = []
-    base = Path(photos_dir) / "question"
+    dirs = controller_dirs(results_dir)
     for subfolder in QUESTION_SUBFOLDERS:
-        sub = base / subfolder
-        if not sub.exists():
-            continue
-        for p in sorted(sub.iterdir()):
-            if p.is_file() and p.suffix.lower() in PHOTO_EXTS:
-                result.append((subfolder, p.name, str(p)))
+        for d in dirs:
+            sub = d / "question" / subfolder
+            if not sub.exists():
+                continue
+            for p in sorted(sub.iterdir()):
+                if p.is_file() and p.suffix.lower() in PHOTO_EXTS:
+                    result.append((subfolder, p.name, str(p)))
     return result
 
 # Папка в output/ → исход строки лога, которую проверяют в этой папке
 VERIFY_FOLDER_OUTCOME = {"plus": "PLUS", "minus": "MINUS"}
-CORRECTED_NOTE = "исправлено при проверке"   # по этой пометке tools/analyze_log.py считает исправления
 
 
-def find_verify_row(log_rows: list[dict], file_name: str, folder: str) -> Optional[dict]:
+def find_verify_row(log_rows: list[dict], file_name: str, folder: str,
+                    controller: Optional[str] = None) -> Optional[dict]:
     """
     Авто-строка лога для фото из plus/ или minus/: исход — как у папки
     (PLUS/MINUS), имя файла совпадает с final_filename или original_filename
     (с расширением или без). Строки REPEAT не подходят: у второго фото того же
     счётчика final_filename тот же, но показаний в строке нет (ошибка до
     2026-09-30 — вкладка «Проверка» брала последнюю строку с этим именем).
-    Среди подходящих — последняя.
+    Среди подходящих — последняя; если задан controller — предпочитаются
+    строки этого контролёра (source_folder).
     """
     wanted = VERIFY_FOLDER_OUTCOME.get(folder)
     stem = Path(file_name).stem
-    found = None
+    found = []
     for r in log_rows:
         if r.get("source") != "auto" or r.get("outcome") != wanted:
             continue
         names = {n for n in (r.get("final_filename", ""), r.get("original_filename", "")) if n}
         names |= {Path(n).stem for n in names}
         if file_name in names or stem in names:
-            found = r
-    return found
+            found.append(r)
+    if controller is not None:
+        same = [r for r in found if (r.get("source_folder") or "") == controller]
+        if same:
+            return same[-1]
+    return found[-1] if found else None
 
 
-RESULT_SUBFOLDERS = ("question", "plus", "minus", "repeat")
-
-
-def controller_folders(photos_dir: str) -> list[str]:
-    """
-    Подпапки контролёров внутри photos_dir — если оператор выбрал общую папку
-    output/ вместо папки контролёра (решение владельца 2026-10-01, вариант а:
-    подсказать, а не показывать «0 из 0»). Пусто, если photos_dir сам и есть
-    папка контролёра.
-    """
-    base = Path(photos_dir) if photos_dir else None
-    if base is None or not base.is_dir() or any((base / f).is_dir() for f in RESULT_SUBFOLDERS):
-        return []
-    return sorted(d.name for d in base.iterdir()
-                  if d.is_dir() and any((d / f).is_dir() for f in RESULT_SUBFOLDERS))
-
-
-def wrong_folder_hint(photos_dir: str) -> str:
-    """Текст подсказки или "" — если папка выбрана правильно."""
-    names = controller_folders(photos_dir)
-    if not names:
-        return ""
-    return ("⚠ Это общая папка — в ней нет фото на разбор. Перезапустите программу, "
-            "нажмите «Сменить пользователя» и в «Папке с фото» укажите папку контролёра: "
-            + ", ".join(names))
-
-
-def list_verify_photos(photos_dir: str, log_rows: list[dict]) -> list[dict]:
-    """Фото из plus/ и minus/, у которых авто-строка PLUS/MINUS ещё не проверена."""
+def list_verify_photos(results_dir: str, log_rows: list[dict]) -> list[dict]:
+    """Фото из plus/ и minus/ всех контролёров, у которых авто-строка PLUS/MINUS
+    ещё не проверена."""
     result = []
-    for folder in ("plus", "minus"):
-        d = Path(photos_dir) / folder
-        if not d.exists():
-            continue
-        for p in sorted(d.iterdir()):
-            if not (p.is_file() and p.suffix.lower() in PHOTO_EXTS):
+    for ctrl in controller_dirs(results_dir):
+        name = "" if ctrl == Path(results_dir) else ctrl.name
+        for folder in ("plus", "minus"):
+            d = ctrl / folder
+            if not d.exists():
                 continue
-            row = find_verify_row(log_rows, p.name, folder)
-            if row is not None and not row.get("verified_by"):
-                result.append({"path": str(p), "log_row": row, "folder": folder})
+            for p in sorted(d.iterdir()):
+                if not (p.is_file() and p.suffix.lower() in PHOTO_EXTS):
+                    continue
+                row = find_verify_row(log_rows, p.name, folder, controller=name)
+                if row is not None and not row.get("verified_by"):
+                    result.append({"path": str(p), "log_row": row, "folder": folder})
     return result
 
 
@@ -434,39 +438,6 @@ def plan_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row:
     c.delta = (c.reading - c.last_reading) if c.last_reading is not None else None
     c.outcome = "MINUS" if c.delta is not None and c.delta < 0 else "PLUS"
     return c
-
-
-def apply_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row: dict,
-                            c: VerifyCorrection, operator: str) -> None:
-    """
-    Записывает исправление в таблицу и строку лога (файл фото переносит
-    вызывающий код). При смене абонента у прежнего абонента показание
-    стирается, только если там всё ещё то, что записал reader.py.
-    """
-    if df is not None:
-        acc = df[cfg.col_account_id].apply(lambda x: str(x).strip())
-        if c.account_changed:
-            old = acc == c.old_account
-            if old.any() and _to_float(df.loc[old, cfg.col_new_reading].iloc[0]) == _to_float(row.get("reading")):
-                df.loc[old, cfg.col_new_reading] = ""
-        df.loc[acc == c.new_account, cfg.col_new_reading] = str(c.reading)
-
-    note = CORRECTED_NOTE
-    if c.account_changed:
-        note += f" (абонент {c.old_account} → {c.new_account})"
-    ext = Path(row.get("final_filename") or row.get("original_filename", "")).suffix
-    row.update({
-        "serial_id":    c.serial,
-        "account_id":   c.new_account,
-        "reading":      str(c.reading),
-        "last_reading": str(c.last_reading) if c.last_reading is not None else "",
-        "delta":        str(c.delta) if c.delta is not None else "",
-        "outcome":      c.outcome,
-        "final_filename": f"{c.new_account}{ext}" if c.account_changed else row.get("final_filename", ""),
-        "verified_by":  operator,
-        "verified_at":  now_iso(),
-        "notes":        (row.get("notes", "") + " | " + note).strip(" |"),
-    })
 
 
 # ─── Подсказка «похожие номера в базе» (решение владельца 2026-09-30) ─────────
@@ -541,13 +512,12 @@ def serial_hints(serial: str, reading_str: str, index: Optional[SerialIndex], li
     return hints[:limit]
 
 
-# ─── «Серийник в базе с ошибкой» (решение владельца 2026-09-30) ───────────────
+# ─── «Серийник в базе с ошибкой» (решения владельца 2026-09-30, 2026-10-01) ───
 # На фото серийник верный, по лицевому счёту понятно, что счётчик тот же, но в
-# базе номер записан с опечаткой. Показание в таблицу НЕ пишется — только после
-# исправления базы. Фото — в <папка контролёра>/db_serial_fix/, рядом список.
-DB_SERIAL_FIX_OUTCOME = "DB_SERIAL_FIX"
-DB_SERIAL_FIX_DIR     = "db_serial_fix"
-DB_SERIAL_FIX_LIST    = "db_serial_fix.csv"
+# базе номер записан с опечаткой. Номер в базе месяца исправляется на номер с
+# фото, показание записывается сразу, фото — в plus/ или minus/. Номер попадает
+# в список для компании (db_serial_fix.csv в папке месяца).
+DB_SERIAL_FIX_LIST    = "db_serial_fix.csv"   # в папке месяца — список для компании
 DB_SERIAL_FIX_COLUMNS = ["Фото", "Контролёр", "Лицевой счёт", "Серийник в базе",
                          "Серийник на фото", "Показание", "Дата", "Оператор"]
 
@@ -820,6 +790,7 @@ class MainWindow(tk.Tk):
         self.configure(bg=CLR_BG)
 
         self.settings  = load_settings()
+        self.session:   Optional[OperatorSession] = None
         self.df: Optional[pd.DataFrame] = None
         self.log_rows:  list[dict] = []
         self.models:    Optional[ModelBundle] = None
@@ -828,52 +799,59 @@ class MainWindow(tk.Tk):
         self._do_login()
 
     def _do_login(self):
-        if not self.settings.operator_name or not self.settings.photos_dir:
-            self._open_settings(first_run=True)
-            if not self.settings.operator_name:
+        if not self.settings.operator_name or not self.settings.month_dir:
+            if not self._open_settings(first_run=True):
                 self.destroy()
                 return
         else:
             dlg = LoginDialog(self, self.settings)
             if dlg.action == "change":
-                self._open_settings()
-                if not self.settings.operator_name:
-                    self.destroy()
-                    return
+                self._open_settings()          # «Отмена» — работа с прежними настройками
 
-        self._load_data()
+        while not self._load_data():          # папка месяца не создана — выбрать другую
+            if not self._open_settings():
+                self.destroy()
+                return
         self._load_models_async()
         self._build_ui()
 
-    def _open_settings(self, first_run=False):
+    def _open_settings(self, first_run=False) -> bool:
         dlg = SettingsDialog(self, self.settings)
         if dlg.result:
             self.settings = dlg.result
             save_settings(self.settings)
+            return True
+        return False
 
-    def _load_data(self):
-        self._serial_index = None   # таблица могла смениться — индекс подсказки строится заново
-        if self.settings.table_path and Path(self.settings.table_path).exists():
-            try:
-                self.df = _load_table(self.settings.table_path)
-                log.info(f"Таблица загружена: {len(self.df)} строк")
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось загрузить таблицу:\n{e}")
-                self.df = None
+    def _load_data(self) -> bool:
+        """Открывает базу папки месяца (и делает её копию). False — папка не месяц."""
+        if self.session is not None:
+            self.session.close()
+            self.session = None
+        try:
+            self.session = OperatorSession(self.settings.month_dir, self.config)
+        except NotAMonth as e:
+            messagebox.showerror("Папка месяца", str(e))
+            return False
+        try:
+            dest = self.session.backup()
+            if dest is not None:
+                log.info(f"Копия базы месяца: {dest}")
+        except (OSError, sqlite3.Error) as e:
+            log.warning(f"Не удалось сделать копию базы месяца: {e}")
+        self.reload()
+        return True
 
-        log_p = _log_path(self.settings.table_path) if self.settings.table_path else None
-        if log_p:
-            # копия таблицы и лога при запуске окна (src/gmr/storage/backup.py)
-            try:
-                dest = backup_files([self.settings.table_path, log_p],
-                                    backup_dir_for(self.settings.table_path))
-                if dest is not None:
-                    log.info(f"Копия таблицы и лога: {dest}")
-            except OSError as e:
-                log.warning(f"Не удалось сделать копию таблицы и лога: {e}")
-        if log_p and Path(log_p).exists():
-            self.log_rows = _load_log(log_p)
-            log.info(f"Лог загружен: {len(self.log_rows)} записей")
+    def reload(self):
+        """Абоненты, показания и лог — заново из базы (их мог изменить reader.py)."""
+        self.df = pd.DataFrame(self.session.table_rows(), columns=self.session.table_columns())
+        self.log_rows = self.session.log_rows()
+        self._serial_index = None
+        log.info(f"Месяц: {self.session.folder.root} — абонентов {len(self.df)}, строк лога {len(self.log_rows)}")
+
+    @property
+    def results_dir(self) -> str:
+        return str(self.session.folder.results)
 
     def _load_models_async(self):
         self._model_load_error: Optional[str] = None
@@ -899,6 +877,12 @@ class MainWindow(tk.Tk):
             )
 
     def _build_ui(self):
+        top = ttk.Frame(self)
+        top.pack(fill=tk.X, padx=8, pady=(8, 0))
+        ttk.Label(top, text=f"Месяц: {self.session.folder.root}", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        ttk.Button(top, text="⇩  Выгрузить показания", command=self.export).pack(side=tk.RIGHT)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
         self._notebook = ttk.Notebook(self)
         self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
@@ -909,25 +893,96 @@ class MainWindow(tk.Tk):
         self._notebook.add(self._verify_tab, text="  Проверка  ")
 
     def refresh_tabs(self):
+        self.reload()
         self._proc_tab.refresh()
         self._verify_tab.refresh()
 
-    def append_log(self, row: dict):
-        if row.get("source") == "manual" and not row.get("photo_hash"):
-            # Отпечаток исходного фото — из автоматической строки, которая
-            # создала этот файл (файл в question/ пересохранён с аннотацией,
-            # по нему отпечаток не посчитать). Нужен, чтобы reader.py узнал
-            # разобранное фото по содержимому, а не только по имени.
-            src = find_auto_row_for_output_file(
-                self.log_rows, row.get("original_filename", ""),
-                Path(self.settings.photos_dir).name,
-            )
-            if src is not None:
-                row["photo_hash"] = src.get("photo_hash", "")
-                row["source_folder"] = src.get("source_folder", "")
+    def export(self) -> bool:
+        """Кнопка «Выгрузить показания»: показания.xlsx и лог.csv."""
+        try:
+            rep = self.session.export()
+        except ExportLocked as e:
+            messagebox.showwarning("Выгрузка", str(e))
+            return False
+        messagebox.showinfo("Выгрузка", rep.text())
+        return True
+
+    def _on_close(self):
+        """Закрытие окна: выгрузка, потом выход. Файл открыт в Excel —
+        «Повторить» после того, как его закроют, или выйти без выгрузки
+        (показания в базе, выгрузить можно потом: gmr.py export)."""
+        while self.session is not None:
+            try:
+                self.session.export()
+                break
+            except ExportLocked as e:
+                if not messagebox.askretrycancel(
+                    "Выгрузка",
+                    f"{e}\n\n«Повторить» — после того как закроете файл.\n"
+                    "«Отмена» — выйти без выгрузки (показания сохранены в базе).",
+                ):
+                    break
+        self.destroy()
+
+    def destroy(self):
+        if getattr(self, "session", None) is not None:
+            self.session.close()
+            self.session = None
+        super().destroy()
+
+    def _with_photo_identity(self, row: dict, photo_path: str) -> Optional[dict]:
+        """
+        Отпечаток исходного фото — из автоматической строки, которая создала
+        этот файл (файл в question/ пересохранён с аннотацией, по нему отпечаток
+        не посчитать). Нужен, чтобы reader.py узнал разобранное фото по
+        содержимому, а не только по имени. Возвращает эту строку (или None).
+        """
+        src = find_auto_row_for_output_file(
+            self.log_rows, row.get("original_filename", ""),
+            controller_name(photo_path, self.results_dir),
+        )
+        if src is not None and row.get("source") == "manual" and not row.get("photo_hash"):
+            row["photo_hash"] = src.get("photo_hash", "")
+            row["source_folder"] = src.get("source_folder", "")
+        return src
+
+    def append_log(self, row: dict, photo_path: str):
+        """Решение оператора без показания: «Дубль», «Нечитаемо», «Нет в базе»."""
+        self._with_photo_identity(row, photo_path)
+        self.session.add_row(row)
         self.log_rows.append(row)
-        log_p = _log_path(self.settings.table_path)
-        _append_log_row(log_p, row)
+
+    def _sync_df_reading(self, account: str):
+        """Текущее показание абонента в таблице окна — как в базе."""
+        r = self.session.reading(account)
+        acc = self.df[self.config.col_account_id].astype(str).str.strip()
+        self.df.loc[acc == account, self.config.col_new_reading] = r.value if r else ""
+
+    def accept_reading(self, row: dict, photo_path: str):
+        """«Принять»: показание и строка лога одной записью в базу. Если лицевого
+        счёта нет в таблице — только строка лога (как и раньше)."""
+        src = self._with_photo_identity(row, photo_path)
+        account = row.get("account_id", "")
+        in_table = account and (self.df[self.config.col_account_id].astype(str).str.strip() == account).any()
+        if in_table:
+            date_name = (src or {}).get("original_filename") or row.get("original_filename", "")
+            self.session.accept(row, date_name)
+            self._sync_df_reading(account)
+        else:
+            self.session.add_row(row)
+        self.log_rows.append(row)
+
+    def fix_serial_and_accept(self, row: dict, photo_path: str, photo_serial: str) -> str:
+        """«Серийник в базе с ошибкой»: номер в базе — как на фото, показание сразу."""
+        src = self._with_photo_identity(row, photo_path)
+        date_name = (src or {}).get("original_filename") or row.get("original_filename", "")
+        old = self.session.fix_serial_and_accept(row, photo_serial, date_name)
+        acc = self.df[self.config.col_account_id].astype(str).str.strip()
+        self.df.loc[acc == row["account_id"], self.config.col_serial] = photo_serial
+        self._sync_df_reading(row["account_id"])
+        self._serial_index = None
+        self.log_rows.append(row)
+        return old
 
     def serial_index(self) -> Optional[SerialIndex]:
         """Индекс серийников таблицы для подсказки (строится один раз: номера,
@@ -935,13 +990,6 @@ class MainWindow(tk.Tk):
         if getattr(self, "_serial_index", None) is None and self.df is not None:
             self._serial_index = build_serial_index(self.df, self.config)
         return getattr(self, "_serial_index", None)
-
-    def save_table(self):
-        if self.df is not None and self.settings.table_path:
-            try:
-                _save_table(self.df, self.settings.table_path)
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось сохранить таблицу:\n{e}")
 
     def open_edit_screen(self, photo_path: str, reason: str):
         self._notebook.pack_forget()
@@ -961,7 +1009,7 @@ class MainWindow(tk.Tk):
         Список строится заново: проверенное фото из него выпадает, поэтому
         после «Верно»/«Сохранить» следующее стоит на том же номере.
         """
-        items = list_verify_photos(self.settings.photos_dir, self.log_rows)
+        items = list_verify_photos(self.results_dir, self.log_rows)
         if hasattr(self, "_current_screen"):
             self._current_screen.pack_forget()
             self._current_screen.destroy()
@@ -981,7 +1029,7 @@ class MainWindow(tk.Tk):
         self.refresh_tabs()
 
     def open_next_or_back(self, current_path: str):
-        photos = list_question_photos(self.settings.photos_dir)
+        photos = list_question_photos(self.results_dir)
 
         if hasattr(self, "_current_screen"):
             self._current_screen.pack_forget()
@@ -1011,12 +1059,15 @@ class ProcessingTab(ttk.Frame):
             anchor="w", padx=12, pady=(10, 4)
         )
 
-        cols = ("reason", "filename")
+        cols = ("reason", "controller", "filename")
         self._tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="browse")
-        self._tree.heading("reason",   text="Причина")
-        self._tree.heading("filename", text="Имя файла")
-        self._tree.column("reason",   width=240, stretch=False)
-        self._tree.column("filename", width=400)
+        self._tree.heading("reason",     text="Причина")
+        self._tree.heading("controller", text="Контролёр")
+        self._tree.heading("filename",   text="Имя файла")
+        self._tree.column("reason",     width=240, stretch=False)
+        self._tree.column("controller", width=160, stretch=False)
+        self._tree.column("filename",   width=320)
+        self._items: list[tuple[str, str, str]] = []
 
         vsb = ttk.Scrollbar(self, orient="vertical", command=self._tree.yview)
         self._tree.configure(yscrollcommand=vsb.set)
@@ -1035,34 +1086,30 @@ class ProcessingTab(ttk.Frame):
 
     def refresh(self):
         self._tree.delete(*self._tree.get_children())
-        photos = list_question_photos(self.app.settings.photos_dir)
-        for reason, fname, path in photos:
+        self._items = list_question_photos(self.app.results_dir)
+        for reason, fname, path in self._items:
             label = REASON_LABELS.get(reason, reason)
-            self._tree.insert("", tk.END, values=(label, fname), tags=(path,))
+            ctrl = controller_name(path, self.app.results_dir)
+            self._tree.insert("", tk.END, values=(label, ctrl, fname))
 
-        remaining = len(photos)
+        remaining = len(self._items)
         processed = sum(
             1 for r in self.app.log_rows
             if r.get("source") == "manual"
             and r.get("outcome") not in ("", None)
         )
         total = remaining + processed
-        self._counter_var.set(
-            wrong_folder_hint(self.app.settings.photos_dir)
-            or f"Всего: {total} | Обработано: {processed} | Осталось: {remaining}"
-        )
+        self._counter_var.set(f"Всего: {total} | Обработано: {processed} | Осталось: {remaining}")
 
     def _selected_path(self) -> Optional[tuple[str, str]]:
         sel = self._tree.selection()
         if not sel:
             messagebox.showinfo("Выберите фото", "Сначала выберите фото из списка.")
             return None
-        item = self._tree.item(sel[0])
-        fname = item["values"][1]
-        photos = list_question_photos(self.app.settings.photos_dir)
-        for reason, fn, path in photos:
-            if fn == fname:
-                return reason, path
+        idx = self._tree.index(sel[0])
+        if idx < len(self._items):
+            reason, _, path = self._items[idx]
+            return reason, path
         return None
 
     def _open(self):
@@ -1087,8 +1134,8 @@ class ProcessingTab(ttk.Frame):
             "processed_at":      now_iso(),
             "notes":              "нечитаемо (из списка)",
         })
-        self.app.append_log(row)
-        dst_dir = str(Path(self.app.settings.photos_dir) / "unreadable")
+        self.app.append_log(row, path)
+        dst_dir = str(controller_dir(path) / "unreadable")
         try:
             move_photo(path, dst_dir)
         except Exception as e:
@@ -1110,8 +1157,10 @@ class VerifyTab(ttk.Frame):
             anchor="w", padx=12, pady=(10, 4)
         )
 
-        cols = ("outcome", "account_id", "reading", "processed_at")
+        cols = ("outcome", "controller", "account_id", "reading", "processed_at")
         self._tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="browse")
+        self._tree.heading("controller",   text="Контролёр")
+        self._tree.column("controller",   width=140, stretch=False)
         self._tree.heading("outcome",      text="Результат")
         self._tree.heading("account_id",   text="Account ID")
         self._tree.heading("reading",      text="Показания")
@@ -1136,20 +1185,19 @@ class VerifyTab(ttk.Frame):
 
     def refresh(self):
         self._tree.delete(*self._tree.get_children())
-        self._items = list_verify_photos(self.app.settings.photos_dir, self.app.log_rows)
+        self._items = list_verify_photos(self.app.results_dir, self.app.log_rows)
         for item in self._items:
             r = item["log_row"]
             self._tree.insert("", tk.END, values=(
                 r.get("outcome", ""),
+                controller_name(item["path"], self.app.results_dir),
                 r.get("account_id", ""),
                 r.get("reading", ""),
                 r.get("processed_at", "")[:16],
             ))
 
         total = len(self._items)
-        self._counter_var.set(
-            wrong_folder_hint(self.app.settings.photos_dir) or f"Всего для проверки: {total}"
-        )
+        self._counter_var.set(f"Всего для проверки: {total}")
 
     def _open(self):
         sel = self._tree.selection()
@@ -1184,6 +1232,7 @@ class EditScreen(ttk.Frame):
         super().__init__(parent)
         self.app        = parent
         self.photo_path = photo_path
+        self.folder     = controller_dir(photo_path)   # папка контролёра этого фото
         self.reason     = reason
         self._on_back   = on_back
         self._model_result: Optional[dict] = None
@@ -1831,15 +1880,6 @@ class EditScreen(ttk.Frame):
         ext      = Path(self.photo_path).suffix
         new_name = f"{account}{ext}" if account else Path(self.photo_path).name
 
-        if self.app.df is not None and account:
-            cfg  = self.app.config
-            mask = self.app.df[cfg.col_account_id].apply(
-                lambda x: str(x).strip() == account
-            )
-            if mask.any():
-                self.app.df.loc[mask, cfg.col_new_reading] = str(reading)
-                self.app.save_table()
-
         last_str = self._last_reading_var.get()
         try:
             last = float(last_str.replace(",", ".")) if last_str and last_str != "—" else None
@@ -1866,12 +1906,12 @@ class EditScreen(ttk.Frame):
             "model_reading_str": mr.get("reading_str") or "",
             "notes":             self.reason + self._hint_note(),
         })
-        self.app.append_log(row)
+        self.app.accept_reading(row, self.photo_path)    # показание и строка лога — одной записью
 
         self._save_markup_silent(serial, reading_s, mr)
 
         folder = "minus" if outcome_str == "MINUS" else "plus"
-        dst_dir = str(Path(self.app.settings.photos_dir) / folder)
+        dst_dir = str(self.folder / folder)
         try:
             new_path = move_photo(self.photo_path, dst_dir, new_name)
             redraw_annotation(new_path, serial, reading_s)
@@ -1909,7 +1949,7 @@ class EditScreen(ttk.Frame):
     def _duplicate(self):
         if not messagebox.askyesno("Дубль", "Пометить как дубль?", parent=self.app):
             return
-        dst_dir = str(Path(self.app.settings.photos_dir) / "repeat")
+        dst_dir = str(self.folder / "repeat")
         row = {k: "" for k in _LOG_COLUMNS}
         row.update({
             "original_filename": Path(self.photo_path).name,
@@ -1918,7 +1958,7 @@ class EditScreen(ttk.Frame):
             "processed_by":      self.app.settings.operator_name,
             "processed_at":      now_iso(),
         })
-        self.app.append_log(row)
+        self.app.append_log(row, self.photo_path)
         try:
             move_photo(self.photo_path, dst_dir)
         except Exception as e:
@@ -1932,7 +1972,7 @@ class EditScreen(ttk.Frame):
     def _unreadable(self):
         if not messagebox.askyesno("Нечитаемо", "Пометить как нечитаемо?", parent=self.app):
             return
-        dst_dir = str(Path(self.app.settings.photos_dir) / "unreadable")
+        dst_dir = str(self.folder / "unreadable")
         row = {k: "" for k in _LOG_COLUMNS}
         row.update({
             "original_filename": Path(self.photo_path).name,
@@ -1941,7 +1981,7 @@ class EditScreen(ttk.Frame):
             "processed_by":      self.app.settings.operator_name,
             "processed_at":      now_iso(),
         })
-        self.app.append_log(row)
+        self.app.append_log(row, self.photo_path)
         try:
             move_photo(self.photo_path, dst_dir)
         except Exception as e:
@@ -1966,7 +2006,7 @@ class EditScreen(ttk.Frame):
         ):
             return
 
-        dst_dir = str(Path(self.app.settings.photos_dir) / "not_in_db")
+        dst_dir = str(self.folder / "not_in_db")
         mr = self._model_result or {}
         row = {k: "" for k in _LOG_COLUMNS}
         row.update({
@@ -1981,7 +2021,7 @@ class EditScreen(ttk.Frame):
             "model_reading_str": mr.get("reading_str") or "",
             "notes":             "счётчик не найден в базе",
         })
-        self.app.append_log(row)
+        self.app.append_log(row, self.photo_path)
         try:
             move_photo(self.photo_path, dst_dir)
         except Exception as e:
@@ -2001,8 +2041,11 @@ class EditScreen(ttk.Frame):
 
     def _db_serial_fix(self):
         """
-        «Серийник в базе с ошибкой»: счётчик найден по лицевому счёту, серийник
-        на фото отличается от записанного в базе. Показание в таблицу не пишется.
+        «Серийник в базе с ошибкой»: счётчик найден по лицевому счёту, номер на
+        фото верный, в базе — с ошибкой. С 2026-10-01 (решение владельца) номер
+        в базе месяца исправляется на номер с фото и показание записывается
+        сразу; номер попадает в список для компании (db_serial_fix.csv в папке
+        месяца).
         """
         cfg = self.app.config
         account = self._account_var.get().strip()
@@ -2011,6 +2054,12 @@ class EditScreen(ttk.Frame):
             messagebox.showwarning(
                 "Нужен лицевой счёт",
                 "Укажите лицевой счёт абонента (поле Account ID) — он должен быть в таблице.",
+                parent=self.app)
+            return
+        if not self._reading_widget.is_complete():
+            messagebox.showwarning(
+                "Нужно показание",
+                "Введите все 5 цифр показания — оно запишется вместе с исправлением номера.",
                 parent=self.app)
             return
         mr = self._model_result or {}
@@ -2026,37 +2075,35 @@ class EditScreen(ttk.Frame):
                 "Номер на фото совпадает с номером в базе — используйте «Принять».",
                 parent=self.app)
             return
-        reading_s = self._reading_widget.get_string() if self._reading_widget.is_complete() else ""
+        reading_s = self._reading_widget.get_string()
+        reading = int(reading_s)
         if not messagebox.askyesno(
             "Серийник в базе с ошибкой",
             f"Лицевой счёт: {account}\n"
-            f"Серийник в базе: {db_serial}\n"
-            f"Серийник на фото: {photo_serial}\n"
-            f"Показание: {reading_s or '—'}\n\n"
-            f"Показание в таблицу не записывается — только после исправления базы.\n"
-            f"Фото уйдёт в папку «{DB_SERIAL_FIX_DIR}». Продолжить?",
+            f"Номер в базе: {db_serial} → будет исправлен на {photo_serial}\n"
+            f"Показание: {reading} — запишется сразу.\n\n"
+            f"Номер попадёт в список для исправления базы компании "
+            f"({DB_SERIAL_FIX_LIST}). Продолжить?",
             parent=self.app,
         ):
             return
 
-        photos_dir = self.app.settings.photos_dir
-        dst_dir = str(Path(photos_dir) / DB_SERIAL_FIX_DIR)
+        last = _to_float(self._last_reading_var.get())
+        delta = (reading - last) if last is not None else None
+        outcome = "MINUS" if delta is not None and delta < 0 else "PLUS"
         ext = Path(self.photo_path).suffix
-        try:
-            dst = free_photo_path(dst_dir, f"{account}{ext}", self.photo_path)
-            dst = move_photo(self.photo_path, dst_dir, Path(dst).name)
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось переместить фото:\n{e}", parent=self.app)
-            return
-
+        dst_dir = str(self.folder / outcome.lower())
+        dst = free_photo_path(dst_dir, f"{account}{ext}", self.photo_path)
         row = {k: "" for k in _LOG_COLUMNS}
         row.update({
             "original_filename": Path(self.photo_path).name,
             "final_filename":    Path(dst).name,
             "serial_id":         photo_serial,
             "account_id":        account,
-            "reading":           str(int(reading_s)) if reading_s else "",
-            "outcome":           DB_SERIAL_FIX_OUTCOME,
+            "reading":           str(reading),
+            "last_reading":      str(last) if last is not None else "",
+            "delta":             str(delta) if delta is not None else "",
+            "outcome":           outcome,
             "source":            "manual",
             "processed_by":      self.app.settings.operator_name,
             "processed_at":      now_iso(),
@@ -2065,10 +2112,10 @@ class EditScreen(ttk.Frame):
             "notes":             f"серийник в базе с ошибкой: в базе {db_serial}, на фото {photo_serial}"
                                  + self._hint_note(),
         })
-        self.app.append_log(row)
-        append_db_serial_fix(str(Path(dst_dir) / DB_SERIAL_FIX_LIST), {
+        self.app.fix_serial_and_accept(row, self.photo_path, photo_serial)
+        append_db_serial_fix(str(Path(self.app.session.folder.root) / DB_SERIAL_FIX_LIST), {
             "Фото":             Path(dst).name,
-            "Контролёр":        Path(photos_dir).name,
+            "Контролёр":        controller_name(self.photo_path, self.app.results_dir),
             "Лицевой счёт":     account,
             "Серийник в базе":  db_serial,
             "Серийник на фото": photo_serial,
@@ -2078,6 +2125,12 @@ class EditScreen(ttk.Frame):
         })
         # номер на фото верный — годится в разметку для дообучения CRNN
         self._save_markup_silent(photo_serial, reading_s, mr)
+        try:
+            new_path = move_photo(self.photo_path, dst_dir, Path(dst).name)
+            redraw_annotation(new_path, photo_serial, reading_s)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось переместить фото:\n{e}", parent=self.app)
+            return
         try:
             self.app.open_next_or_back(self.photo_path)
         finally:
@@ -2298,9 +2351,7 @@ class VerifyScreen(ttk.Frame):
         # Отметка — ровно в ту строку, по которой фото попало в список
         # (раньше искалась первая строка с тем же original_filename).
         r = self.item["log_row"]
-        r["verified_by"] = self.app.settings.operator_name
-        r["verified_at"] = now_iso()
-        _save_log(_log_path(self.app.settings.table_path), self.app.log_rows)
+        self.app.session.mark_verified(r, self.app.settings.operator_name, now_iso())
         self._unbind_keys()
         self.app.open_verify_at(self.index)
 
@@ -2343,22 +2394,23 @@ class VerifyScreen(ttk.Frame):
                 return
 
         old_path = self.item["path"]
-        apply_verify_correction(self.app.df, cfg, r, c, self.app.settings.operator_name)
-        self.app.save_table()
+        self.app.session.apply_correction(r, c, self.app.settings.operator_name, now_iso())
+        for account in {c.old_account, c.new_account}:
+            self.app._sync_df_reading(account)
 
         # Фото — в папку по новому исходу и под именем нового абонента
         folder = "minus" if c.outcome == "MINUS" else "plus"
-        dst_dir = str(Path(self.app.settings.photos_dir) / folder)
+        dst_dir = str(controller_dir(old_path) / folder)
         name = r.get("final_filename") or Path(old_path).name
         try:
             dst = free_photo_path(dst_dir, name, old_path)
             if Path(dst).resolve() != Path(old_path).resolve():
                 dst = move_photo(old_path, dst_dir, Path(dst).name)
-            r["final_filename"] = Path(dst).name
+            if Path(dst).name != r.get("final_filename"):
+                self.app.session.rename_photo_in_log(r, Path(dst).name)
             redraw_annotation(dst, c.serial, f"{c.reading:05d}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось переместить фото:\n{e}", parent=self.app)
-        _save_log(_log_path(self.app.settings.table_path), self.app.log_rows)
 
         self._unbind_keys()
         self.app.open_verify_at(self.index)

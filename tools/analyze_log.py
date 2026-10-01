@@ -36,9 +36,19 @@ READ_OK = {"PLUS", "MINUS", "SUSPICIOUS"}          # серийник найде
 SERIAL_FOUND = READ_OK | {"DIGITS_ERROR"}          # серийник найден в таблице
 _LOW_CONF = re.compile(r"pos(\d+)\(pred=(\d),conf=([\d.]+)\)")
 CORRECTED_NOTE = "исправлено при проверке"         # program2.VerifyScreen._save_edit
-DB_SERIAL_FIX = "DB_SERIAL_FIX"                    # program2: «Серийник в базе с ошибкой»
+DB_SERIAL_FIX = "DB_SERIAL_FIX"                    # program2: «Серийник в базе с ошибкой» (до 2.3)
+# с этапа 2.3 такая строка — PLUS/MINUS (показание записано), узнаётся по notes
+DB_SERIAL_FIX_NOTE = "серийник в базе с ошибкой"
 # ручные исходы, при которых оператор нашёл счётчик в таблице
 OPERATOR_FOUND = READ_OK | {DB_SERIAL_FIX}
+
+
+def operator_choice(m: dict) -> str:
+    """Что выбрал оператор: исход ручной строки, а «Серийник в базе с
+    ошибкой» — DB_SERIAL_FIX и в старых, и в новых логах."""
+    if m.get("notes", "").startswith(DB_SERIAL_FIX_NOTE):
+        return DB_SERIAL_FIX
+    return m.get("outcome", "")
 
 
 def _guess_is_right(guess: str, manual: dict, accounts: Optional[dict]) -> bool:
@@ -323,14 +333,14 @@ def operator_accuracy(rows: list[dict], table_serials: Optional[set[str]] = None
         "verified_reading_ok": len(verified) - len(v_changed_reading),
         "verified_corrected": len(v_corrected),
         "manual": len(manual),
-        "manual_outcomes": dict(Counter(r["outcome"] for r in manual).most_common()),
+        "manual_outcomes": dict(Counter(operator_choice(r) for r in manual).most_common()),
         "manual_full_model_reading": len(m_read),
         "manual_model_reading_ok": len(m_read_ok),
         "snf_with_answer": len(snf),
         "snf_found": len(snf_found),
         "snf_not_in_db": len(snf_not_in_db),
         # program2 дописывает «| подсказка: <номер>», если оператор выбрал номер из подсказки
-        "hint_used": dict(Counter(m["outcome"] for m in manual
+        "hint_used": dict(Counter(operator_choice(m) for m in manual
                                   if "| подсказка: " in m.get("notes", "")).most_common()),
     }
     if table_serials is not None and last_readings is not None and rng is not None:

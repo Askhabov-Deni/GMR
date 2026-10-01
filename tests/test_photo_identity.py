@@ -212,18 +212,14 @@ def test_program2_manual_row_gets_hash_from_its_subfolder(tmp_path):
         {c: "" for c in LOG_COLUMNS} | {"original_filename": "IMG_0001.jpg", "outcome": "NO_METER",
                                           "source": "auto", "photo_hash": "hash_ayub", "source_folder": "Аюб"},
     ]
-    app = SimpleNamespace(
-        log_rows=list(auto),
-        settings=SimpleNamespace(photos_dir=str(tmp_path / "processed" / "Сулиман"),
-                                 table_path=str(tmp_path / "t.csv")),
-    )
+    res = tmp_path / "Октябрь" / "результат"
+    app = SimpleNamespace(log_rows=list(auto), results_dir=str(res))
     manual = {c: "" for c in LOG_COLUMNS} | {"original_filename": "IMG_0001.jpg",
                                                "outcome": "UNREADABLE", "source": "manual"}
-    program2.MainWindow.append_log(app, manual)
-
-    written = load_log(log_path_for(str(tmp_path / "t.csv")))[-1]
-    assert written["photo_hash"] == "hash_suliman"
-    assert written["source_folder"] == "Сулиман"
+    photo = res / "Сулиман" / "question" / "no_meter" / "IMG_0001.jpg"
+    assert program2.MainWindow._with_photo_identity(app, manual, str(photo)) is auto[0]
+    assert manual["photo_hash"] == "hash_suliman"
+    assert manual["source_folder"] == "Сулиман"
 
 
 def test_program2_digits_error_file_renamed_to_account(tmp_path):
@@ -232,12 +228,12 @@ def test_program2_digits_error_file_renamed_to_account(tmp_path):
     auto = [{c: "" for c in LOG_COLUMNS} | {"original_filename": "WhatsApp 1.jpeg",
              "final_filename": "A-1.jpeg", "outcome": "DIGITS_ERROR", "source": "auto",
              "photo_hash": "h1", "source_folder": ""}]
-    app = SimpleNamespace(log_rows=list(auto), settings=SimpleNamespace(
-        photos_dir=str(tmp_path / "processed"), table_path=str(tmp_path / "t.csv")))
-    program2.MainWindow.append_log(app, {c: "" for c in LOG_COLUMNS} | {
-        "original_filename": "A-1.jpeg", "outcome": "PLUS", "source": "manual"})
-    assert app.log_rows[-1]["photo_hash"] == "h1"
-
+    res = tmp_path / "результат"                      # фото без подпапок контролёров
+    app = SimpleNamespace(log_rows=list(auto), results_dir=str(res))
+    manual = {c: "" for c in LOG_COLUMNS} | {"original_filename": "A-1.jpeg", "outcome": "PLUS",
+                                               "source": "manual"}
+    program2.MainWindow._with_photo_identity(app, manual, str(res / "question" / "digits_error" / "A-1.jpeg"))
+    assert manual["photo_hash"] == "h1"
 
 
 # ─── 5. Побайтные копии в одном прогоне ──────────────────────────────────────

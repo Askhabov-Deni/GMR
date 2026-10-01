@@ -327,4 +327,10 @@ def test_hint_usage_counted():
                 notes="серийник в базе с ошибкой: в базе 1, на фото 2 | подсказка: 1"),
             row("c", "PLUS", source="manual", notes="digits_error")]
     assert al.operator_accuracy(rows)["hint_used"] == {"PLUS": 1, "DB_SERIAL_FIX": 1}
+    # с этапа 2.3 «Серийник в базе с ошибкой» пишет показание: строка PLUS/MINUS с пометкой
+    rows.append(row("d", "MINUS", source="manual",
+                    notes="серийник в базе с ошибкой: в базе 1, на фото 2 | подсказка: 1"))
+    a = al.operator_accuracy(rows)
+    assert a["hint_used"] == {"DB_SERIAL_FIX": 2, "PLUS": 1}
+    assert a["manual_outcomes"] == {"PLUS": 2, "DB_SERIAL_FIX": 2}
     assert "подсказка «похожие номера в базе» использована" in al.build_report(rows, CFG)

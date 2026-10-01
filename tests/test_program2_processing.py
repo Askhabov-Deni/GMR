@@ -1,45 +1,59 @@
 """
-Фаза 6 (docs/MIGRATION_TZ.md): characterization tests вкладки «Обработка»
-program2.py — фиксируют ТЕКУЩЕЕ поведение (что пишется в таблицу, лог и куда
-уходит фото) до переноса функций из reader.py в src/gmr. Ожидания здесь —
-описание того, как program2 работает сейчас, а не пожелания.
+Вкладка «Обработка» program2.py: что пишется в базу месяца, куда уходит фото,
+какое фото открывается следующим. С этапа 2.3 окно работает с папкой месяца:
+все контролёры сразу, показание и строка лога — одной записью в базу
+(src/gmr/application/operator.py).
 
 Оконные тесты — под xvfb-run (без экрана пропускаются).
 """
 import os
+from types import SimpleNamespace
 
-import cv2
 import numpy as np
-import pandas as pd
 import pytest
-
-from src.gmr.storage import LOG_COLUMNS
 
 program2 = pytest.importorskip("program2")
 from src.gmr.domain import PipelineConfig  # noqa: E402
-from src.gmr.storage import load_log, save_log  # noqa: E402
+from src.gmr.storage import LOG_COLUMNS  # noqa: E402
+from src.gmr.storage.month import MonthDB  # noqa: E402
+from tests._month import changes, img, log_rows, make_month, readings  # noqa: E402
 from tests._window import has_display, new_window  # noqa: E402
 
 CFG = PipelineConfig()
 needs_display = pytest.mark.skipif(not has_display(), reason="нет экрана (запускать под xvfb-run)")
 
 
-def _img(path, value=100):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(path), np.full((40, 40, 3), value, np.uint8))
-
-
 # ─── Без окон ────────────────────────────────────────────────────────────────
 
 def test_list_question_photos_order_and_filter(tmp_path):
-    q = tmp_path / "question"
-    _img(q / "no_meter" / "a.jpg")
-    _img(q / "digits_error" / "b.jpg")
-    _img(q / "serial_not_found" / "c.png")
+    q = tmp_path / "question"                      # фото без подпапок контролёров
+    img(q / "no_meter" / "a.jpg")
+    img(q / "digits_error" / "b.jpg")
+    img(q / "serial_not_found" / "c.png")
     (q / "digits_error" / "notes.txt").write_text("x")
-    _img(q / "unknown_reason" / "d.jpg")          # не из QUESTION_SUBFOLDERS
+    img(q / "unknown_reason" / "d.jpg")            # не из QUESTION_SUBFOLDERS
     got = [(r, n) for r, n, _ in program2.list_question_photos(str(tmp_path))]
     assert got == [("digits_error", "b.jpg"), ("serial_not_found", "c.png"), ("no_meter", "a.jpg")]
+
+
+def test_queue_has_all_controllers_by_reason(tmp_path):
+    res = tmp_path / "результат"
+    img(res / "Сулиман С" / "question" / "no_meter" / "s1.jpg")
+    img(res / "Аюб" / "question" / "no_meter" / "a1.jpg")
+    img(res / "Аюб" / "question" / "digits_error" / "A-1.jpg")
+    (res / "run_logs").mkdir()
+    (res / "report.txt").write_text("x")
+    got = [(program2.controller_name(p, str(res)), r, n)
+           for r, n, p in program2.list_question_photos(str(res))]
+    assert got == [("Аюб", "digits_error", "A-1.jpg"), ("Аюб", "no_meter", "a1.jpg"),
+                   ("Сулиман С", "no_meter", "s1.jpg")]
+
+
+def test_controller_dir_of_photo(tmp_path):
+    res = tmp_path / "результат"
+    assert program2.controller_dir(str(res / "Аюб" / "question" / "no_meter" / "a.jpg")) == res / "Аюб"
+    assert program2.controller_dir(str(res / "Аюб" / "plus" / "A-1.jpg")) == res / "Аюб"
+    assert program2.controller_name(str(res / "question" / "no_meter" / "a.jpg"), str(res)) == ""
 
 
 def test_save_crnn_markup(tmp_path):
@@ -67,47 +81,70 @@ def test_save_cnn_markup_only_changed_digits(tmp_path):
     assert not (tmp_path / "x").exists()
 
 
+def test_error_folder_in_queue_last(tmp_path):
+    for sub in ("error", "digits_error"):
+        img(tmp_path / "question" / sub / f"{sub}.jpg")
+    items = program2.list_question_photos(str(tmp_path))      # (причина, имя, путь)
+    assert [(reason, name) for reason, name, _ in items] == \
+        [("digits_error", "digits_error.jpg"), ("error", "error.jpg")]
+    assert program2.REASON_LABELS["error"] == "Ошибка программы"
+
+
+def test_old_settings_ask_for_month_folder(tmp_path, monkeypatch):
+    # settings.json до этапа 2.3: папка контролёра и таблица — имя и папка разметки остаются
+    f = tmp_path / "settings.json"
+    f.write_text('{"operator_name": "Оператор", "photos_dir": "output/Аюб", '
+                 '"table_path": "t.csv", "training_dir": "train"}', encoding="utf-8")
+    monkeypatch.setattr(program2, "SETTINGS_FILE", f)
+    s = program2.load_settings()
+    assert (s.operator_name, s.month_dir, s.training_dir) == ("Оператор", "", "train")
+
+
 # ─── Окна: экран обработки ───────────────────────────────────────────────────
 
-@pytest.fixture
-def app(tmp_path, monkeypatch):
-    photos = tmp_path / "Аюб"
-    q = photos / "question"
-    _img(q / "serial_not_found" / "p1.jpg", 10)
-    _img(q / "serial_not_found" / "p2.jpg", 20)
-    _img(q / "no_meter" / "p3.jpg", 30)
-    tbl = tmp_path / "meters_table.csv"
-    pd.DataFrame([{CFG.col_serial: s, CFG.col_account_id: a, CFG.col_last_reading: l, CFG.col_new_reading: ""}
-                  for s, a, l in [("1234567", "A1", "1000"), ("7654321", "A2", "500")]]).to_csv(tbl, index=False)
-    # авто-строки, создавшие файлы в question/ (для переноса отпечатка в ручные строки)
-    auto = []
-    for name, outcome in (("p1.jpg", "SERIAL_NOT_FOUND"), ("p2.jpg", "SERIAL_NOT_FOUND"), ("p3.jpg", "NO_METER")):
-        r = {c: "" for c in LOG_COLUMNS}
-        r.update(original_filename=name, outcome=outcome, source="auto", processed_by="auto",
-                 photo_hash=f"h-{name}", source_folder="Аюб")
-        auto.append(r)
-    save_log(str(tmp_path / "meters_table_log.csv"), auto)
+AUTO = [  # авто-строки reader.py, создавшие файлы в question/ (отпечаток — в ручную строку)
+    {"original_filename": n, "outcome": o, "source": "auto", "processed_by": "auto",
+     "photo_hash": f"h-{n}", "source_folder": "Аюб"}
+    for n, o in (("IMG-20260915-WA0001.jpg", "SERIAL_NOT_FOUND"), ("p2.jpg", "SERIAL_NOT_FOUND"),
+                 ("p3.jpg", "NO_METER"))
+]
 
-    settings = program2.AppSettings(operator_name="Оператор", photos_dir=str(photos),
-                                    table_path=str(tbl), training_dir=str(tmp_path / "train"))
+
+def _window(monkeypatch, settings):
     monkeypatch.setattr(program2, "load_settings", lambda: settings)
     monkeypatch.setattr(program2, "save_settings", lambda s: None)
     monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
     monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
-    answers = []
+    answers, shown = [], []
     monkeypatch.setattr(program2.messagebox, "askyesno", lambda *a, **k: answers.pop(0) if answers else True)
     for name in ("showinfo", "showwarning", "showerror"):
-        monkeypatch.setattr(program2.messagebox, name, lambda *a, **k: None)
+        monkeypatch.setattr(program2.messagebox, name, lambda *a, _n=name, **k: shown.append((_n, a)))
     w = new_window(program2.MainWindow)
     w.withdraw()
-    w.answers = answers
-    w.photos = photos
+    w.answers, w.shown = answers, shown
+    return w
+
+
+@pytest.fixture
+def app(tmp_path, monkeypatch):
+    f = make_month(tmp_path, [("1234567", "A1", "1000", ""), ("7654321", "A2", "500", "")], AUTO)
+    photos = f.results / "Аюб"
+    q = photos / "question"
+    img(q / "serial_not_found" / "IMG-20260915-WA0001.jpg", 10)
+    img(q / "serial_not_found" / "p2.jpg", 20)
+    img(q / "no_meter" / "p3.jpg", 30)
+    w = _window(monkeypatch, program2.AppSettings(
+        operator_name="Оператор", month_dir=str(f.root), training_dir=str(tmp_path / "train")))
+    w.photos, w.month = photos, f
     yield w
-    w.destroy()
+    try:
+        w.destroy()
+    except program2.tk.TclError:          # окно уже закрыто тестом
+        pass
 
 
 def _open_first(app):
-    reason, _, path = program2.list_question_photos(app.settings.photos_dir)[0]
+    reason, _, path = program2.list_question_photos(app.results_dir)[0]
     app.open_edit_screen(path, reason)
     return app._current_screen
 
@@ -120,30 +157,35 @@ def _fill(scr, account, reading):
     scr._update_accept_state()
 
 
-def _table(app):
-    df = pd.read_csv(app.settings.table_path, dtype=str, keep_default_na=False)
-    return dict(zip(df[CFG.col_account_id], df[CFG.col_new_reading]))
+def _db_log(app):
+    return log_rows(app.month)[len(AUTO):]          # ручные строки
+
+
+def _reading(app, account):
+    with MonthDB(app.month.db) as db:
+        return db.reading(account)
 
 
 @needs_display
-def test_accept_writes_table_log_moves_photo_opens_next(app):
+def test_accept_writes_db_moves_photo_opens_next(app):
     scr = _open_first(app)
     _fill(scr, "A1", "01200")
     scr._accept()
-    assert _table(app)["A1"] == "1200"
-    r = app.log_rows[-1]
+    assert readings(app.month) == {"A1": "1200"}
+    (r,) = _db_log(app)
     assert (r["original_filename"], r["final_filename"], r["serial_id"], r["account_id"]) == (
-        "p1.jpg", "A1.jpg", "1234567", "A1")
+        "IMG-20260915-WA0001.jpg", "A1.jpg", "1234567", "A1")
     assert (r["reading"], r["last_reading"], r["delta"], r["outcome"], r["source"]) == (
         "1200", "1000.0", "200.0", "PLUS", "manual")
     assert r["notes"] == "serial_not_found"
-    assert r["photo_hash"] == "h-p1.jpg" and r["source_folder"] == "Аюб"   # из авто-строки
+    assert r["photo_hash"] == "h-IMG-20260915-WA0001.jpg" and r["source_folder"] == "Аюб"   # из авто-строки
+    ch = changes(app.month)[-1]
+    assert (ch["who"], ch["action"], ch["account"], ch["new"]) == ("Оператор", "показание записано", "A1", "1200")
+    assert _reading(app, "A1").date == "15 09 2026"                 # дата из имени фото WhatsApp
     assert (app.photos / "plus" / "A1.jpg").exists()
-    assert not (app.photos / "question" / "serial_not_found" / "p1.jpg").exists()
+    assert not (app.photos / "question" / "serial_not_found" / "IMG-20260915-WA0001.jpg").exists()
     # сразу следующее фото очереди
     assert os.path.basename(app._current_screen.photo_path) == "p2.jpg"
-    # лог на диске = в памяти
-    assert len(load_log(str(app.photos.parent / "meters_table_log.csv"))) == 4
 
 
 @needs_display
@@ -151,7 +193,7 @@ def test_accept_minus_goes_to_minus(app):
     scr = _open_first(app)
     _fill(scr, "A1", "00900")
     scr._accept()
-    assert app.log_rows[-1]["outcome"] == "MINUS"
+    assert _db_log(app)[-1]["outcome"] == "MINUS"
     assert (app.photos / "minus" / "A1.jpg").exists()
 
 
@@ -161,10 +203,10 @@ def test_accept_suspicious_asks_and_can_be_cancelled(app):
     _fill(scr, "A2", "90000")                      # delta 89500 > 10000
     app.answers.append(False)
     scr._accept()
-    assert _table(app)["A2"] == "" and len(app.log_rows) == 3
+    assert readings(app.month) == {} and _db_log(app) == []
     app.answers.append(True)
     scr._accept()
-    assert _table(app)["A2"] == "90000" and app.log_rows[-1]["outcome"] == "PLUS"
+    assert readings(app.month) == {"A2": "90000"} and _db_log(app)[-1]["outcome"] == "PLUS"
 
 
 @needs_display
@@ -174,7 +216,18 @@ def test_accept_disabled_without_full_reading(app):
     scr._lookup_by_account("A1")
     scr._update_accept_state()
     scr._accept()
-    assert len(app.log_rows) == 3 and _table(app)["A1"] == ""
+    assert _db_log(app) == [] and readings(app.month) == {}
+
+
+@needs_display
+def test_accept_unknown_account_writes_log_only(app):
+    scr = _open_first(app)
+    scr._serial_var.set("5555555")
+    scr._account_var.set("A9")                     # нет в таблице
+    scr._reading_widget.set_digits("01200", None)
+    scr._update_accept_state()
+    scr._accept()
+    assert _db_log(app)[-1]["account_id"] == "A9" and readings(app.month) == {}
 
 
 @needs_display
@@ -187,11 +240,12 @@ def test_other_actions(app, action, folder, outcome, notes):
     scr = _open_first(app)
     scr._serial_var.set("5555555")
     getattr(scr, action)()
-    r = app.log_rows[-1]
-    assert (r["original_filename"], r["outcome"], r["source"], r["notes"]) == ("p1.jpg", outcome, "manual", notes)
-    assert r["photo_hash"] == "h-p1.jpg"
-    assert (app.photos / folder / "p1.jpg").exists()
-    assert all(v == "" for v in _table(app).values())          # таблица не тронута
+    (r,) = _db_log(app)
+    assert (r["original_filename"], r["outcome"], r["source"], r["notes"]) == (
+        "IMG-20260915-WA0001.jpg", outcome, "manual", notes)
+    assert r["photo_hash"] == "h-IMG-20260915-WA0001.jpg"
+    assert (app.photos / folder / "IMG-20260915-WA0001.jpg").exists()
+    assert readings(app.month) == {}                            # показаний нет
     assert os.path.basename(app._current_screen.photo_path) == "p2.jpg"
 
 
@@ -200,8 +254,8 @@ def test_action_cancelled_changes_nothing(app):
     scr = _open_first(app)
     app.answers.append(False)
     scr._duplicate()
-    assert len(app.log_rows) == 3
-    assert (app.photos / "question" / "serial_not_found" / "p1.jpg").exists()
+    assert _db_log(app) == []
+    assert (app.photos / "question" / "serial_not_found" / "IMG-20260915-WA0001.jpg").exists()
 
 
 @needs_display
@@ -209,11 +263,12 @@ def test_processing_tab_mark_unreadable_from_list(app):
     tab = app._proc_tab
     tab.refresh()
     first = tab._tree.get_children()[0]
+    assert tab._tree.item(first)["values"][1] == "Аюб"           # столбец «Контролёр»
     tab._tree.selection_set(first)
     tab._unreadable()
-    r = app.log_rows[-1]
+    (r,) = _db_log(app)
     assert (r["outcome"], r["notes"]) == ("UNREADABLE", "нечитаемо (из списка)")
-    assert (app.photos / "unreadable" / "p1.jpg").exists()
+    assert (app.photos / "unreadable" / "IMG-20260915-WA0001.jpg").exists()
 
 
 @needs_display
@@ -221,7 +276,7 @@ def test_last_photo_returns_to_list(app):
     for _ in range(3):
         scr = _open_first(app) if not hasattr(app, "_current_screen") else app._current_screen
         scr._unreadable()
-    assert program2.list_question_photos(app.settings.photos_dir) == []
+    assert program2.list_question_photos(app.results_dir) == []
     assert app._notebook.winfo_manager() == "pack"                # снова список вкладок
 
 
@@ -233,46 +288,90 @@ def test_accept_saves_silent_markup_when_model_was_wrong(app):
                          "digit_preds": [{}] * 5}
     _fill(scr, "A1", "01200")
     scr._accept()
-    train = app.photos.parent / "train"
+    train = app.month.root.parent / "train"
     assert (train / "crnn" / "images" / "1234567.jpeg").exists()
     assert {p.parent.name for p in (train / "cnn").rglob("*.jpg")} == {"2"}
 
 
-# ─── «0 из 0»: выбрана общая папка output/ (вариант а, 2026-10-01) ─────────────
+@needs_display
+def test_photos_of_two_controllers_go_to_their_folders(app):
+    other = app.month.results / "Сулиман С"
+    img(other / "question" / "no_meter" / "s1.jpg", 40)
+    with MonthDB(app.month.db) as db, db.transaction():
+        db.append_log_rows([{c: "" for c in LOG_COLUMNS} | {
+            "original_filename": "s1.jpg", "outcome": "NO_METER", "source": "auto",
+            "photo_hash": "h-s1", "source_folder": "Сулиман С"}])
+    app.refresh_tabs()
+    assert len(app._proc_tab._items) == 4
+    app.open_edit_screen(str(other / "question" / "no_meter" / "s1.jpg"), "no_meter")
+    app._current_screen._unreadable()
+    r = _db_log(app)[-1]
+    assert (r["original_filename"], r["photo_hash"], r["source_folder"]) == ("s1.jpg", "h-s1", "Сулиман С")
+    assert (other / "unreadable" / "s1.jpg").exists() and not (app.photos / "unreadable").exists()
 
-def test_controller_folders(tmp_path):
-    out = tmp_path / "output"
-    (out / "Аюб" / "question").mkdir(parents=True)
-    (out / "Сулиман С" / "plus").mkdir(parents=True)
-    (out / "пустая").mkdir()
-    (out / "report.txt").write_text("x")
-    assert program2.controller_folders(str(out)) == ["Аюб", "Сулиман С"]
-    assert "Аюб, Сулиман С" in program2.wrong_folder_hint(str(out))
-    # папка контролёра выбрана правильно — подсказки нет
-    assert program2.controller_folders(str(out / "Аюб")) == []
-    assert program2.wrong_folder_hint(str(out / "Аюб")) == ""
-    assert program2.wrong_folder_hint("") == "" and program2.wrong_folder_hint(str(tmp_path / "нет")) == ""
+
+# ─── Выгрузка и закрытие окна ────────────────────────────────────────────────
+
+@needs_display
+def test_export_button(app):
+    scr = _open_first(app)
+    _fill(scr, "A1", "01200")
+    scr._accept()
+    assert app.export() is True
+    assert app.month.export_xlsx.is_file() and app.month.export_log.is_file()
 
 
 @needs_display
-def test_tabs_show_hint_for_output_folder(app):
-    out = app.photos.parent
-    app.settings.photos_dir = str(out)          # выбрали общую папку
-    app.refresh_tabs()
-    for tab in (app._proc_tab, app._verify_tab):
-        assert tab._counter_var.get().startswith("⚠ Это общая папка")
-        assert "Аюб" in tab._counter_var.get()
-    app.settings.photos_dir = str(app.photos)
-    app.refresh_tabs()
-    assert app._proc_tab._counter_var.get().startswith("Всего:")
+def test_close_exports(app):
+    app._on_close()
+    assert app.month.export_xlsx.is_file()
 
 
-# ─── Фото, на котором программа упала (2026-10-01) ──────────────────────────
+@needs_display
+def test_close_with_export_open_in_excel(app, monkeypatch):
+    def locked():
+        raise program2.ExportLocked("Файл открыт в Excel: показания.xlsx. Закройте его")
+    monkeypatch.setattr(app.session, "export", locked)
+    asked = []
+    monkeypatch.setattr(program2.messagebox, "askretrycancel", lambda *a, **k: asked.append(a) or False)
+    app._on_close()                                               # «Отмена» — выйти без выгрузки
+    assert len(asked) == 1 and not app.month.export_xlsx.exists()
 
-def test_error_folder_in_queue_last(tmp_path):
-    for sub in ("error", "digits_error"):
-        _img(tmp_path / "question" / sub / f"{sub}.jpg")
-    items = program2.list_question_photos(str(tmp_path))      # (причина, имя, путь)
-    assert [(reason, name) for reason, name, _ in items] == \
-        [("digits_error", "digits_error.jpg"), ("error", "error.jpg")]
-    assert program2.REASON_LABELS["error"] == "Ошибка программы"
+
+@needs_display
+def test_not_a_month_folder_asks_settings_again(tmp_path, monkeypatch):
+    f = make_month(tmp_path, [("1234567", "A1", "1000", "")])
+    asked = []
+
+    def settings_dialog(parent, settings):
+        asked.append(settings.month_dir)
+        return SimpleNamespace(result=program2.AppSettings("Оператор", str(f.root), ""))
+
+    monkeypatch.setattr(program2, "SettingsDialog", settings_dialog)
+    w = _window(monkeypatch, program2.AppSettings("Оператор", str(tmp_path / "нет"), ""))
+    try:
+        assert asked == [str(tmp_path / "нет")]
+        assert w.shown[0][0] == "showerror" and "Месяц не создан" in w.shown[0][1][1]
+        assert w.session.folder.root == f.root
+    finally:
+        w.destroy()
+
+
+@needs_display
+def test_change_user_cancelled_keeps_settings(tmp_path, monkeypatch):
+    f = make_month(tmp_path, [("1234567", "A1", "1000", "")])
+    monkeypatch.setattr(program2, "SettingsDialog", lambda parent, settings: SimpleNamespace(result=None))
+    w = _window(monkeypatch, program2.AppSettings("Оператор", str(f.root), ""))
+    monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: SimpleNamespace(action="change"))
+    w.destroy()
+    w = new_window(program2.MainWindow)            # «Сменить пользователя» → «Отмена»
+    try:
+        w.withdraw()
+        assert w.session.folder.root == f.root and w.settings.operator_name == "Оператор"
+    finally:
+        w.destroy()
+
+
+@needs_display
+def test_window_start_backs_up_month_db(app):
+    assert list(app.month.backups.glob("*/gmr.sqlite"))
