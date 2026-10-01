@@ -267,3 +267,14 @@ def test_tabs_show_hint_for_output_folder(app):
     app.settings.photos_dir = str(app.photos)
     app.refresh_tabs()
     assert app._proc_tab._counter_var.get().startswith("Всего:")
+
+
+# ─── Фото, на котором программа упала (2026-10-01) ──────────────────────────
+
+def test_error_folder_in_queue_last(tmp_path):
+    for sub in ("error", "digits_error"):
+        _img(tmp_path / "question" / sub / f"{sub}.jpg")
+    items = program2.list_question_photos(str(tmp_path))      # (причина, имя, путь)
+    assert [(reason, name) for reason, name, _ in items] == \
+        [("digits_error", "digits_error.jpg"), ("error", "error.jpg")]
+    assert program2.REASON_LABELS["error"] == "Ошибка программы"

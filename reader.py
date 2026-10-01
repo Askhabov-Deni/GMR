@@ -27,6 +27,7 @@ reader.py — главный пайплайн обработки фотогра�
     serial_not_found/— серийник не найден в таблице
     digits_error/    — не удалось прочитать 5 цифр
     suspicious/      — отклонение > DELTA_THRESHOLD
+    error/           — программа упала на этом фото (битый файл, ошибка модели)
 
 DEBUG-РЕЖИМ (config.debug_digits = True):
   question/digits_error/<account_id или photo_stem>/
@@ -634,6 +635,7 @@ _QUESTION_OUTCOMES = (
     Outcome.SERIAL_NOT_FOUND,
     Outcome.DIGITS_ERROR,
     Outcome.SUSPICIOUS,
+    Outcome.ERROR,
 )
 
 
@@ -858,13 +860,24 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger) -> None:
             photo_path = photo_path_obj  # совместимость с process_photo (ожидает str)
             log.info(f"[{i}/{len(photos)}] {photo_path.name}")
 
-            photo_hash = photo_fingerprint(str(photo_path))
-            result = process_photo(
-                str(photo_path), df, config,
-                models.meter_detector, models.digit_detector,
-                models.digit_recognizer, models.serial_recognizer,
-                photo_hash=photo_hash,
-            )
+            photo_hash = ""
+            try:
+                photo_hash = photo_fingerprint(str(photo_path))
+                result = process_photo(
+                    str(photo_path), df, config,
+                    models.meter_detector, models.digit_detector,
+                    models.digit_recognizer, models.serial_recognizer,
+                    photo_hash=photo_hash,
+                )
+            except Exception as e:
+                # Ошибка на одном фото не останавливает прогон: фото → question/error,
+                # при следующем прогоне читается заново. Ctrl+C (KeyboardInterrupt)
+                # сюда не попадает и останавливает прогон, как раньше.
+                log.exception(f"  Ошибка программы на фото {photo_path.name}")
+                result = PhotoResult(
+                    photo_path=str(photo_path), outcome=Outcome.ERROR,
+                    error_detail=f"ошибка программы: {type(e).__name__}: {e}",
+                )
             stats[result.outcome] += 1
             total_stats[result.outcome] += 1
 
@@ -888,11 +901,17 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger) -> None:
             # Сохраняем аннотированное фото в нужную папку
             dst_dir  = str(Path(output_base) / OUTCOME_FOLDER[result.outcome])
             new_name = result.new_photo_name or photo_path.name
-            _save_annotated(
-                str(photo_path), dst_dir, new_name, result,
-                move=config.move_photos,
-                draw_boxes=config.draw_boxes,
-            )
+            try:
+                _save_annotated(
+                    str(photo_path), dst_dir, new_name, result,
+                    move=config.move_photos,
+                    draw_boxes=config.draw_boxes,
+                )
+            except OSError:
+                if result.outcome != Outcome.ERROR:
+                    raise
+                # файл не читается совсем — остаётся во входной папке, в логе ERROR
+                log.exception(f"  Не удалось скопировать {photo_path.name} в {dst_dir}")
             log.info(f"  📁 → {output_base}/{OUTCOME_FOLDER[result.outcome]}/{new_name}")
 
             # Запись в лог после каждого фото

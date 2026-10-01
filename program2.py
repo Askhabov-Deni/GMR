@@ -78,6 +78,7 @@ QUESTION_SUBFOLDERS = [
     "serial_not_found",
     "no_serial",
     "no_meter",
+    "error",
 ]
 
 # Читаемые названия причин
@@ -88,6 +89,7 @@ REASON_LABELS = {
     "serial_not_found":  "Серийник не найден",
     "no_serial":         "Нет серийника",
     "no_meter":          "Нет счётчика",
+    "error":             "Ошибка программы",
 }
 
 # Цвета

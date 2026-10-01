@@ -4,7 +4,8 @@ src/gmr/domain/models.py — типы результата обработки ф
 Перенесено из reader.py в рамках Фазы 2a (docs/MIGRATION_TZ.md) БЕЗ изменения
 полей, порядка значений enum или дефолтов — это прямой перенос, не рефакторинг
 данных. Поведение подтверждается golden tests (tests/test_golden_reader.py,
-19 кейсов, покрывают все 9 значений Outcome).
+19 кейсов, покрывают все 9 значений Outcome; ERROR добавлен 2026-10-01 —
+tests/test_photo_error.py).
 
 reader.py импортирует эти имена и реэкспортирует их (from .domain import ...),
 так что `reader.Outcome`, `reader.PhotoResult`, `reader.OUTCOME_FOLDER`
@@ -25,6 +26,9 @@ class Outcome(Enum):
     SERIAL_NOT_FOUND = auto()
     DIGITS_ERROR     = auto()
     SUSPICIOUS       = auto()
+    # программа упала на этом фото (битый файл, ошибка модели) — прогон идёт
+    # дальше, фото ждёт оператора (решение владельца 2026-10-01)
+    ERROR            = auto()
 
 
 OUTCOME_FOLDER = {
@@ -37,6 +41,7 @@ OUTCOME_FOLDER = {
     Outcome.SERIAL_NOT_FOUND: "question/serial_not_found",
     Outcome.DIGITS_ERROR:     "question/digits_error",
     Outcome.SUSPICIOUS:       "question/suspicious",
+    Outcome.ERROR:            "question/error",
 }
 
 
