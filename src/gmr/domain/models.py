@@ -8,8 +8,7 @@ src/gmr/domain/models.py — типы результата обработки ф
 
 reader.py импортирует эти имена и реэкспортирует их (from .domain import ...),
 так что `reader.Outcome`, `reader.PhotoResult`, `reader.OUTCOME_FOLDER`
-продолжают работать для внешнего кода (program2.py импортирует их напрямую
-из reader — это сохранено намеренно, см. MIGRATION_STATUS.md).
+продолжают работать для внешнего кода. program2.py с Фазы 6 берёт их отсюда.
 """
 from dataclasses import dataclass
 from enum import Enum, auto

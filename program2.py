@@ -34,17 +34,22 @@ from PIL import Image, ImageTk
 
 _BASE = Path(__file__).parent
 
-# ── Импорт общих утилит из reader.py ──────────────────────────────────────────
+# ── Корень проекта в sys.path — для импорта src.gmr при запуске из другой папки
 sys.path.insert(0, str(_BASE))
-from reader import (
-    PipelineConfig,
-    PhotoResult,
-    Outcome,  # <-- ДОБАВЛЕНО для redraw_annotation
-    _load_table, _save_table,
-    _load_log, _save_log, _append_log_row, _log_path,
-    _normalize_serial,
-    _draw_annotation,
-    _LOG_COLUMNS,
+# С Фазы 6 program2.py не импортирует reader.py: общий код — в src/gmr/.
+# Имена с подчёркиванием оставлены локальными псевдонимами, чтобы не трогать
+# остальной код окна.
+from src.gmr.domain import PipelineConfig, PhotoResult, Outcome
+from src.gmr.domain.serial_match import normalize_serial as _normalize_serial
+from src.gmr.render import draw_annotation as _draw_annotation, read_image, write_image
+from src.gmr.storage import (
+    LOG_COLUMNS as _LOG_COLUMNS,
+    append_log_row as _append_log_row,
+    load_log as _load_log,
+    load_table as _load_table,
+    log_path_for as _log_path,
+    save_log as _save_log,
+    save_table as _save_table,
 )
 from src.gmr.domain import find_auto_row_for_output_file
 from src.gmr.domain.serial_match import alphabet_for, one_char_matches
@@ -316,6 +321,33 @@ def find_verify_row(log_rows: list[dict], file_name: str, folder: str) -> Option
     return found
 
 
+RESULT_SUBFOLDERS = ("question", "plus", "minus", "repeat")
+
+
+def controller_folders(photos_dir: str) -> list[str]:
+    """
+    Подпапки контролёров внутри photos_dir — если оператор выбрал общую папку
+    output/ вместо папки контролёра (решение владельца 2026-10-01, вариант а:
+    подсказать, а не показывать «0 из 0»). Пусто, если photos_dir сам и есть
+    папка контролёра.
+    """
+    base = Path(photos_dir) if photos_dir else None
+    if base is None or not base.is_dir() or any((base / f).is_dir() for f in RESULT_SUBFOLDERS):
+        return []
+    return sorted(d.name for d in base.iterdir()
+                  if d.is_dir() and any((d / f).is_dir() for f in RESULT_SUBFOLDERS))
+
+
+def wrong_folder_hint(photos_dir: str) -> str:
+    """Текст подсказки или "" — если папка выбрана правильно."""
+    names = controller_folders(photos_dir)
+    if not names:
+        return ""
+    return ("⚠ Это общая папка — в ней нет фото на разбор. Перезапустите программу, "
+            "нажмите «Сменить пользователя» и в «Папке с фото» укажите папку контролёра: "
+            + ", ".join(names))
+
+
 def list_verify_photos(photos_dir: str, log_rows: list[dict]) -> list[dict]:
     """Фото из plus/ и minus/, у которых авто-строка PLUS/MINUS ещё не проверена."""
     result = []
@@ -536,8 +568,9 @@ def redraw_annotation(path: str, serial: str, reading_str: str) -> None:
     Использует финальные значения оператора вместо модельных.
     """
     try:
-        img = cv2.imread(path)
+        img = read_image(path)          # пути с кириллицей — см. src/gmr/render/image_io.py
         if img is None:
+            log.warning(f"Не удалось открыть фото для перерисовки подписи: {path}")
             return
             
         # ИСПРАВЛЕНО: передаём обязательные аргументы photo_path и outcome
@@ -553,8 +586,10 @@ def redraw_annotation(path: str, serial: str, reading_str: str) -> None:
             result.reading_str = reading_str or None
             
         _draw_annotation(img, result)
-        cv2.imwrite(path, img)
-        log.info(f"Аннотация перерисована: {Path(path).name}")
+        if write_image(path, img):
+            log.info(f"Аннотация перерисована: {Path(path).name}")
+        else:
+            log.warning(f"Не удалось сохранить перерисованное фото: {path}")
     except Exception as e:
         log.warning(f"Не удалось перерисовать аннотацию: {e}")
 
@@ -598,7 +633,9 @@ def save_crnn_markup(
     out_img = out_dir / out_fname
     if out_img.exists():
         out_img = out_dir / f"{safe_text}_{uuid.uuid4().hex[:6]}.jpeg"
-    cv2.imwrite(str(out_img), serial_crop)
+    if not write_image(out_img, serial_crop):
+        log.warning(f"CRNN разметка: не удалось сохранить {out_img}")
+        return
 
     out_txt = out_img.with_suffix(".txt")
     out_txt.write_text(correct_text, encoding="utf-8")
@@ -634,7 +671,9 @@ def save_cnn_markup(
         out_dir = Path(training_dir) / "cnn" / final_char
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = str(out_dir / f"{uuid.uuid4().hex}.jpg")
-        cv2.imwrite(out_path, crop)
+        if not write_image(out_path, crop):
+            log.warning(f"CNN разметка: не удалось сохранить {out_path}")
+            continue
         log.info(f"CNN разметка: pos={pos} model={model_char!r} → correct={final_char!r}")
 
 # ─── Виджет показаний (5 полей) ───────────────────────────────────────────────
@@ -932,7 +971,7 @@ class ProcessingTab(ttk.Frame):
 
     def _build(self):
         self._counter_var = tk.StringVar(value="Загрузка...")
-        ttk.Label(self, textvariable=self._counter_var, font=("Segoe UI", 10)).pack(
+        ttk.Label(self, textvariable=self._counter_var, font=("Segoe UI", 10), wraplength=900).pack(
             anchor="w", padx=12, pady=(10, 4)
         )
 
@@ -974,7 +1013,8 @@ class ProcessingTab(ttk.Frame):
         )
         total = remaining + processed
         self._counter_var.set(
-            f"Всего: {total} | Обработано: {processed} | Осталось: {remaining}"
+            wrong_folder_hint(self.app.settings.photos_dir)
+            or f"Всего: {total} | Обработано: {processed} | Осталось: {remaining}"
         )
 
     def _selected_path(self) -> Optional[tuple[str, str]]:
@@ -1031,7 +1071,7 @@ class VerifyTab(ttk.Frame):
 
     def _build(self):
         self._counter_var = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self._counter_var, font=("Segoe UI", 10)).pack(
+        ttk.Label(self, textvariable=self._counter_var, font=("Segoe UI", 10), wraplength=900).pack(
             anchor="w", padx=12, pady=(10, 4)
         )
 
@@ -1073,7 +1113,9 @@ class VerifyTab(ttk.Frame):
             ))
 
         total = len(self._items)
-        self._counter_var.set(f"Всего для проверки: {total}")
+        self._counter_var.set(
+            wrong_folder_hint(self.app.settings.photos_dir) or f"Всего для проверки: {total}"
+        )
 
     def _open(self):
         sel = self._tree.selection()

@@ -235,3 +235,28 @@ class ShadowLogStore:
 
     def is_clean(self) -> bool:
         return not self.divergences
+
+
+# ─── Функции-обёртки над CSV-логом (Фаза 6) ─────────────────────────────────
+# Раньше жили в reader.py как _log_path/_load_log/_save_log/_append_log_row
+# (program2.py импортировал их оттуда). Поведение то же.
+
+def log_path_for(table_path: str) -> str:
+    """<table_name>_log.csv рядом с таблицей."""
+    p = Path(table_path)
+    return str(p.parent / (p.stem + "_log.csv"))
+
+
+def load_log(log_path: str) -> list[dict]:
+    """Загружает лог; возвращает [] если файл не существует."""
+    return CsvLogStore(log_path).load()
+
+
+def save_log(log_path: str, rows: list[dict]) -> None:
+    """Перезаписывает весь лог."""
+    CsvLogStore(log_path).save(rows)
+
+
+def append_log_row(log_path: str, row: dict) -> None:
+    """Дописывает одну строку в лог (создаёт файл с заголовком если нет)."""
+    CsvLogStore(log_path).append(row)

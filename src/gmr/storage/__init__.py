@@ -5,7 +5,12 @@ from .log_store import (
     LogStore,
     ShadowLogStore,
     SqliteLogStore,
+    append_log_row,
+    load_log,
+    log_path_for,
+    save_log,
 )
+from .table import load_table, save_table
 
 __all__ = [
     "LOG_COLUMNS",
@@ -14,4 +19,10 @@ __all__ = [
     "ShadowLogStore",
     "SqliteLogStore",
     "photo_fingerprint",
+    "append_log_row",
+    "load_log",
+    "log_path_for",
+    "save_log",
+    "load_table",
+    "save_table",
 ]

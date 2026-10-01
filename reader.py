@@ -68,7 +68,10 @@ from src.gmr.ml import (
 from src.gmr.ml.loader import default_device, load_models
 from src.gmr.storage import (
     LOG_COLUMNS, CsvLogStore, ShadowLogStore, SqliteLogStore, photo_fingerprint,
+    append_log_row, load_log, load_table, log_path_for, save_log, save_table,
 )
+from src.gmr.domain.serial_match import normalize_serial
+from src.gmr.render import draw_annotation, read_image, write_image
 
 # Модели вызываются только через контракты src/gmr/domain/ml.py (Фаза 3):
 # загрузка — src/gmr/ml/loader.py, чтение цифр — src/gmr/application/.
@@ -93,56 +96,15 @@ _BOX_THICKNESS = 2
 
 # ─── Нормализация серийного номера ───────────────────────────────────────────
 
-def _normalize_serial(s: str) -> str:
-    """
-    Приводит серийный номер к каноническому виду для сравнения.
-
-    Убирает только пробелы по краям — внутренние символы (включая ведущие
-    нули) остаются нетронутыми. Намеренно НЕ вызываем int() / lstrip('0'),
-    чтобы не потерять ведущие нули у номеров вроде "007123".
-    """
-    return s.strip()
+# Перенесено в src/gmr/domain/serial_match.py (Фаза 6); старое имя — для совместимости.
+_normalize_serial = normalize_serial
 
 
 # ─── Вспомогательные функции ─────────────────────────────────────────────────
 
-def _load_table(path: str) -> pd.DataFrame:
-    """
-    Загружает таблицу счётчиков.
-
-    ВАЖНО — ведущие нули:
-
-    CSV:  dtype=str достаточно — pandas читает ячейки как текст.
-
-    Excel: dtype=str НЕ спасает числовые ячейки. Если ячейка хранится
-    как число (openpyxl отдаёт int), dtype=str превратит 42306 в "42306",
-    а не в "0042306". Используем converters={col: str} — это заставляет
-    pandas вызывать str() на сыром значении из openpyxl. Текстовые ячейки
-    вернут строку как есть, числовые — str(int), т.е. без ведущих нулей.
-    Полная защита от потери нулей обеспечивается fallback-ом с добавлением
-    нулей в process_photo (шаг 3).
-    """
-    ext = Path(path).suffix.lower()
-    if ext in (".xlsx", ".xls"):
-        _tmp = pd.read_excel(path, nrows=0)
-        converters = {col: str for col in _tmp.columns}
-        return pd.read_excel(path, converters=converters)
-    return pd.read_csv(path, dtype=str)
-
-
-def _save_table(df: pd.DataFrame, path: str) -> None:
-    """
-    Сохраняет таблицу обратно на диск.
-
-    Для CSV принудительно используем quoting=QUOTE_ALL, чтобы ведущие нули
-    в строковых столбцах не потерялись при следующей загрузке сторонними
-    инструментами (Excel, pandas без dtype=str и т.д.).
-    """
-    ext = Path(path).suffix.lower()
-    if ext in (".xlsx", ".xls"):
-        df.to_excel(path, index=False)
-    else:
-        df.to_csv(path, index=False, quoting=csv.QUOTE_ALL)
+# Перенесены в src/gmr/storage/table.py (Фаза 6); старые имена — для совместимости.
+_load_table = load_table
+_save_table = save_table
 
 
 # ─── Processing log ──────────────────────────────────────────────────────────
@@ -155,25 +117,11 @@ def _save_table(df: pd.DataFrame, path: str) -> None:
 _LOG_COLUMNS = LOG_COLUMNS
 
 
-def _log_path(table_path: str) -> str:
-    """<table_name>_log.csv рядом с таблицей."""
-    p = Path(table_path)
-    return str(p.parent / (p.stem + "_log.csv"))
-
-
-def _load_log(log_path: str) -> list[dict]:
-    """Загружает лог; возвращает [] если файл не существует."""
-    return CsvLogStore(log_path).load()
-
-
-def _save_log(log_path: str, rows: list[dict]) -> None:
-    """Перезаписывает весь лог."""
-    CsvLogStore(log_path).save(rows)
-
-
-def _append_log_row(log_path: str, row: dict) -> None:
-    """Дописывает одну строку в лог (создаёт файл с заголовком если нет)."""
-    CsvLogStore(log_path).append(row)
+# Перенесены в src/gmr/storage/log_store.py (Фаза 6); старые имена — для совместимости.
+_log_path       = log_path_for
+_load_log       = load_log
+_save_log       = save_log
+_append_log_row = append_log_row
 
 
 def _log_filenames(rows: list[dict]) -> set[str]:
@@ -305,38 +253,8 @@ def _find_crop(crops: list[dict], class_name: str) -> Optional[np.ndarray]:
 _find_crop_entry = find_detection
 
 
-def _draw_annotation(img: np.ndarray, result: PhotoResult) -> None:
-    """Рисует серийник и показания в левом верхнем углу изображения (in-place).
-
-    Показания отображаются как reading_str (например "5?3?1") если число не
-    удалось распознать полностью, или как целое число при успехе.
-    """
-    if result.reading is not None:
-        reading_display = str(result.reading)
-    elif result.reading_str is not None:
-        reading_display = result.reading_str   # например "5?3?1"
-    else:
-        reading_display = "?"
-
-    lines = [
-        f"Serial:  {result.serial_text or '?'}",
-        f"Reading: {reading_display}",
-    ]
-
-    _, w = img.shape[:2]
-    font       = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = max(0.6, w / 1000)
-    thickness  = 2
-    pad        = 8
-    line_h     = int(30 * font_scale)
-
-    box_h = line_h * len(lines) + pad * 2
-    box_w = int(340 * font_scale)
-    cv2.rectangle(img, (0, 0), (box_w, box_h), (0, 0, 0), -1)
-
-    for i, line in enumerate(lines):
-        y = pad + line_h * i + line_h - 4
-        cv2.putText(img, line, (pad, y), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
+# Перенесено в src/gmr/render/annotation.py (Фаза 6); старое имя — для совместимости.
+_draw_annotation = draw_annotation
 
 
 def _draw_boxes(img: np.ndarray, result: PhotoResult) -> None:
@@ -379,12 +297,12 @@ def _save_annotated(
     Path(dst_dir).mkdir(parents=True, exist_ok=True)
     dst_path = str(Path(dst_dir) / new_name)
 
-    img = cv2.imread(src)
+    img = read_image(src)          # пути с кириллицей — см. src/gmr/render/image_io.py
     if img is not None:
         if draw_boxes:
             _draw_boxes(img, result)
         _draw_annotation(img, result)
-        written = cv2.imwrite(dst_path, img)
+        written = write_image(dst_path, img)
         if written:
             if move:
                 os.remove(src)
@@ -425,7 +343,7 @@ def _save_digit_debug(
     for pos, (dc, res) in enumerate(zip(digit_crops_sorted, digit_results)):
         if dc is not None:
             crop_path = str(Path(debug_dir) / f"digit_{pos}.jpg")
-            cv2.imwrite(crop_path, dc["crop"])
+            write_image(crop_path, dc["crop"])
 
     meta_path = str(Path(debug_dir) / "meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:

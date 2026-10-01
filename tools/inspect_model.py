@@ -34,6 +34,7 @@ import numpy as np
 
 from src.gmr.application import find_detection, read_meter_digits
 from src.gmr.domain import PipelineConfig
+from src.gmr.render.image_io import read_image as _read_image, write_image as _write_image
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -44,18 +45,14 @@ _CLASS_COLOR = {"gas_meter": _GREEN, "serial_number": _BLUE}
 
 
 # ─── Файлы ───────────────────────────────────────────────────────────────────
-# Через imdecode/imencode: cv2.imread/imwrite на Windows не открывают пути
-# с кириллицей (папки операторов).
+# Пути с кириллицей (папки операторов) — через src/gmr/render/image_io.py.
 
 def read_image(path: Path) -> Optional[np.ndarray]:
-    data = np.fromfile(str(path), dtype=np.uint8)
-    return cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
+    return _read_image(path)
 
 
 def write_image(path: Path, img: np.ndarray) -> None:
-    ok, buf = cv2.imencode(path.suffix or ".jpg", img)
-    if ok:
-        buf.tofile(str(path))
+    _write_image(path, img)
 
 
 def collect_images(target: Path) -> list[Path]:

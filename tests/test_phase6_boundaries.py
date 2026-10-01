@@ -1,0 +1,115 @@
+"""
+Фаза 6: program2.py больше не зависит от reader.py — общий код (таблица, лог,
+нормализация серийника, подпись на фото) в src/gmr/. В reader.py старые
+имена оставлены ссылками (правило 3 ТЗ — legacy не удаляется сразу).
+"""
+import ast
+import subprocess
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+import reader
+from src.gmr.domain.serial_match import normalize_serial
+from src.gmr.render import draw_annotation
+from src.gmr.storage import (
+    LOG_COLUMNS, append_log_row, load_log, load_table, log_path_for, save_log, save_table,
+)
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_program2_does_not_import_reader():
+    tree = ast.parse((ROOT / "program2.py").read_text(encoding="utf-8"))
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            mods.add(node.module or "")
+    assert not {m for m in mods if m == "reader" or m.startswith("reader.")}
+
+
+def test_program2_import_does_not_load_reader():
+    code = "import sys, program2; print('reader' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-500:]
+    assert out.stdout.strip().splitlines()[-1] == "False"
+
+
+def test_reader_legacy_names_are_the_same_functions():
+    assert reader._load_table is load_table and reader._save_table is save_table
+    assert reader._load_log is load_log and reader._save_log is save_log
+    assert reader._append_log_row is append_log_row and reader._log_path is log_path_for
+    assert reader._normalize_serial is normalize_serial
+    assert reader._draw_annotation is draw_annotation
+    assert reader._LOG_COLUMNS is LOG_COLUMNS
+
+
+def test_table_roundtrip_keeps_leading_zeros(tmp_path):
+    p = tmp_path / "t.csv"
+    save_table(pd.DataFrame([{"Номер счетчика": "0045618", "Текущие показания": ""}]), str(p))
+    assert p.read_text(encoding="utf-8").splitlines()[1] == '"0045618",""'   # QUOTE_ALL
+    assert load_table(str(p)).iloc[0]["Номер счетчика"] == "0045618"
+
+
+def test_log_functions(tmp_path):
+    assert log_path_for(str(tmp_path / "meters_table.csv")) == str(tmp_path / "meters_table_log.csv")
+    lp = str(tmp_path / "l.csv")
+    assert load_log(lp) == []
+    append_log_row(lp, {"original_filename": "a.jpg", "outcome": "PLUS"})
+    save_log(lp, load_log(lp) + [{"original_filename": "b.jpg", "outcome": "MINUS"}])
+    assert [r["original_filename"] for r in load_log(lp)] == ["a.jpg", "b.jpg"]
+
+
+def test_normalize_serial():
+    assert normalize_serial("  007123 ") == "007123"
+
+
+# ─── Картинки при путях с кириллицей (2026-10-01) ────────────────────────────
+
+import numpy as np  # noqa: E402
+
+from src.gmr.render import read_image, write_image  # noqa: E402
+
+
+def test_image_io_roundtrip_cyrillic_path(tmp_path):
+    d = tmp_path / "Сулиман С" / "plus"
+    d.mkdir(parents=True)
+    img = np.zeros((20, 30, 3), np.uint8)
+    img[5, 5] = (10, 200, 30)
+    assert write_image(d / "Фото 1.png", img) is True
+    back = read_image(d / "Фото 1.png")
+    assert back is not None and back.shape == (20, 30, 3) and tuple(back[5, 5]) == (10, 200, 30)
+
+
+def test_image_io_errors_like_cv2(tmp_path):
+    assert read_image(tmp_path / "нет.jpg") is None
+    (tmp_path / "пусто.jpg").write_bytes(b"")
+    assert read_image(tmp_path / "пусто.jpg") is None
+    (tmp_path / "мусор.jpg").write_bytes(b"not an image")
+    assert read_image(tmp_path / "мусор.jpg") is None
+    assert write_image(tmp_path / "x.unknownext", np.zeros((5, 5, 3), np.uint8)) is False
+    assert write_image(tmp_path / "нет_папки" / "x.jpg", np.zeros((5, 5, 3), np.uint8)) is False
+
+
+def test_program2_redraw_annotation_on_cyrillic_path(tmp_path):
+    import program2
+    p = tmp_path / "Сулиман С" / "plus" / "A1.jpg"
+    p.parent.mkdir(parents=True)
+    write_image(p, np.full((400, 600, 3), 255, np.uint8))
+    program2.redraw_annotation(str(p), "1234567", "01200")
+    after = read_image(p)
+    assert max(after[2, 2].tolist()) < 20      # тёмная плашка подписи (JPEG чуть искажает цвет)
+
+
+def test_reader_save_annotated_on_cyrillic_path(tmp_path):
+    from src.gmr.domain import Outcome, PhotoResult
+    src = tmp_path / "Аюб" / "фото.jpg"
+    src.parent.mkdir(parents=True)
+    write_image(src, np.full((400, 600, 3), 255, np.uint8))
+    r = PhotoResult(photo_path=str(src), outcome=Outcome.PLUS, serial_text="1", reading=1200)
+    reader._save_annotated(str(src), str(tmp_path / "out" / "Аюб" / "plus"), "A1.jpg", r, move=False)
+    out = read_image(tmp_path / "out" / "Аюб" / "plus" / "A1.jpg")
+    assert out is not None and max(out[2, 2].tolist()) < 20
