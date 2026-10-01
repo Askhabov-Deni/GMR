@@ -91,7 +91,14 @@ def test_reader_wrappers_still_use_same_format(tmp_path):
         append_log_row(str(new), r)
     assert old.read_bytes() == new.read_bytes()
     assert load_log(str(new)) == CsvLogStore(str(old)).load()
-    assert LOG_COLUMNS == LOG_COLUMNS
+    # порядок столбцов — контракт с program2.py и старыми логами
+    # (docs/contract_reader_program2.md, раздел 4): новые — только в конец
+    assert LOG_COLUMNS == [
+        "original_filename", "final_filename", "serial_id", "account_id", "reading",
+        "last_reading", "delta", "outcome", "source", "processed_by", "processed_at",
+        "verified_by", "verified_at", "model_serial_conf", "model_reading_str", "notes",
+        "photo_hash", "source_folder",
+    ]
 
 
 # ─── 2. SQLite == CSV ────────────────────────────────────────────────────────

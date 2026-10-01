@@ -23,9 +23,9 @@ def captured(monkeypatch):
 
 def test_process_defaults_equal_reader_main(captured):
     assert gmr.main(["process"]) == 0
-    cfg, ref = captured["cfg"], reader.default_run_config()
-    assert cfg == ref
-    # то, что задаёт `python reader.py` поверх дефолтов PipelineConfig
+    cfg = captured["cfg"]
+    assert cfg == reader.PipelineConfig()       # `python reader.py` — те же настройки
+    # настройки обычного прогона (до 2026-10-01 — reader.default_run_config)
     assert (cfg.move_photos, cfg.ignore_last_digits, cfg.debug_digits, cfg.draw_boxes) == (False, 2, False, False)
 
 
@@ -38,16 +38,19 @@ def test_process_overrides(captured, tmp_path):
 
 
 def test_other_commands_delegate(monkeypatch):
-    from tools import analyze_log, inspect_model, weights_manifest
+    from tools import analyze_log, check, inspect_model, weights_manifest
     calls = []
-    monkeypatch.setattr(analyze_log, "main", lambda argv: calls.append(("analyze", argv)))
-    monkeypatch.setattr(inspect_model, "main", lambda argv: calls.append(("inspect", argv)))
+    # analyze и inspect возвращают отчёт — код выхода от этого не меняется
+    monkeypatch.setattr(analyze_log, "main", lambda argv: calls.append(("analyze", argv)) or "отчёт")
+    monkeypatch.setattr(inspect_model, "main", lambda argv: calls.append(("inspect", argv)) or [{}])
     monkeypatch.setattr(weights_manifest, "main", lambda argv: calls.append(("weights", argv)))
-    gmr.main(["analyze", "log.csv", "--details"])
-    gmr.main(["inspect", "digit", "x"])
-    gmr.main(["weights", "--write"])
+    monkeypatch.setattr(check, "main", lambda argv: calls.append(("check", argv)) or 1)
+    assert gmr.main(["analyze", "log.csv", "--details"]) == 0
+    assert gmr.main(["inspect", "digit", "x"]) == 0
+    assert gmr.main(["weights", "--write"]) == 0
+    assert gmr.main(["check"]) == 1             # проверка не прошла -> код выхода 1
     assert calls == [("analyze", ["log.csv", "--details"]), ("inspect", ["digit", "x"]),
-                     ("weights", ["--write"])]
+                     ("weights", ["--write"]), ("check", [])]
 
 
 def test_help_and_unknown_command(capsys):
@@ -77,7 +80,7 @@ def test_cli_process_end_to_end_same_as_reader(tmp_path, fake_models):  # noqa: 
               "--table", str(table)])
     # тот же прогон напрямую, с настройками `python reader.py`
     inp2, table2 = _setup_workspace(tmp_path / "direct")
-    reader.run_pipeline(reader.default_run_config(
+    reader.run_pipeline(reader.PipelineConfig(
         input_dir=str(inp2), output_base_dir=str(tmp_path / "direct" / "out"), table_path=str(table2)))
 
     assert _log_without_timestamps(log_path_for(str(table))) == \

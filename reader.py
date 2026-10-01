@@ -2,8 +2,8 @@
 reader.py — главный пайплайн обработки фотографий газовых счётчиков.
 
 Запуск: `python gmr.py process [--input --output --table]` или `python reader.py`
-(одинаковые настройки — default_run_config). Как результаты используются окном
-оператора — docs/contract_reader_program2.md.
+(одинаковые настройки — значения по умолчанию PipelineConfig). Как результаты
+используются окном оператора — docs/contract_reader_program2.md.
 
 АРХИТЕКТУРА:
   process_photo(photo_path, df, config) -> PhotoResult
@@ -933,21 +933,5 @@ def _report_shadow_run(shadow_store: ShadowLogStore, log_path: str, log: logging
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────
 
-def default_run_config(**overrides) -> PipelineConfig:
-    """
-    Настройки обычного прогона — те, с которыми всегда запускался
-    `python reader.py`. Ими же пользуется `python gmr.py process` (Фаза 7),
-    чтобы два способа запуска не разошлись.
-    """
-    params = dict(
-        move_photos         = False,  # True=перемещать, False=копировать (для теста)
-        ignore_last_digits  = 2,      # прощаем последние 2 цифры (без веса на счётчике)
-        debug_digits        = False,  # включить для анализа ошибок CNN
-        draw_boxes          = False,  # включить для визуальной проверки детекций
-    )
-    params.update(overrides)
-    return PipelineConfig(**params)
-
-
 if __name__ == "__main__":
-    run_pipeline(default_run_config())
+    run_pipeline(PipelineConfig())

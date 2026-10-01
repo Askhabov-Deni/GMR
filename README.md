@@ -27,7 +27,7 @@
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
-python -m pytest tests/ -v
+python gmr.py check
 ```
 
 Если `pip.exe` после переноса папки перестал запускаться, используйте
@@ -90,15 +90,21 @@ python program2.py
 python gmr.py analyze <лог.csv> --table <таблица>   # качество чтения; --details — разбор ненайденных серийников
 python gmr.py inspect photo <фото или папка>        # что видят модели; режимы: meter, digits, serial, digit, photo
 python gmr.py weights --write                       # обновить таблицу весов в docs/models.md
+python gmr.py check                                 # перед коммитом: данные, код, тесты
 ```
 
-## Тесты
+## Тесты и проверка перед коммитом
 ```powershell
-python -m pytest tests/ -v
+python gmr.py check            # всё сразу: данные не попадают в git, ruff, тесты
+python -m pytest tests/ -v     # только тесты
 ```
 Тесты не требуют весов моделей: модели в них поддельные. Тестам окон
 `program2.py` нужен экран, без него они пропускаются (`skipped`); на Linux
 их запускают через `xvfb-run`.
+
+`xfailed` — **известные ошибки** (`tests/test_known_issues.py` и конец
+`tests/test_program2_verify.py`): тест описывает, как должно быть, и пока
+падает. Когда ошибку исправят, pytest сообщит об этом — пометку снимают.
 
 ## Документы
 | Файл | О чём |
@@ -106,8 +112,8 @@ python -m pytest tests/ -v
 | `docs/GUIDE.md` | **руководство владельца**: как всё работает, как показать проект, как дообучать и менять модели |
 | `docs/BACKLOG.md` | что можно сделать дальше: задачи с цифрами и планом проверки |
 | `docs/WORKFLOW.md` | как ведётся работа: патчи, тесты, решения владельца |
-| `docs/MIGRATION_STATUS.md` | история миграции: изменения, решения, найденные ошибки |
-| `docs/MIGRATION_TZ.md` | план миграции по фазам |
+| `docs/CHANGELOG.md` | что менялось после миграции (с 2026-10-01) |
+| `docs/MIGRATION_STATUS.md`, `docs/MIGRATION_TZ.md` | **история** миграции (фазы 0–7, закрыта); для работы читать не нужно |
 | `docs/contract_reader_program2.md` | стык reader.py ↔ program2.py: папки, лог, таблица, правила |
 | `docs/models.md` | модели в работе, отпечатки весов, как заменить модель |
 | `docs/audit/` | аудит утилит, отчёты прогонов и качества |

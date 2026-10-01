@@ -21,7 +21,7 @@ from program2 import (  # noqa: E402
     free_photo_path, list_verify_photos, plan_verify_correction,
 )
 from src.gmr.domain import PipelineConfig  # noqa: E402
-from src.gmr.storage import save_log  # noqa: E402
+from src.gmr.storage import append_log_row, load_log, load_table, save_log, save_table  # noqa: E402
 
 CFG = PipelineConfig()
 
@@ -399,3 +399,60 @@ def test_accept_after_hint_writes_note(edit_app):
     r = app.log_rows[-1]
     assert r["outcome"] == "PLUS" and r["account_id"] == "A1" and r["serial_id"] == "1284567"
     assert "подсказка: 1284567" in r["notes"]
+
+
+# ─── Известные ошибки (аудит 2026-10-01; как в tests/test_known_issues.py) ───
+# Тест описывает, как ДОЛЖНО быть, и сейчас падает. Исправили — снимите пометку.
+
+def _known_issue(what):
+    return pytest.mark.xfail(strict=True, raises=AssertionError,
+                             reason=f"известная ошибка, этап 2: {what}")
+
+
+@needs_display
+@_known_issue("«Верно» стирает строки лога, которые reader.py дописал, пока окно открыто")
+def test_verify_ok_keeps_log_rows_written_meanwhile(app, tmp_path):
+    log_p = str(tmp_path / "meters_table_log.csv")
+    append_log_row(log_p, row(original_filename="new.jpg", final_filename="A2.jpg",
+                              account_id="A2", reading="5100", outcome="PLUS"))   # reader.py
+    items = list_verify_photos(app.settings.photos_dir, app.log_rows)
+    app.open_verify_screen(items[0], 0)
+    app._current_screen._verify_ok()
+    assert "new.jpg" in [r["original_filename"] for r in load_log(log_p)]
+
+
+@needs_display
+@_known_issue("«Принять» стирает показания, которые reader.py записал, пока окно открыто")
+def test_accept_keeps_table_values_written_meanwhile(edit_app):
+    app, photos, photo = edit_app
+    df = load_table(app.settings.table_path)                 # reader.py записал A2
+    df.loc[df["Лицевой счет"] == "A2", "Текущие показания"] = "7"
+    save_table(df, app.settings.table_path)
+    app.open_edit_screen(str(photo), "serial_not_found")
+    scr = app._current_screen
+    scr._reading_widget.set_digits("01050", None)
+    scr._lookup_by_serial("1284567")
+    scr._accept()                                            # оператор принял A1
+    df = load_table(app.settings.table_path)
+    assert df.loc[df["Лицевой счет"] == "A2", "Текущие показания"].iloc[0] == "7"
+
+
+@needs_display
+@_known_issue("«Принять» при занятой таблице: показание остаётся только в логе")
+def test_accept_with_locked_table_does_not_lose_reading(edit_app, monkeypatch):
+    app, photos, photo = edit_app
+
+    def locked(df, path):     # таблица открыта в Excel
+        raise PermissionError(13, "файл занят другим процессом", path)
+
+    monkeypatch.setattr(program2, "_save_table", locked)
+    app.open_edit_screen(str(photo), "serial_not_found")
+    scr = app._current_screen
+    scr._reading_widget.set_digits("01050", None)
+    scr._lookup_by_serial("1284567")
+    scr._accept()
+    manual = [r for r in app.log_rows if r.get("source") == "manual"]
+    # показание не потеряно: либо оно в таблице, либо фото осталось в очереди
+    # и в логе нет строки «разобрано»
+    in_table = load_table(app.settings.table_path).loc[0, "Текущие показания"] == "1050"
+    assert in_table or (photo.exists() and not manual)

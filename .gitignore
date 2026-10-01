@@ -47,6 +47,12 @@ inspect_out/
 
 # Copies of working data (data_for_reader_test, data_for_reader_notes, ...)
 data_for_reader_*/
+# Данные абонентов в любой папке проекта: таблицы, логи, список исправлений базы
+*.xlsx
+*.xls
+*_log.csv
+db_serial_fix.csv
+*.sqlite
 # Windows thumbnails and WhatsApp videos
 Thumbs.db
 *.mp4

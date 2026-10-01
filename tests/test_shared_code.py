@@ -1,7 +1,7 @@
 """
-Фаза 6: program2.py больше не зависит от reader.py — общий код (таблица, лог,
-нормализация серийника, подпись на фото) в src/gmr/. В reader.py старые
-имена оставлены ссылками (правило 3 ТЗ — legacy не удаляется сразу).
+Общий код reader.py и program2.py (src/gmr/): таблица, лог, нормализация
+серийника, чтение и запись картинок. program2.py не зависит от reader.py
+(с Фазы 6; до 2026-10-01 файл назывался test_phase6_boundaries.py).
 """
 import ast
 import subprocess
@@ -50,6 +50,14 @@ def test_table_roundtrip_keeps_leading_zeros(tmp_path):
     save_table(pd.DataFrame([{"Номер счетчика": "0045618", "Текущие показания": ""}]), str(p))
     assert p.read_text(encoding="utf-8").splitlines()[1] == '"0045618",""'   # QUOTE_ALL
     assert load_table(str(p)).iloc[0]["Номер счетчика"] == "0045618"
+
+
+def test_xlsx_table_roundtrip_keeps_leading_zeros(tmp_path):
+    # таблица месяца приходит в Excel; нужен openpyxl (requirements.txt)
+    p = tmp_path / "t.xlsx"
+    save_table(pd.DataFrame([{"Номер счетчика": "0045618", "Лицевой счет": "A-1"}]), str(p))
+    row = load_table(str(p)).iloc[0]
+    assert (row["Номер счетчика"], row["Лицевой счет"]) == ("0045618", "A-1")
 
 
 def test_log_functions(tmp_path):

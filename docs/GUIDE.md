@@ -86,8 +86,10 @@ python gmr.py analyze <таблица>_log.csv --table <таблица>
   автоматические PLUS/MINUS. Каждая проверка — правильный ответ для оценки
   моделей (`analyze` → «Точность по проверке оператора»).
 
-Перед обновлением кода всегда: `python -m pytest tests/ -v`. Всё должно
-быть `passed`.
+Перед обновлением кода всегда: `python gmr.py check` (данные не попадают в
+git, ошибок в коде нет, тесты прошли). В конце должно быть «ВСЁ В ПОРЯДКЕ».
+`xfailed` в тестах — это известные ошибки, так и должно быть
+(`tests/test_known_issues.py`).
 
 ---
 
@@ -248,7 +250,7 @@ python gmr.py inspect serial <папка с фото> --weights serial_id_ocr\ru
 ```powershell
 # 1) полный прогон тех же фото со СТАРОЙ моделью уже есть в логе — сохраните его копию
 # 2) поменять путь в src\gmr\domain\config.py (например digit_ocr_model = ".../v4/best.pth")
-python -m pytest tests/ -v
+python gmr.py check
 # 3) прогон на копии тех же фото в НОВУЮ папку с НОВОЙ таблицей-копией
 python gmr.py process --input <копия фото> --output <новая папка> --table <копия таблицы>
 python gmr.py analyze <копия таблицы>_log.csv --table <копия таблицы>

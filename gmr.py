@@ -7,11 +7,12 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py analyze <лог.csv> [--table <таблица>] [--details]   качество по логу
   python gmr.py inspect <модель> <фото|папка> [...]                  посмотреть модель
   python gmr.py weights [--write]                                     файлы весов
+  python gmr.py check                                                 проверка перед коммитом
   python gmr.py <команда> --help                                      подробности
 
 Ничего нового команды не делают: process вызывает тот же run_pipeline с теми же
-настройками, что `python reader.py`; остальные — тонкие обёртки над tools/.
-Окно оператора — по-прежнему `python program2.py`.
+настройками, что `python reader.py` (значения по умолчанию PipelineConfig);
+остальные — тонкие обёртки над tools/. Окно оператора — `python program2.py`.
 """
 import argparse
 import sys
@@ -44,7 +45,7 @@ def _process(argv: list[str]) -> None:
         overrides["move_photos"] = True
     if args.shadow_sqlite:
         overrides["shadow_sqlite_log"] = True
-    reader.run_pipeline(reader.default_run_config(**overrides))
+    reader.run_pipeline(reader.PipelineConfig(**overrides))
 
 
 def _analyze(argv):
@@ -62,11 +63,17 @@ def _weights(argv):
     weights_manifest.main(argv)
 
 
+def _check(argv):
+    from tools import check
+    return check.main(argv)
+
+
 COMMANDS = {
     "process": (_process, "автоматическая обработка фото (reader.py)"),
     "analyze": (_analyze, "качество чтения по логу (tools/analyze_log.py)"),
     "inspect": (_inspect, "посмотреть, что делает модель (tools/inspect_model.py)"),
     "weights": (_weights, "какие файлы весов в работе (tools/weights_manifest.py)"),
+    "check":   (_check,   "проверка перед коммитом: данные, код, тесты (tools/check.py)"),
 }
 
 
@@ -78,8 +85,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         for name, (_, help_) in COMMANDS.items():
             print(f"  {name:<8} {help_}")
         return 0 if (not argv or argv[0] in ("-h", "--help")) else 2
-    COMMANDS[argv[0]][0](argv[1:])
-    return 0
+    return COMMANDS[argv[0]][0](argv[1:]) or 0
 
 
 if __name__ == "__main__":

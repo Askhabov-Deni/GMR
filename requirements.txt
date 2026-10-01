@@ -8,6 +8,8 @@ numpy==2.4.4
 pandas==3.0.2
 pillow==12.1.1
 matplotlib==3.10.8
+# Таблица абонентов в Excel (.xlsx): pandas читает и пишет её через openpyxl.
+openpyxl==3.1.5
 
 # ВАЖНО: >=2.0. В models/cnn/dataset_cnn.py используется A.GaussNoise(std_range=...);
 # в albumentations 1.4.x этот аргумент молча игнорируется (только UserWarning),

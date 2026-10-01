@@ -53,7 +53,7 @@ SEED        = 67
 # Равен прод-порогу PipelineConfig.digit_conf_thresh (src/gmr/domain/config.py):
 # standalone-инструмент должен судить о модели по тому же порогу, что и
 # reader.py. Было 0.8 — расходилось с продом (MIGRATION_TZ.md, 3bis, находка 1).
-# Равенство проверяет tests/test_phase4_models.py.
+# Равенство проверяет tests/test_models_tools.py.
 MIN_CONFIDENCE = 0.6
 
 # ── Устройство ────────────────────────────────────────────────────────────────

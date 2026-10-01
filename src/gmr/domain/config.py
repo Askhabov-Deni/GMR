@@ -1,6 +1,10 @@
 """
 src/gmr/domain/config.py — PipelineConfig.
 
+Значения по умолчанию — это настройки обычного прогона (`python gmr.py process`,
+`python reader.py`): других «настроек прогона» нет (default_run_config в
+reader.py убран 2026-10-01).
+
 Перенесено из reader.py в рамках Фазы 2a БЕЗ изменения полей и дефолтов
 (включая переменные окружения GMR_INPUT_DIR/GMR_OUTPUT_DIR/GMR_TABLE_PATH,
 добавленные в Фазе 0/1 — см. docs/MIGRATION_STATUS.md).
@@ -80,12 +84,14 @@ class PipelineConfig:
     # Дебаг CNN: сохранять кропы цифр и meta.json при ошибке распознавания
     debug_digits:              bool = False
 
-    # Отрисовка боксов на итоговом фото.
+    # Отрисовка боксов на итоговом фото (для визуальной проверки детекций).
     # gas_meter    — зелёный
     # serial_number — синий
     # digit         — оранжевый
     # Подписи классов не рисуются.
-    draw_boxes:                bool = True
+    # До 2026-10-01 здесь было True, но обычный прогон (`python reader.py`,
+    # `gmr.py process`) всегда переопределял на False — теперь значение одно.
+    draw_boxes:                bool = False
 
     # Фаза 2b (docs/MIGRATION_TZ.md): shadow-run processing log в SQLite.
     # False — поведение как раньше, пишется только <table>_log.csv.

@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest==9.1.1
+# проверка кода в `python gmr.py check` (настройки — ruff.toml)
+ruff==0.16.9
