@@ -45,6 +45,9 @@ class PipelineConfig:
     col_account_id:           str   = "Лицевой счет"
     col_last_reading:         str   = "Последние показания"
     col_new_reading:          str   = "Текущие показания"
+    # столбцы реестра компании, которые заполняет выгрузка показания.xlsx (2026-10-01)
+    col_date:                 str   = "Дата"
+    col_difference:           str   = "Разница"
 
     # Пороги
     meter_conf_thresh:        float = 0.7

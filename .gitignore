@@ -56,6 +56,13 @@ db_serial_fix.csv
 # Копии таблицы и лога, журналы прогонов (этап 2.1)
 gmr_backups/
 run_logs/
+# Папка месяца, если её создали внутри проекта (этап 2.2a)
+фото/
+результат/
+таблицы/
+лог.csv
+# Файлы для тестов с выдуманными данными — в git
+!tests/data/*.xls
 # Windows thumbnails and WhatsApp videos
 Thumbs.db
 *.mp4

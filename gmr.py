@@ -2,6 +2,9 @@
 gmr.py — одна точка входа для всех команд проекта (Фаза 7). Запускать из
 папки проекта:
 
+  python gmr.py month <папка> --table <файл>  создать месяц из таблицы компании / загрузить обновлённую
+  python gmr.py month <папка>                 сводка месяца
+  python gmr.py export <папка>                выгрузить показания.xlsx и лог.csv ещё раз
   python gmr.py process                       прогон reader.py (как `python reader.py`)
   python gmr.py process --input <папка> --output <папка> --table <таблица>
   python gmr.py analyze <лог.csv> [--table <таблица>] [--details]   качество по логу
@@ -48,6 +51,43 @@ def _process(argv: list[str]) -> None:
     reader.run_pipeline(reader.PipelineConfig(**overrides))
 
 
+def _month(argv):
+    p = argparse.ArgumentParser(
+        prog="python gmr.py month",
+        description="Папка месяца: создать её из таблицы компании (.xls/.xlsx/.csv) или загрузить "
+                    "обновлённую таблицу; после загрузки — выгрузка показания.xlsx. "
+                    "Без --table — сводка месяца.",
+    )
+    p.add_argument("folder", help="папка месяца, например D:\\GMR\\Октябрь_2026")
+    p.add_argument("--table", help="таблица компании: при первом запуске создаёт месяц, потом — обновляет")
+    args = p.parse_args(argv)
+    from src.gmr.application import month
+    try:
+        if not args.table:
+            print(month.month_summary(args.folder))
+            return 0
+        print(month.load_table(args.folder, args.table).text())
+        print(month.export_month(args.folder).text())
+    except (ValueError, OSError, month.ExportLocked) as e:
+        print(f"ОШИБКА: {e}")
+        return 1
+    return 0
+
+
+def _export(argv):
+    p = argparse.ArgumentParser(prog="python gmr.py export",
+                                description="Выгрузить показания.xlsx и лог.csv из базы месяца.")
+    p.add_argument("folder", help="папка месяца")
+    args = p.parse_args(argv)
+    from src.gmr.application import month
+    try:
+        print(month.export_month(args.folder).text())
+    except (ValueError, OSError, month.ExportLocked) as e:
+        print(f"ОШИБКА: {e}")
+        return 1
+    return 0
+
+
 def _analyze(argv):
     from tools import analyze_log
     analyze_log.main(argv)
@@ -69,6 +109,8 @@ def _check(argv):
 
 
 COMMANDS = {
+    "month":   (_month,   "папка месяца: создать / загрузить обновлённую таблицу / сводка"),
+    "export":  (_export,  "выгрузить показания.xlsx и лог.csv"),
     "process": (_process, "автоматическая обработка фото (reader.py)"),
     "analyze": (_analyze, "качество чтения по логу (tools/analyze_log.py)"),
     "inspect": (_inspect, "посмотреть, что делает модель (tools/inspect_model.py)"),

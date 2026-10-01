@@ -23,8 +23,9 @@ DATA_EXTENSIONS = {
     ".csv", ".xlsx", ".xls", ".sqlite", ".db",
     ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".heic", ".mp4",
 }
-# Исключение: метрики обучения моделей (results.csv YOLO) лежат в git намеренно.
-ALLOWED_PREFIXES = ("meter_detect/runs/", "meter_ocr/runs/", "serial_id_ocr/runs/")
+# Исключения: метрики обучения моделей (results.csv YOLO) и файлы для тестов
+# с ВЫДУМАННЫМИ данными (tests/data/) лежат в git намеренно.
+ALLOWED_PREFIXES = ("meter_detect/runs/", "meter_ocr/runs/", "serial_id_ocr/runs/", "tests/data/")
 
 
 def data_files(paths: Iterable[str]) -> list[str]:
