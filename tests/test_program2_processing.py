@@ -7,7 +7,6 @@ program2.py — фиксируют ТЕКУЩЕЕ поведение (что п�
 Оконные тесты — под xvfb-run (без экрана пропускаются).
 """
 import os
-import sys
 
 import cv2
 import numpy as np
@@ -19,11 +18,10 @@ from src.gmr.storage import LOG_COLUMNS
 program2 = pytest.importorskip("program2")
 from src.gmr.domain import PipelineConfig  # noqa: E402
 from src.gmr.storage import load_log, save_log  # noqa: E402
+from tests._window import has_display, new_window  # noqa: E402
 
 CFG = PipelineConfig()
-# экран: на Windows есть всегда, в Linux — переменная DISPLAY (xvfb-run)
-needs_display = pytest.mark.skipif(not (sys.platform == "win32" or os.environ.get("DISPLAY")),
-                                   reason="нет экрана (запускать под xvfb-run)")
+needs_display = pytest.mark.skipif(not has_display(), reason="нет экрана (запускать под xvfb-run)")
 
 
 def _img(path, value=100):
@@ -100,7 +98,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(program2.messagebox, "askyesno", lambda *a, **k: answers.pop(0) if answers else True)
     for name in ("showinfo", "showwarning", "showerror"):
         monkeypatch.setattr(program2.messagebox, name, lambda *a, **k: None)
-    w = program2.MainWindow()
+    w = new_window(program2.MainWindow)
     w.withdraw()
     w.answers = answers
     w.photos = photos

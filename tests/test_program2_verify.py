@@ -8,7 +8,6 @@
   5. после «Верно»/«Сохранить» открывается следующее фото.
 """
 import os
-import sys
 
 import numpy as np
 import pandas as pd
@@ -23,6 +22,7 @@ from program2 import (  # noqa: E402
 )
 from src.gmr.domain import PipelineConfig  # noqa: E402
 from src.gmr.storage import append_log_row, load_log, load_table, save_log, save_table  # noqa: E402
+from tests._window import has_display, new_window  # noqa: E402
 
 CFG = PipelineConfig()
 
@@ -142,12 +142,7 @@ def test_free_photo_path(tmp_path):
 
 # ─── 3, 5. Окно (под Xvfb) ───────────────────────────────────────────────────
 
-def _display_ok():
-    # экран: на Windows есть всегда, в Linux — переменная DISPLAY (xvfb-run)
-    return sys.platform == "win32" or bool(os.environ.get("DISPLAY"))
-
-
-needs_display = pytest.mark.skipif(not _display_ok(), reason="нет экрана (запускать под xvfb-run)")
+needs_display = pytest.mark.skipif(not has_display(), reason="нет экрана (запускать под xvfb-run)")
 
 
 @pytest.fixture
@@ -181,7 +176,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(program2.messagebox, "askyesno", lambda *a, **k: answers.pop(0) if answers else True)
     monkeypatch.setattr(program2.messagebox, "showinfo", lambda *a, **k: None)
     monkeypatch.setattr(program2.messagebox, "showwarning", lambda *a, **k: None)
-    w = program2.MainWindow()
+    w = new_window(program2.MainWindow)
     w.withdraw()
     w.answers = answers
     yield w
@@ -304,7 +299,7 @@ def edit_app(tmp_path, monkeypatch):
     monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
     for name in ("askyesno", "showinfo", "showwarning", "showerror"):
         monkeypatch.setattr(program2.messagebox, name, lambda *a, **k: True)
-    w = program2.MainWindow()
+    w = new_window(program2.MainWindow)
     w.withdraw()
     yield w, photos, q / "w.jpg"
     w.destroy()
