@@ -69,3 +69,20 @@ def test_main_without_git_is_exit_1(capsys):
     rc = check.main([], run=lambda cmd: 0, list_files=no_git)
     out = capsys.readouterr().out
     assert rc == 1 and "не удалось спросить git" in out and "ЕСТЬ ОШИБКИ" in out
+
+
+def test_project_code_compiles_without_warnings():
+    # например «\ » в обычной строке: Python предупреждает при каждом запуске
+    # (так было в справке gmr.py, 2026-10-01)
+    import warnings
+    root = check.ROOT
+    found = []
+    for p in sorted(root.rglob("*.py")):
+        rel = p.relative_to(root)
+        if rel.parts[0] in ("archive", ".venv", "venv") or "site-packages" in rel.parts:
+            continue
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            compile(p.read_text(encoding="utf-8"), str(rel), "exec")
+        found += [f"{rel}:{x.lineno}: {x.message}" for x in w]
+    assert found == []

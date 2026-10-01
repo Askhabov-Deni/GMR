@@ -5,7 +5,7 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py month <папка> --table <файл>  создать месяц из таблицы компании / загрузить обновлённую
   python gmr.py month <папка>                 сводка месяца
   python gmr.py export <папка>                выгрузить показания.xlsx и лог.csv ещё раз
-  python gmr.py process <папка месяца>        прогон по папке месяца: фото\ → результат\, база, выгрузка
+  python gmr.py process <папка месяца>        прогон по папке месяца: фото\\ → результат\\, база, выгрузка
   python gmr.py process                       прогон reader.py (как `python reader.py`)
   python gmr.py process --input <папка> --output <папка> --table <таблица>
   python gmr.py analyze <лог.csv> [--table <таблица>] [--details]   качество по логу
