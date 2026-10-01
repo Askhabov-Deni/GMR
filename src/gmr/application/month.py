@@ -58,13 +58,14 @@ def _who() -> str:
         return "?"
 
 
-def _lines(title: str, items: list, fmt) -> list[str]:
+def _lines(title: str, items: list, fmt, limit: Optional[int], full: str) -> list[str]:
     if not items:
         return []
     out = [f"{title}: {len(items)}"]
-    out += [f"    {fmt(x)}" for x in items[:_LIST_LIMIT]]
-    if len(items) > _LIST_LIMIT:
-        out.append(f"    … и ещё {len(items) - _LIST_LIMIT} (полный список — в базе, журнал изменений)")
+    shown = items if limit is None else items[:limit]
+    out += [f"    {fmt(x)}" for x in shown]
+    if len(items) > len(shown):
+        out.append(f"    … и ещё {len(items) - len(shown)} — полный список в файле {full}")
     return out
 
 
@@ -90,7 +91,14 @@ class LoadReport:
     readings_kept: list = field(default_factory=list)         # (счёт, в базе, в таблице)
     log_rows: int = 0
 
-    def text(self) -> str:
+    report_file: str = ""                                      # полный отчёт в таблицы/
+
+    def text(self, limit: Optional[int] = _LIST_LIMIT) -> str:
+        """Отчёт загрузки. limit — сколько строк каждого списка показать
+        (None — все, так отчёт пишется в файл)."""
+        def lines(title, items, fmt):
+            return _lines(title, items, fmt, limit, self.report_file)
+
         out = [
             "=" * 60,
             ("МЕСЯЦ СОЗДАН" if self.created else "ТАБЛИЦА ОБНОВЛЕНА") + f": {self.folder}",
@@ -103,24 +111,28 @@ class LoadReport:
                        f"{self.readings_from_table}")
         if not self.created:
             out.append(f"Новых абонентов: {len(self.added)}")
-            out += _lines("Нет в новой таблице (в выгрузку не попадут)", self.removed, str)
-            out += _lines("  из них уже с показанием этого месяца", self.removed_with_reading, str)
-            out += _lines("Вернулись в таблицу", self.returned, str)
-            out += _lines("Изменился номер счётчика", self.serial_changed,
-                          lambda x: f"{x[0]}: {x[1]} → {x[2]}")
+            out += lines("Нет в новой таблице (в выгрузку не попадут)", self.removed, lambda x: f"л/с {x}")
+            out += lines("  из них уже с показанием этого месяца", self.removed_with_reading,
+                         lambda x: f"л/с {x}")
+            out += lines("Вернулись в таблицу", self.returned, lambda x: f"л/с {x}")
+            out += lines("Изменился номер счётчика", self.serial_changed,
+                         lambda x: f"л/с {x[0]}: номер счётчика «{x[1]}» → «{x[2]}»")
             if self.last_changed:
                 out.append(f"Изменилось прошлое показание: {self.last_changed}")
-            out += _lines("В новой таблице другое показание — оставлено показание из базы",
-                          self.readings_kept, lambda x: f"{x[0]}: в базе {x[1]}, в таблице {x[2]}")
-        out += _lines("Номер счётчика с лишними знаками по краям — очищен (исходный файл не менялся)",
-                      self.serials_cleaned, lambda x: f"{x[0]}: «{x[1]}» → «{x[2]}»")
-        out += _lines("Номер счётчика у нескольких абонентов", list(self.duplicate_serials.items()),
-                      lambda x: f"{x[0]}: {', '.join(x[1])}")
+            out += lines("В новой таблице другое показание — оставлено показание из базы",
+                         self.readings_kept, lambda x: f"л/с {x[0]}: в базе {x[1]}, в таблице {x[2]}")
+        out += lines("Номер счётчика с лишними знаками по краям — очищен в базе (исходный файл не менялся)",
+                     self.serials_cleaned, lambda x: f"л/с {x[0]}: номер счётчика «{x[1]}» → «{x[2]}»")
+        out += lines("Один номер счётчика у нескольких абонентов", list(self.duplicate_serials.items()),
+                     lambda x: f"номер счётчика {x[0]} — у л/с {', '.join(x[1])}")
         if self.no_account:
             out.append(f"Строк без лицевого счёта (пропущены): {self.no_account}")
-        out += _lines("Лицевой счёт повторяется (взята первая строка)", self.duplicate_accounts, str)
+        out += lines("Лицевой счёт повторяется (взята первая строка)", self.duplicate_accounts,
+                     lambda x: f"л/с {x}")
         if self.log_rows:
             out.append(f"Перенесён старый лог обработки: {self.log_rows} строк")
+        if limit is not None and self.report_file:
+            out.append(f"Полный отчёт: {self.report_file}")
         out.append("=" * 60)
         return "\n".join(out)
 
@@ -237,7 +249,9 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
         d.mkdir(exist_ok=True)
     stamp_file = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     shutil.copy2(table_path, folder.tables / f"{stamp_file}_{Path(table_path).name}")
-    (folder.tables / f"{stamp_file}_отчёт_загрузки.txt").write_text(rep.text() + "\n", encoding="utf-8")
+    report = folder.tables / f"{stamp_file}_отчёт_загрузки.txt"
+    rep.report_file = str(report)
+    report.write_text(rep.text(limit=None) + "\n", encoding="utf-8")       # все списки целиком
     return rep
 
 

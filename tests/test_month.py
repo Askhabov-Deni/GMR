@@ -346,3 +346,22 @@ def test_failed_transaction_leaves_nothing_even_if_db_used_again(tmp_path):
         with db.transaction():
             db.set_meta("следующая", "2")
         assert db.meta("половина") is None and db.meta("следующая") == "2"
+
+
+# ─── Отчёт загрузки: где лицевой счёт, где номер; полные списки — в файле ────
+
+def test_report_labels_account_and_serial(tmp_path):
+    text = month.load_table(str(tmp_path / "m"), str(SAMPLE)).text()
+    assert "л/с 1000000002: номер счётчика «123456.» → «123456»" in text
+    assert "номер счётчика 777777 — у л/с 1000000003, 1000000004" in text
+
+
+def test_long_lists_full_in_report_file(tmp_path):
+    rows = [{"Лицевой счет": f"20000000{i:02d}", "Номер счетчика": f"5000{i:02d}.",
+             "Последние показания": "1"} for i in range(25)]
+    rep = month.load_table(str(tmp_path / "m"), str(_xlsx(tmp_path / "t.xlsx", rows)))
+    screen = rep.text()
+    assert screen.count("номер счётчика «5000") == 20
+    assert f"… и ещё 5 — полный список в файле {rep.report_file}" in screen
+    saved = Path(rep.report_file).read_text(encoding="utf-8")
+    assert saved.count("номер счётчика «5000") == 25 and "… и ещё" not in saved
