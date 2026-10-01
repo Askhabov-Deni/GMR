@@ -7,6 +7,7 @@ program2.py — фиксируют ТЕКУЩЕЕ поведение (что п�
 Оконные тесты — под xvfb-run (без экрана пропускаются).
 """
 import os
+import sys
 
 import cv2
 import numpy as np
@@ -20,7 +21,8 @@ from src.gmr.domain import PipelineConfig  # noqa: E402
 from src.gmr.storage import load_log, save_log  # noqa: E402
 
 CFG = PipelineConfig()
-needs_display = pytest.mark.skipif(not os.environ.get("DISPLAY"),
+# экран: на Windows есть всегда, в Linux — переменная DISPLAY (xvfb-run)
+needs_display = pytest.mark.skipif(not (sys.platform == "win32" or os.environ.get("DISPLAY")),
                                    reason="нет экрана (запускать под xvfb-run)")
 
 

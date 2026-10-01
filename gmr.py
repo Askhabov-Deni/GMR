@@ -78,6 +78,8 @@ COMMANDS = {
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from src.gmr.console import safe_console
+    safe_console()      # ⚠️ и т.п. при выводе в файл на русской Windows — «?», а не падение
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
         print(__doc__.strip())

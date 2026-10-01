@@ -45,9 +45,12 @@ sys.path.insert(0, str(_BASE))
 from src.gmr.domain import PipelineConfig, PhotoResult, Outcome
 from src.gmr.domain.serial_match import normalize_serial as _normalize_serial
 from src.gmr.render import draw_annotation as _draw_annotation, read_image, write_image
+from src.gmr.console import safe_console
 from src.gmr.storage import (
     LOG_COLUMNS as _LOG_COLUMNS,
     append_log_row as _append_log_row,
+    backup_dir_for,
+    backup_files,
     load_log as _load_log,
     load_table as _load_table,
     log_path_for as _log_path,
@@ -836,6 +839,15 @@ class MainWindow(tk.Tk):
                 self.df = None
 
         log_p = _log_path(self.settings.table_path) if self.settings.table_path else None
+        if log_p:
+            # копия таблицы и лога при запуске окна (src/gmr/storage/backup.py)
+            try:
+                dest = backup_files([self.settings.table_path, log_p],
+                                    backup_dir_for(self.settings.table_path))
+                if dest is not None:
+                    log.info(f"Копия таблицы и лога: {dest}")
+            except OSError as e:
+                log.warning(f"Не удалось сделать копию таблицы и лога: {e}")
         if log_p and Path(log_p).exists():
             self.log_rows = _load_log(log_p)
             log.info(f"Лог загружен: {len(self.log_rows)} записей")
@@ -2292,5 +2304,6 @@ class VerifyScreen(ttk.Frame):
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    safe_console()
     app = MainWindow()
     app.mainloop()

@@ -53,6 +53,9 @@ data_for_reader_*/
 *_log.csv
 db_serial_fix.csv
 *.sqlite
+# Копии таблицы и лога, журналы прогонов (этап 2.1)
+gmr_backups/
+run_logs/
 # Windows thumbnails and WhatsApp videos
 Thumbs.db
 *.mp4

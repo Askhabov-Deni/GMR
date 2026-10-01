@@ -8,6 +8,7 @@
   5. после «Верно»/«Сохранить» открывается следующее фото.
 """
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -142,9 +143,8 @@ def test_free_photo_path(tmp_path):
 # ─── 3, 5. Окно (под Xvfb) ───────────────────────────────────────────────────
 
 def _display_ok():
-    if os.environ.get("DISPLAY"):
-        return True
-    return False
+    # экран: на Windows есть всегда, в Linux — переменная DISPLAY (xvfb-run)
+    return sys.platform == "win32" or bool(os.environ.get("DISPLAY"))
 
 
 needs_display = pytest.mark.skipif(not _display_ok(), reason="нет экрана (запускать под xvfb-run)")
@@ -456,3 +456,12 @@ def test_accept_with_locked_table_does_not_lose_reading(edit_app, monkeypatch):
     # и в логе нет строки «разобрано»
     in_table = load_table(app.settings.table_path).loc[0, "Текущие показания"] == "1050"
     assert in_table or (photo.exists() and not manual)
+
+
+# ─── Копия таблицы и лога при запуске окна (2026-10-01) ─────────────────────
+
+@needs_display
+def test_window_start_backs_up_table_and_log(app, tmp_path):
+    copies = list((tmp_path / "gmr_backups" / "meters_table").iterdir())
+    assert len(copies) == 1
+    assert sorted(p.name for p in copies[0].iterdir()) == ["meters_table.csv", "meters_table_log.csv"]

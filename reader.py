@@ -66,10 +66,12 @@ from src.gmr.application import (
     describe_substitutions,
 )
 from src.gmr.ml.loader import default_device, load_models
+from src.gmr.console import safe_console
 from src.gmr.storage import (
-    CsvLogStore, ShadowLogStore, SqliteLogStore, photo_fingerprint,
-    append_log_row, load_table, log_path_for, save_table,
+    CsvLogStore, ShadowLogStore, SqliteLogStore, backup_dir_for, backup_files,
+    photo_fingerprint, append_log_row, load_table, log_path_for, save_table,
 )
+from src.gmr.storage.backup import KEEP, remove_old
 from src.gmr.domain.serial_match import normalize_serial
 from src.gmr.render import draw_annotation, read_image, write_image
 
@@ -722,14 +724,52 @@ def _format_folder_ranking(per_folder_stats: dict[str, dict["Outcome", int]]) ->
 
 # ─── Пайплайн для целой папки (или набора папок) ─────────────────────────────
 
-def run_pipeline(config: PipelineConfig) -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(levelname)-8s  %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    log = logging.getLogger("reader")
+_LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"
 
+
+def run_pipeline(config: PipelineConfig) -> None:
+    """
+    Прогон папки с фото. Перед ним — копия таблицы и лога
+    (src/gmr/storage/backup.py). Всё, что прогон пишет в консоль, пишется и в
+    журнал `<папка результатов>/run_logs/run_<дата_время>.txt` (последние 30),
+    вместе с причиной, если прогон прервался (2026-10-01).
+    """
+    logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt="%H:%M:%S")
+    log = logging.getLogger("reader")
+    log.setLevel(logging.INFO)
+
+    run_logs = Path(config.output_base_dir) / "run_logs"
+    run_logs.mkdir(parents=True, exist_ok=True)
+    journal = run_logs / f"run_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.txt"
+    handler = logging.FileHandler(journal, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+    log.addHandler(handler)
+    try:
+        log.info(f"Журнал прогона: {journal}")
+        _backup_before_run(config, log)
+        _run_pipeline(config, log)
+    except BaseException:
+        log.exception("Прогон прерван")
+        raise
+    finally:
+        log.removeHandler(handler)
+        handler.close()
+        remove_old(run_logs, KEEP)
+
+
+def _backup_before_run(config: PipelineConfig, log: logging.Logger) -> None:
+    try:
+        dest = backup_files(
+            [config.table_path, log_path_for(config.table_path)], backup_dir_for(config.table_path)
+        )
+    except OSError as e:
+        log.warning(f"Не удалось сделать копию таблицы и лога: {e}")
+        return
+    if dest is not None:
+        log.info(f"Копия таблицы и лога: {dest}")
+
+
+def _run_pipeline(config: PipelineConfig, log: logging.Logger) -> None:
     log.info(f"Загружаем таблицу: {config.table_path}")
     df = load_table(config.table_path)
     log.info(f"Строк в таблице: {len(df)}")
@@ -934,4 +974,5 @@ def _report_shadow_run(shadow_store: ShadowLogStore, log_path: str, log: logging
 # ─── Точка входа ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    safe_console()
     run_pipeline(PipelineConfig())
