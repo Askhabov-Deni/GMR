@@ -24,6 +24,7 @@ import pytest
 
 import reader
 from src.gmr.ml import loader
+from src.gmr.storage import LOG_COLUMNS, append_log_row, load_log, load_table, log_path_for  # noqa: E402
 
 # имя фото -> (серийник, 5 цифр или None, есть ли счётчик на фото)
 _PHOTOS = {
@@ -122,7 +123,7 @@ def _run(root: Path, shadow: bool):
 
 
 def _log_without_timestamps(log_path):
-    rows = reader._load_log(str(log_path))
+    rows = load_log(str(log_path))
     for r in rows:
         r["processed_at"] = ""
     return rows
@@ -134,10 +135,10 @@ def _output_tree(root: Path):
 
 def test_shadow_run_sqlite_matches_csv(tmp_path, fake_models):
     table = _run(tmp_path, shadow=True)
-    log_csv = Path(reader._log_path(str(table)))
+    log_csv = Path(log_path_for(str(table)))
     sqlite = reader.SqliteLogStore(str(log_csv.with_suffix(".sqlite")))
 
-    assert sqlite.load() == reader._load_log(str(log_csv))
+    assert sqlite.load() == load_log(str(log_csv))
     assert len(sqlite.load()) == len(_PHOTOS)
 
     report = log_csv.with_name(log_csv.stem + "_shadow_report.txt").read_text(encoding="utf-8")
@@ -148,21 +149,21 @@ def test_shadow_mode_does_not_change_results(tmp_path, fake_models):
     table_off = _run(tmp_path / "off", shadow=False)
     table_on = _run(tmp_path / "on", shadow=True)
 
-    assert _log_without_timestamps(reader._log_path(str(table_off))) == \
-           _log_without_timestamps(reader._log_path(str(table_on)))
+    assert _log_without_timestamps(log_path_for(str(table_off))) == \
+           _log_without_timestamps(log_path_for(str(table_on)))
     assert Path(table_off).read_bytes() == Path(table_on).read_bytes()
     assert _output_tree(tmp_path / "off") == _output_tree(tmp_path / "on")
 
     # самопроверка фикстуры: прогон дал именно те исходы, что задуманы
-    outcomes = [r["outcome"] for r in reader._load_log(reader._log_path(str(table_on)))]
+    outcomes = [r["outcome"] for r in load_log(log_path_for(str(table_on)))]
     assert outcomes == ["PLUS", "MINUS", "SERIAL_NOT_FOUND", "REPEAT", "NO_METER"]
     # и без shadow-режима SQLite-файла не появляется
-    assert not Path(reader._log_path(str(table_off))).with_suffix(".sqlite").exists()
+    assert not Path(log_path_for(str(table_off))).with_suffix(".sqlite").exists()
 
 
 def test_shadow_run_seeds_sqlite_from_existing_csv_log(tmp_path, fake_models):
     table = _run(tmp_path, shadow=False)          # первый прогон: только CSV
-    log_csv = Path(reader._log_path(str(table)))
+    log_csv = Path(log_path_for(str(table)))
     shutil.rmtree(tmp_path / "input")
     shutil.rmtree(tmp_path / "out")
 
@@ -173,7 +174,7 @@ def test_shadow_run_seeds_sqlite_from_existing_csv_log(tmp_path, fake_models):
     )
     reader.run_pipeline(cfg)
 
-    rows = reader._load_log(str(log_csv))
+    rows = load_log(str(log_csv))
     assert len(rows) == 2 * len(_PHOTOS)
     # Второй прогон (вариант Г): успешные и REPEAT -> REPEAT без моделей,
     # авто-ошибки (SERIAL_NOT_FOUND, NO_METER) перечитываются — модели те же,
@@ -204,16 +205,16 @@ def _rerun(tmp_path, table, shadow=False):
 
 def test_variant_g_manually_handled_photo_not_returned_to_question(tmp_path, fake_models):
     table = _run(tmp_path, shadow=False)
-    log_csv = reader._log_path(str(table))
+    log_csv = log_path_for(str(table))
     # оператор в program2.py пометил p2 (SERIAL_NOT_FOUND) как "нет в базе"
-    reader._append_log_row(log_csv, {c: "" for c in reader._LOG_COLUMNS} | {
+    append_log_row(log_csv, {c: "" for c in LOG_COLUMNS} | {
         "original_filename": "p2.jpg", "outcome": "NOT_IN_DB", "source": "manual",
         "processed_by": "Оператор",
     })
 
     _rerun(tmp_path, table)
 
-    second = reader._load_log(log_csv)[len(_PHOTOS) + 1:]
+    second = load_log(log_csv)[len(_PHOTOS) + 1:]
     by_name = {r["original_filename"]: r["outcome"] for r in second}
     assert by_name == {"p0.jpg": "REPEAT", "p1.jpg": "REPEAT", "p2.jpg": "REPEAT",
                        "p3.jpg": "REPEAT", "p4.jpg": "NO_METER"}
@@ -229,10 +230,10 @@ def test_variant_g_improved_model_reads_old_failure(tmp_path, fake_models, monke
 
     _rerun(tmp_path, table, shadow=True)
 
-    log_csv = reader._log_path(str(table))
-    last = reader._load_log(log_csv)[-1]
+    log_csv = log_path_for(str(table))
+    last = load_log(log_csv)[-1]
     assert (last["original_filename"], last["outcome"], last["reading"]) == ("p4.jpg", "PLUS", "150")
-    df = reader._load_table(str(table))
+    df = load_table(str(table))
     assert df.loc[df["Лицевой счет"] == "A-3", "Текущие показания"].item() == "150"
     report = Path(log_csv).with_name(Path(log_csv).stem + "_shadow_report.txt").read_text(encoding="utf-8")
     assert "совпадение построчно" in report

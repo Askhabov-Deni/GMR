@@ -12,9 +12,8 @@ import pandas as pd
 
 import reader
 from src.gmr.domain.serial_match import normalize_serial
-from src.gmr.render import draw_annotation
 from src.gmr.storage import (
-    LOG_COLUMNS, append_log_row, load_log, load_table, log_path_for, save_log, save_table,
+    append_log_row, load_log, load_table, log_path_for, save_log, save_table,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,13 +37,12 @@ def test_program2_import_does_not_load_reader():
     assert out.stdout.strip().splitlines()[-1] == "False"
 
 
-def test_reader_legacy_names_are_the_same_functions():
-    assert reader._load_table is load_table and reader._save_table is save_table
-    assert reader._load_log is load_log and reader._save_log is save_log
-    assert reader._append_log_row is append_log_row and reader._log_path is log_path_for
-    assert reader._normalize_serial is normalize_serial
-    assert reader._draw_annotation is draw_annotation
-    assert reader._LOG_COLUMNS is LOG_COLUMNS
+def test_reader_legacy_names_removed():
+    # Фаза 6 оставила старые имена ссылками, Фаза 7 их удалила (правило 3 ТЗ)
+    for name in ("_load_table", "_save_table", "_load_log", "_save_log", "_append_log_row",
+                 "_log_path", "_normalize_serial", "_draw_annotation", "_LOG_COLUMNS",
+                 "_read_meter_digits", "_find_crop_entry", "_find_crop", "_log_filenames"):
+        assert not hasattr(reader, name), name
 
 
 def test_table_roundtrip_keeps_leading_zeros(tmp_path):

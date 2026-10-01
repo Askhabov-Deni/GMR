@@ -1,0 +1,86 @@
+"""
+gmr.py — одна точка входа для всех команд проекта (Фаза 7). Запускать из
+папки проекта:
+
+  python gmr.py process                       прогон reader.py (как `python reader.py`)
+  python gmr.py process --input <папка> --output <папка> --table <таблица>
+  python gmr.py analyze <лог.csv> [--table <таблица>] [--details]   качество по логу
+  python gmr.py inspect <модель> <фото|папка> [...]                  посмотреть модель
+  python gmr.py weights [--write]                                     файлы весов
+  python gmr.py <команда> --help                                      подробности
+
+Ничего нового команды не делают: process вызывает тот же run_pipeline с теми же
+настройками, что `python reader.py`; остальные — тонкие обёртки над tools/.
+Окно оператора — по-прежнему `python program2.py`.
+"""
+import argparse
+import sys
+from typing import Optional
+
+
+def _process(argv: list[str]) -> None:
+    p = argparse.ArgumentParser(
+        prog="python gmr.py process",
+        description="Автоматическая обработка папки с фото (reader.py). "
+                    "Без параметров — пути из PipelineConfig / GMR_INPUT_DIR, GMR_OUTPUT_DIR, GMR_TABLE_PATH.",
+    )
+    p.add_argument("--input", help="папка с фото (в ней фото или подпапки контролёров)")
+    p.add_argument("--output", help="куда раскладывать результаты")
+    p.add_argument("--table", help="таблица счётчиков (CSV/XLSX); лог — рядом: <таблица>_log.csv")
+    p.add_argument("--move", action="store_true", help="перемещать фото, а не копировать")
+    p.add_argument("--shadow-sqlite", action="store_true",
+                   help="дублировать лог в SQLite и сверять (режим Фазы 2b)")
+    args = p.parse_args(argv)
+
+    import reader
+    overrides = {}
+    if args.input:
+        overrides["input_dir"] = args.input
+    if args.output:
+        overrides["output_base_dir"] = args.output
+    if args.table:
+        overrides["table_path"] = args.table
+    if args.move:
+        overrides["move_photos"] = True
+    if args.shadow_sqlite:
+        overrides["shadow_sqlite_log"] = True
+    reader.run_pipeline(reader.default_run_config(**overrides))
+
+
+def _analyze(argv):
+    from tools import analyze_log
+    analyze_log.main(argv)
+
+
+def _inspect(argv):
+    from tools import inspect_model
+    inspect_model.main(argv)
+
+
+def _weights(argv):
+    from tools import weights_manifest
+    weights_manifest.main(argv)
+
+
+COMMANDS = {
+    "process": (_process, "автоматическая обработка фото (reader.py)"),
+    "analyze": (_analyze, "качество чтения по логу (tools/analyze_log.py)"),
+    "inspect": (_inspect, "посмотреть, что делает модель (tools/inspect_model.py)"),
+    "weights": (_weights, "какие файлы весов в работе (tools/weights_manifest.py)"),
+}
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
+        print(__doc__.strip())
+        print("\nКоманды:")
+        for name, (_, help_) in COMMANDS.items():
+            print(f"  {name:<8} {help_}")
+        return 0 if (not argv or argv[0] in ("-h", "--help")) else 2
+    COMMANDS[argv[0]][0](argv[1:])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

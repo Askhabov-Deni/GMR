@@ -8,8 +8,6 @@
   5. после «Верно»/«Сохранить» открывается следующее фото.
 """
 import os
-import shutil
-import subprocess
 
 import numpy as np
 import pandas as pd
@@ -19,10 +17,11 @@ from src.gmr.storage import LOG_COLUMNS
 
 program2 = pytest.importorskip("program2")
 from program2 import (  # noqa: E402
-    CORRECTED_NOTE, VerifyCorrection, apply_verify_correction, find_verify_row,
+    CORRECTED_NOTE, apply_verify_correction, find_verify_row,
     free_photo_path, list_verify_photos, plan_verify_correction,
 )
 from src.gmr.domain import PipelineConfig  # noqa: E402
+from src.gmr.storage import save_log  # noqa: E402
 
 CFG = PipelineConfig()
 
@@ -170,8 +169,7 @@ def app(tmp_path, monkeypatch):
         row(original_filename="z.jpg", final_filename="A4.jpg", serial_id="4444444", account_id="A4",
             reading="80", last_reading="90.0", delta="-10", outcome="MINUS"),
     ]
-    import reader
-    reader._save_log(str(tmp_path / "meters_table_log.csv"), rows)
+    save_log(str(tmp_path / "meters_table_log.csv"), rows)
 
     settings = program2.AppSettings(operator_name="Оператор", photos_dir=str(photos),
                                     table_path=str(tbl), training_dir="")

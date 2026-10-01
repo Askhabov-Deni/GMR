@@ -16,8 +16,8 @@ import pytest
 from src.gmr.storage import LOG_COLUMNS
 
 program2 = pytest.importorskip("program2")
-import reader  # noqa: E402
 from src.gmr.domain import PipelineConfig  # noqa: E402
+from src.gmr.storage import load_log, save_log  # noqa: E402
 
 CFG = PipelineConfig()
 needs_display = pytest.mark.skipif(not os.environ.get("DISPLAY"),
@@ -86,7 +86,7 @@ def app(tmp_path, monkeypatch):
         r.update(original_filename=name, outcome=outcome, source="auto", processed_by="auto",
                  photo_hash=f"h-{name}", source_folder="Аюб")
         auto.append(r)
-    reader._save_log(str(tmp_path / "meters_table_log.csv"), auto)
+    save_log(str(tmp_path / "meters_table_log.csv"), auto)
 
     settings = program2.AppSettings(operator_name="Оператор", photos_dir=str(photos),
                                     table_path=str(tbl), training_dir=str(tmp_path / "train"))
@@ -143,7 +143,7 @@ def test_accept_writes_table_log_moves_photo_opens_next(app):
     # сразу следующее фото очереди
     assert os.path.basename(app._current_screen.photo_path) == "p2.jpg"
     # лог на диске = в памяти
-    assert len(reader._load_log(str(app.photos.parent / "meters_table_log.csv"))) == 4
+    assert len(load_log(str(app.photos.parent / "meters_table_log.csv"))) == 4
 
 
 @needs_display

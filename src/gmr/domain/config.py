@@ -6,8 +6,9 @@ src/gmr/domain/config.py — PipelineConfig.
 добавленные в Фазе 0/1 — см. docs/MIGRATION_STATUS.md).
 
 Внимание: код в run_pipeline() (reader.py) навешивает на экземпляр
-PipelineConfig дополнительные динамические атрибуты — `_log_filenames_cache`,
-`_log_rows_cache`, `_processed_accounts_cache` — которые НЕ являются полями
+PipelineConfig дополнительные динамические атрибуты — `_log_rows_cache`,
+`_processed_accounts_cache`, `_processed_hashes_cache` (`_log_filenames_cache`
+удалён в Фазе 7: после варианта Г он ни на что не влиял) — которые НЕ являются полями
 датакласса (читаются через getattr(..., default) в process_photo). Это
 осознанно оставлено как есть в Фазе 2a; полями датакласса их не делаем, чтобы
 не расширять публичный контракт конфига без явного решения по этому вопросу.

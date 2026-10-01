@@ -30,7 +30,6 @@ from tests._fixtures import (
     FakeDigitDetector, FakeDigitOCR, FakeMeterDetector, FakeSerialOCR,
     make_digit_crops_with_centers, make_meter_crops,
 )
-import reader
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -179,12 +178,12 @@ def test_program2_run_on_photo_full():
     assert r["serial_text"] == "12345" and r["serial_conf"] == 0.9
     assert r["serial_crop"] is meter_crops[1]["crop"]
     assert r["reading_str"] == "01234"
-    # тот же результат, что у reader (legacy-обёртка над тем же сервисом)
-    legacy = reader._read_meter_digits(dd, docr, meter_crops[0]["crop"], 0.6, 5,
-                                       ignore_last_digits=PipelineConfig().ignore_last_digits)
-    assert r["digit_preds"] == legacy[3]
+    # тот же результат, что у общего сервиса чтения цифр (им же пользуется reader.py)
+    same = read_meter_digits(YoloDigitDetector(dd), CnnDigitRecognizer(docr), meter_crops[0]["crop"],
+                             0.6, 5, ignore_last_digits=PipelineConfig().ignore_last_digits)
+    assert r["digit_preds"] == same.digit_results
     # кропы цифр вырезаны из кропа счётчика по bbox каждой позиции
-    for crop, (x1, y1, x2, y2) in zip(r["digit_crops"], legacy[4]):
+    for crop, (x1, y1, x2, y2) in zip(r["digit_crops"], same.digit_bboxes):
         assert np.array_equal(crop, meter_crops[0]["crop"][y1:y2, x1:x2])
 
 
@@ -223,14 +222,14 @@ def test_program2_run_on_photo_model_exception_goes_to_error():
     assert r["error"] == "cuda died"
 
 
-def test_application_read_meter_digits_matches_legacy_wrapper():
+def test_application_read_meter_digits_low_conf_and_forgiven():
+    # до Фазы 7 сравнивался с legacy-обёрткой reader._read_meter_digits (удалена)
     dd, docr = _digits(["9", "8", "7", "6", "5"], conf=0.5)   # всё ниже порога
     crop = make_meter_crops()[0]["crop"]
     new = read_meter_digits(YoloDigitDetector(dd), CnnDigitRecognizer(docr), crop, 0.6, 5,
                             ignore_last_digits=2)
-    old = reader._read_meter_digits(dd, docr, crop, 0.6, 5, ignore_last_digits=2)
-    assert new.as_tuple() == old
     assert new.reading_str == "???00" and new.number is None
+    assert new.error.startswith("low conf digits: pos0(pred=9,conf=0.500)")
 
 
 # ─── 4. Границы слоёв ────────────────────────────────────────────────────────

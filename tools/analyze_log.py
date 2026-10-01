@@ -30,7 +30,7 @@ from typing import Optional
 
 from src.gmr.application.recognition import SUBSTITUTED_PREFIX
 from src.gmr.domain import PipelineConfig
-from src.gmr.domain.serial_match import alphabet_for, one_char_matches, one_edit_neighbors  # noqa: F401
+from src.gmr.domain.serial_match import alphabet_for, one_char_matches
 
 READ_OK = {"PLUS", "MINUS", "SUSPICIOUS"}          # серийник найден, цифры прочитаны
 SERIAL_FOUND = READ_OK | {"DIGITS_ERROR"}          # серийник найден в таблице
@@ -471,7 +471,7 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
             w(f"  подсказка «похожие номера в базе» использована: {a['hint_used']}")
         if "guess" in a:
             g = a["guess"]
-            w(f"  угадывание серийника (один похожий номер, подходит по расходу) на этих ответах:")
+            w("  угадывание серийника (один похожий номер, подходит по расходу) на этих ответах:")
             w(f"    счётчик найден оператором ({a['snf_found']}): угадала бы верно — {g['right']}, "
               f"угадала бы ДРУГОЙ номер — {g['wrong']}, не стала бы угадывать — {g['no_guess']}")
             w(f"    «нет в базе» ({a['snf_not_in_db']}): всё равно угадала бы какой-то номер — "
@@ -485,7 +485,8 @@ def load_table(path: Path, cfg: PipelineConfig) -> tuple[set[str], dict[str, Opt
     Серийники таблицы, последнее показание и лицевой счёт по каждому
     (первая строка с этим номером).
     """
-    from reader import _load_table, _normalize_serial   # те же правила чтения, что в reader.py
+    from src.gmr.storage import load_table as _load_table   # те же правила чтения, что в reader.py
+    from src.gmr.domain.serial_match import normalize_serial as _normalize_serial
     df = _load_table(str(path))
     last: dict[str, Optional[float]] = {}
     accounts: dict[str, str] = {}

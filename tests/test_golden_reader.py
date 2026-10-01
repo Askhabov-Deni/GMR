@@ -16,7 +16,6 @@ from tests._fixtures import (
     FakeDigitDetector, FakeDigitOCR, FakeMeterDetector, FakeSerialOCR, process_photo,
     make_crop, make_df, make_digit_crops_with_centers, make_meter_crops,
 )
-import reader
 from reader import Outcome
 
 
@@ -258,17 +257,22 @@ def test_case15_serial_leading_zeros_preserved(base_config):
 # ─── 16: детектор цифр вернул 0 кропов ──────────────────────────────────────
 
 def test_case16_digit_detector_found_nothing():
-    # reader.py:563-564 — тест на уровне _read_meter_digits напрямую
+    # Тест на уровне чтения цифр напрямую. До Фазы 7 — reader._read_meter_digits;
+    # с Фазы 3 логика в src.gmr.application.read_meter_digits (обёртка удалена
+    # в Фазе 7), модели — через те же адаптеры, что в проде. Ожидания прежние.
+    from src.gmr.application import read_meter_digits
+    from src.gmr.ml import CnnDigitRecognizer, YoloDigitDetector
+
     class EmptyDigitDetector:
         def process_array(self, img, save_crops=False, max_per_class=5, straighten=None):
             return []
 
-    number, reading_str, err, digit_results, digit_bboxes = reader._read_meter_digits(
-        EmptyDigitDetector(), FakeDigitOCR({}),
+    number, reading_str, err, digit_results, digit_bboxes = read_meter_digits(
+        YoloDigitDetector(EmptyDigitDetector()), CnnDigitRecognizer(FakeDigitOCR({})),
         meter_crop=make_meter_crops()[0]["crop"],
         conf_thresh=0.6,
         expected_digits=5,
-    )
+    ).as_tuple()
     assert number is None
     assert reading_str is None
     assert err == "digit detector found nothing"

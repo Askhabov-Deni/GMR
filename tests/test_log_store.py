@@ -13,6 +13,7 @@ import sqlite3
 from pathlib import Path
 
 from src.gmr.storage import LOG_COLUMNS, CsvLogStore, ShadowLogStore, SqliteLogStore
+from src.gmr.storage import append_log_row, load_log  # noqa: E402
 
 
 # ─── Эталон: старая реализация из reader.py (коммит 92199d2), без изменений ──
@@ -82,16 +83,15 @@ def test_csv_load_missing_file_returns_empty(tmp_path):
 
 
 def test_reader_wrappers_still_use_same_format(tmp_path):
-    # _load_log/_save_log/_append_log_row импортирует program2.py — сигнатуры
-    # и формат файла должны остаться прежними.
-    import reader
+    # load_log/save_log/append_log_row (раньше reader._load_log и т.д.) —
+    # формат файла должен остаться прежним.
     old, new = tmp_path / "old.csv", tmp_path / "new.csv"
     for r in TRICKY_ROWS:
         _old_append_log_row(old, r)
-        reader._append_log_row(str(new), r)
+        append_log_row(str(new), r)
     assert old.read_bytes() == new.read_bytes()
-    assert reader._load_log(str(new)) == CsvLogStore(str(old)).load()
-    assert reader._LOG_COLUMNS == LOG_COLUMNS
+    assert load_log(str(new)) == CsvLogStore(str(old)).load()
+    assert LOG_COLUMNS == LOG_COLUMNS
 
 
 # ─── 2. SQLite == CSV ────────────────────────────────────────────────────────

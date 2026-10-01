@@ -15,17 +15,15 @@ CNN:  сохраняем кропы только изменённых цифр, 
 """
 import json
 import logging
-import os
 import queue
 import shutil
 import sys
 import threading
 import uuid
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
-import cv2
 import numpy as np
 import pandas as pd
 import tkinter as tk
@@ -206,7 +204,7 @@ class LoginDialog(tk.Toplevel):
     def _build(self, s: AppSettings):
         f = ttk.Frame(self, padding=24)
         f.pack()
-        ttk.Label(f, text=f"Вы вошли как:", font=("Segoe UI", 10)).pack()
+        ttk.Label(f, text="Вы вошли как:", font=("Segoe UI", 10)).pack()
         ttk.Label(f, text=s.operator_name, font=("Segoe UI", 14, "bold")).pack(pady=(4, 20))
         ttk.Button(f, text="Продолжить", command=self._continue).pack(fill=tk.X, pady=4)
         ttk.Button(f, text="Сменить пользователя", command=self._change).pack(fill=tk.X)

@@ -5,7 +5,9 @@ import csv
 
 from src.gmr.domain import PipelineConfig
 from src.gmr.storage import LOG_COLUMNS
+from src.gmr.domain.serial_match import one_edit_neighbors
 from tools import analyze_log as al
+from src.gmr.storage import load_table  # noqa: E402
 
 
 def row(name, outcome, source="auto", folder="", **kw):
@@ -83,7 +85,7 @@ def test_one_edit_neighbors_match_levenshtein():
     for _ in range(300):
         a = "".join(rnd.choice("0123") for _ in range(rnd.randint(1, 5)))
         b = "".join(rnd.choice("0123") for _ in range(rnd.randint(1, 5)))
-        assert (b in al.one_edit_neighbors(a, "0123") or a == b) == _dist_le1(a, b), (a, b)
+        assert (b in one_edit_neighbors(a, "0123") or a == b) == _dist_le1(a, b), (a, b)
 
 
 def test_describe_edit():
@@ -220,9 +222,8 @@ def test_table_serials_keep_leading_zeros(tmp_path):
     cfg = PipelineConfig()
     table = tmp_path / "t.csv"
     table.write_text(f"{cfg.col_serial};{cfg.col_account_id}\n0045618;1\n 9076647 ;2\n;3\n", encoding="utf-8")
-    import reader
-    df = reader._load_table(str(table))
-    if cfg.col_serial not in df.columns:   # разделитель таблицы — как в reader._load_table
+    df = load_table(str(table))
+    if cfg.col_serial not in df.columns:   # разделитель таблицы — как в load_table
         table.write_text(f"{cfg.col_serial},{cfg.col_account_id}\n0045618,1\n 9076647 ,2\n,3\n", encoding="utf-8")
     assert al.load_table_serials(table, cfg) == {"0045618", "9076647"}
 

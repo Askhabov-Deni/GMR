@@ -13,7 +13,6 @@
 """
 import csv
 import sqlite3
-from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -23,6 +22,7 @@ import pytest
 import reader
 from src.gmr.ml import loader
 from src.gmr.storage import LOG_COLUMNS, CsvLogStore, SqliteLogStore, photo_fingerprint
+from src.gmr.storage import append_log_row, load_log, log_path_for  # noqa: E402
 
 OLD_COLUMNS = LOG_COLUMNS[:16]   # формат лога до 2026-09-29
 
@@ -52,7 +52,7 @@ def test_old_log_upgraded_on_append_without_losing_data(tmp_path):
     _write_old_log(log, old_rows)
 
     new_row = {c: "" for c in LOG_COLUMNS} | {"original_filename": "new.jpg", "photo_hash": "abc"}
-    reader._append_log_row(str(log), new_row)   # так же дописывает и program2.py
+    append_log_row(str(log), new_row)   # так же дописывает и program2.py
 
     store = CsvLogStore(str(log))
     assert store.header() == LOG_COLUMNS
@@ -163,7 +163,7 @@ def _run(root, inp, table):
         input_dir=str(inp), output_base_dir=str(root / "out"),
         table_path=str(table), draw_boxes=False,
     ))
-    return reader._load_log(reader._log_path(str(table)))
+    return load_log(log_path_for(str(table)))
 
 
 def test_same_filename_in_two_subfolders_both_processed(tmp_path, models):
@@ -221,7 +221,7 @@ def test_program2_manual_row_gets_hash_from_its_subfolder(tmp_path):
                                                "outcome": "UNREADABLE", "source": "manual"}
     program2.MainWindow.append_log(app, manual)
 
-    written = reader._load_log(reader._log_path(str(tmp_path / "t.csv")))[-1]
+    written = load_log(log_path_for(str(tmp_path / "t.csv")))[-1]
     assert written["photo_hash"] == "hash_suliman"
     assert written["source_folder"] == "Сулиман"
 

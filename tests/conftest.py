@@ -7,7 +7,6 @@ from tests._fixtures import reader
 def base_config():
     """PipelineConfig с дефолтными порогами (см. MIGRATION_TZ.md §1, п.4 — не менять молча)."""
     cfg = reader.PipelineConfig()
-    cfg._log_filenames_cache = set()
     cfg._log_rows_cache = []
     cfg._processed_accounts_cache = set()
     return cfg

@@ -30,7 +30,6 @@ DEBUG-РЕЖИМ (config.debug_digits = True):
 """
 
 import os
-import csv
 import json
 import shutil
 import logging
@@ -58,17 +57,13 @@ from src.gmr.domain import (
 from src.gmr.application import (
     RecognitionModels,
     find_detection,
-    read_meter_digits,
     read_meter_digits_for_config,
     describe_substitutions,
 )
-from src.gmr.ml import (
-    CnnDigitRecognizer, YoloDigitDetector,
-)
 from src.gmr.ml.loader import default_device, load_models
 from src.gmr.storage import (
-    LOG_COLUMNS, CsvLogStore, ShadowLogStore, SqliteLogStore, photo_fingerprint,
-    append_log_row, load_log, load_table, log_path_for, save_log, save_table,
+    CsvLogStore, ShadowLogStore, SqliteLogStore, photo_fingerprint,
+    append_log_row, load_table, log_path_for, save_table,
 )
 from src.gmr.domain.serial_match import normalize_serial
 from src.gmr.render import draw_annotation, read_image, write_image
@@ -94,39 +89,10 @@ _BOX_COLORS = {
 _BOX_THICKNESS = 2
 
 
-# ─── Нормализация серийного номера ───────────────────────────────────────────
-
-# Перенесено в src/gmr/domain/serial_match.py (Фаза 6); старое имя — для совместимости.
-_normalize_serial = normalize_serial
-
-
-# ─── Вспомогательные функции ─────────────────────────────────────────────────
-
-# Перенесены в src/gmr/storage/table.py (Фаза 6); старые имена — для совместимости.
-_load_table = load_table
-_save_table = save_table
-
-
-# ─── Processing log ──────────────────────────────────────────────────────────
-# Реализация вынесена в src/gmr/storage/log_store.py (Фаза 2b,
-# docs/MIGRATION_TZ.md). Функции ниже — тонкие обёртки над CsvLogStore,
-# оставлены как есть по сигнатуре и имени: program2.py импортирует их
-# напрямую (from reader import _load_log, _save_log, _append_log_row,
-# _log_path, _LOG_COLUMNS) — это сохранено намеренно, как и в Фазе 2a.
-
-_LOG_COLUMNS = LOG_COLUMNS
-
-
-# Перенесены в src/gmr/storage/log_store.py (Фаза 6); старые имена — для совместимости.
-_log_path       = log_path_for
-_load_log       = load_log
-_save_log       = save_log
-_append_log_row = append_log_row
-
-
-def _log_filenames(rows: list[dict]) -> set[str]:
-    """Множество original_filename из лога (непустые)."""
-    return {r["original_filename"] for r in rows if r.get("original_filename")}
+# ─── Таблица, лог, серийники ─────────────────────────────────────────────────
+# Таблица — src/gmr/storage/table.py, лог — src/gmr/storage/log_store.py,
+# нормализация серийника — src/gmr/domain/serial_match.py (Фаза 6).
+# Старые имена с подчёркиванием (_load_table, _load_log, …) удалены в Фазе 7.
 
 
 def _maybe_init_log(
@@ -175,16 +141,10 @@ def _maybe_init_log(
     rows = []
     for _, row in filled.iterrows():
         rows.append({
-            # Намеренно НЕ пустая строка: _log_filenames() фильтрует пустые,
-            # поэтому при инициализации из таблицы ставим специальный маркер.
-            # reader.py проверяет дубль по _log_filenames_cache (set строк),
-            # а при повторном прогоне имя фото НЕ совпадёт с "__pre_existing__"
-            # — это нормально: нас интересует только проверка _table_filled,
-            # которую мы подавляем через флаг source="pre_existing" в notes.
-            # Реальный эффект: _table_filled=True → SUSPICIOUS, но только для
-            # строк без маркера. Маркер здесь нужен чтобы set был непустым
-            # и не давал False-срабатываний.
-            # → Правильное поведение достигается через отдельную проверку ниже.
+            # Маркер вместо имени фото: строка описывает показание, которое
+            # уже было в таблице до первого запуска, а не обработанное фото.
+            # DuplicatePolicy (п. 2a) по source="pre_existing" считает такой
+            # счёт закрытым → REPEAT, а не SUSPICIOUS.
             "original_filename": "__pre_existing__",
             "final_filename":    "",
             "serial_id":         str(row.get(config.col_serial, "")),
@@ -242,21 +202,6 @@ def _make_log_row(
     }
 
 
-def _find_crop(crops: list[dict], class_name: str) -> Optional[np.ndarray]:
-    for c in crops:
-        if c["class"] == class_name:
-            return c["crop"]
-    return None
-
-
-# Legacy-имя (Фаза 3): логика переехала в src.gmr.application.find_detection.
-_find_crop_entry = find_detection
-
-
-# Перенесено в src/gmr/render/annotation.py (Фаза 6); старое имя — для совместимости.
-_draw_annotation = draw_annotation
-
-
 def _draw_boxes(img: np.ndarray, result: PhotoResult) -> None:
     """
     Рисует боксы детекций на изображении (in-place).
@@ -301,7 +246,7 @@ def _save_annotated(
     if img is not None:
         if draw_boxes:
             _draw_boxes(img, result)
-        _draw_annotation(img, result)
+        draw_annotation(img, result)
         written = write_image(dst_path, img)
         if written:
             if move:
@@ -351,33 +296,6 @@ def _save_digit_debug(
 
 
 # ─── Чтение цифр счётчика ────────────────────────────────────────────────────
-
-def _read_meter_digits(
-    digit_detector,
-    digit_ocr,
-    meter_crop: np.ndarray,
-    conf_thresh: float,
-    expected_digits: int,
-    ignore_last_digits: int = 0,
-    missing_placeholder: str = "5",
-    forgiven_placeholder: str = "0",
-) -> tuple[Optional[int], Optional[str], Optional[str], Optional[list], Optional[list]]:
-    """
-    Legacy-обёртка (Фаза 3): принимает сырые YOLOInferer / CNNInferer, как до
-    Фазы 3, и возвращает кортеж
-      (number, reading_str, error_msg, digit_results, digit_bboxes).
-    Логика — src.gmr.application.read_meter_digits (описание полей там же,
-    в DigitReading). Новому коду вызывать её напрямую через контракты.
-    Удалить после того, как новая реализация отработает фазу (правило 3 ТЗ).
-    """
-    return read_meter_digits(
-        YoloDigitDetector(digit_detector), CnnDigitRecognizer(digit_ocr),
-        meter_crop, conf_thresh, expected_digits,
-        ignore_last_digits=ignore_last_digits,
-        missing_placeholder=missing_placeholder,
-        forgiven_placeholder=forgiven_placeholder,
-    ).as_tuple()
-
 
 def _digit_bboxes_to_orig(
     digit_bboxes: list[Optional[tuple]],
@@ -517,9 +435,9 @@ def process_photo(
 
     # ── Шаг 3: ищем в таблице ────────────────────────────────────────────────
     def _find_serial_in_df(serial: str) -> pd.DataFrame:
-        norm = _normalize_serial(serial)
+        norm = normalize_serial(serial)
         return df[df[config.col_serial].apply(
-            lambda x: _normalize_serial(str(x)) == norm
+            lambda x: normalize_serial(str(x)) == norm
         )]
 
     serial_candidates = [
@@ -839,11 +757,11 @@ def run_pipeline(config: PipelineConfig) -> None:
     log = logging.getLogger("reader")
 
     log.info(f"Загружаем таблицу: {config.table_path}")
-    df = _load_table(config.table_path)
+    df = load_table(config.table_path)
     log.info(f"Строк в таблице: {len(df)}")
 
     # ── Лог обработки ────────────────────────────────────────────────────────
-    log_path = _log_path(config.table_path)
+    log_path = log_path_for(config.table_path)
     if CsvLogStore(log_path).upgrade_if_needed():
         log.info(f"Лог переведён на новый формат (столбцы photo_hash, source_folder): {log_path}")
 
@@ -863,7 +781,6 @@ def run_pipeline(config: PipelineConfig) -> None:
         log.info(f"Shadow-run: SQLite-лог → {sqlite_path}")
 
     log_rows = _maybe_init_log(config.table_path, log_path, df, config, store=shadow_store)
-    config._log_filenames_cache      = _log_filenames(log_rows)
     config._log_rows_cache           = log_rows   # нужен для проверки pre_existing
     config._processed_accounts_cache = set()       # account_id обработанных в этом прогоне
     config._processed_hashes_cache   = set()       # отпечатки фото, обработанных в этом прогоне
@@ -946,9 +863,9 @@ def run_pipeline(config: PipelineConfig) -> None:
 
             # Записываем в таблицу (только для PLUS / MINUS)
             if result.outcome in (Outcome.PLUS, Outcome.MINUS) and result.account_id:
-                serial_norm = _normalize_serial(result.serial_text or "")
+                serial_norm = normalize_serial(result.serial_text or "")
                 mask = df[config.col_serial].apply(
-                    lambda x: _normalize_serial(str(x)) == serial_norm
+                    lambda x: normalize_serial(str(x)) == serial_norm
                 )
                 df.loc[mask, config.col_new_reading] = str(result.reading)
                 db_updated = True
@@ -972,8 +889,7 @@ def run_pipeline(config: PipelineConfig) -> None:
             if shadow_store is not None:
                 shadow_store.append(log_row)
             else:
-                _append_log_row(log_path, log_row)
-            config._log_filenames_cache.add(photo_path_obj.name)
+                append_log_row(log_path, log_row)
             config._log_rows_cache.append(log_row)
             if result.account_id:
                 config._processed_accounts_cache.add(result.account_id)
@@ -981,11 +897,11 @@ def run_pipeline(config: PipelineConfig) -> None:
 
             # Промежуточное сохранение таблицы и лога каждые 50 фото
             if db_updated and i % 50 == 0:
-                _save_table(df, config.table_path)
+                save_table(df, config.table_path)
                 log.info(f"  💾 Промежуточное сохранение таблицы ({i} фото обработано)")
 
         if db_updated:
-            _save_table(df, config.table_path)
+            save_table(df, config.table_path)
             log.info(f"\n💾 Таблица сохранена: {config.table_path}")
 
         per_folder_stats[subfolder_name or Path(config.input_dir).name] = stats
@@ -1043,13 +959,22 @@ def _report_shadow_run(shadow_store: ShadowLogStore, log_path: str, log: logging
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    config = PipelineConfig(
+def default_run_config(**overrides) -> PipelineConfig:
+    """
+    Настройки обычного прогона — те, с которыми всегда запускался
+    `python reader.py`. Ими же пользуется `python gmr.py process` (Фаза 7),
+    чтобы два способа запуска не разошлись.
+    """
+    params = dict(
         move_photos         = False,  # True=перемещать, False=копировать (для теста)
         ignore_last_digits  = 2,      # прощаем последние 2 цифры (без веса на счётчике)
         debug_digits        = False,  # включить для анализа ошибок CNN
-        draw_boxes          = False,   # включить для визуальной проверки детекций
+        draw_boxes          = False,  # включить для визуальной проверки детекций
     )
+    params.update(overrides)
+    return PipelineConfig(**params)
 
+
+if __name__ == "__main__":
     # test_one('database/raw_photos/1300000013.jpeg')
-    run_pipeline(config)
+    run_pipeline(default_run_config())
