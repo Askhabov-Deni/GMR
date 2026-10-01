@@ -19,6 +19,7 @@ def make_month(root: Path, table: list, log_rows: list = (), name: str = "Окт
     """table — строки (номер, л/с, последние, текущие); log_rows — строки лога
     (недостающие столбцы — пустые). Текущие показания из таблицы попадают в
     базу как «было в таблице» (source=table)."""
+    Path(root).mkdir(parents=True, exist_ok=True)
     src = Path(root) / f"{name}_таблица.csv"
     with open(src, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)

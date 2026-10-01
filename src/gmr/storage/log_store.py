@@ -1,37 +1,22 @@
 """
-src/gmr/storage/log_store.py — хранилища для processing log (Фаза 2b,
-docs/MIGRATION_TZ.md).
+src/gmr/storage/log_store.py — лог обработки фото (Фаза 2b, этап 2.3b).
 
-Область действия этой фазы — ТОЛЬКО processing log (append-only журнал
-обработанных фото, файл `<table>_log.csv`). Таблица счётчиков
-(config.table_path, CSV/XLSX) не трогается: это import/export слой данных
-оператора, а не журнал приложения (см. docs/MIGRATION_STATUS.md, раздел
-"Фаза 2b").
+  - LOG_COLUMNS    — столбцы лога; порядок не менять, новые — только в конец
+                     (docs/contract_reader_program2.md, раздел 4).
+  - SqliteLogStore — таблица processing_log; её создаёт база месяца
+                     (src/gmr/storage/month.py). Все столбцы TEXT, порядок
+                     строк — порядок записи.
+  - CsvLogStore, load_log, save_log, log_path_for — CSV-лог старого режима
+                     (`<таблица>_log.csv`): при создании месяца рядом лежащий
+                     лог переносится в базу (src/gmr/application/month.py).
 
-Три класса:
-  - CsvLogStore    — канонический перенос текущего CSV-поведения reader.py
-                      (_load_log/_save_log/_append_log_row) без изменения
-                      формата файла. Источник истины (SQLite пока только
-                      дублирует — см. docs/BACKLOG.md).
-  - SqliteLogStore  — новое хранилище на sqlite3 (стандартная библиотека,
-                      без новых зависимостей). Схема — те же _LOG_COLUMNS,
-                      все поля TEXT, порядок строк = порядок вставки (id
-                      autoincrement), чтобы .load() возвращал список в том
-                      же порядке, что и CSV.
-  - ShadowLogStore  — пишет одновременно в primary (CSV, источник истины)
-                      и shadow (SQLite), сравнивает построчно на лету и
-                      копит расхождения в .divergences. .load()/.save()
-                      делегируются в primary — ShadowLogStore не подменяет
-                      источник истины, только проверяет параллельную запись.
-
-Все три реализуют один и тот же неявный протокол: load() -> list[dict],
-save(rows) -> None, append(row) -> None — совместимый с тем, как reader.py
-и program2.py уже используют _load_log/_save_log/_append_log_row.
+Дозапись в CSV-лог и shadow-run (CSV + SQLite с построчной сверкой) убраны
+вместе со старым режимом на этапе 2.3b: лог живёт в базе месяца, CSV — только
+выгрузка `лог.csv`.
 """
 import csv
 import sqlite3
 from pathlib import Path
-from typing import Optional, Protocol
 
 
 LOG_COLUMNS = [
@@ -46,19 +31,13 @@ LOG_COLUMNS = [
 ]
 
 
-class LogStore(Protocol):
-    def load(self) -> list[dict]: ...
-    def save(self, rows: list[dict]) -> None: ...
-    def append(self, row: dict) -> None: ...
-
-
-# ─── CSV (текущее поведение reader.py, без изменений) ────────────────────────
+# ─── CSV-лог старого режима (чтение для переноса в базу месяца) ──────────────
 
 class CsvLogStore:
     """
-    Прямой перенос reader.py:_load_log/_save_log/_append_log_row.
-    Формат файла на диске не менялся ни на байт — это та же CSV-схема,
-    что была раньше, просто оформленная как класс.
+    CSV-лог в формате старого reader.py (тот же формат у выгрузки лог.csv).
+    Лог старого формата (без photo_hash, source_folder) читается как есть —
+    недостающих столбцов в строках просто нет.
     """
 
     def __init__(self, log_path: str):
@@ -76,38 +55,8 @@ class CsvLogStore:
             writer.writeheader()
             writer.writerows(rows)
 
-    def append(self, row: dict) -> None:
-        self.upgrade_if_needed()
-        exists = Path(self.log_path).exists()
-        with open(self.log_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=LOG_COLUMNS, extrasaction="ignore")
-            if not exists:
-                writer.writeheader()
-            writer.writerow(row)
 
-    def header(self) -> Optional[list[str]]:
-        """Шапка файла лога, или None если файла нет / он пустой."""
-        if not Path(self.log_path).exists():
-            return None
-        with open(self.log_path, newline="", encoding="utf-8") as f:
-            return next(csv.reader(f), None)
-
-    def upgrade_if_needed(self) -> bool:
-        """
-        Лог старого формата (без столбцов, добавленных позже) переписывается
-        с текущей шапкой: старые значения сохраняются, новые столбцы пустые.
-        Без этого дозапись строки из LOG_COLUMNS под старую шапку сдвинула
-        бы столбцы. Возвращает True, если файл был переписан.
-        """
-        head = self.header()
-        if head is None or head == LOG_COLUMNS:
-            return False
-        rows = self.load()
-        self.save(rows)
-        return True
-
-
-# ─── SQLite (новое) ───────────────────────────────────────────────────────────
+# ─── SQLite (таблица processing_log базы месяца) ──────────────────────────────
 
 class SqliteLogStore:
     """
@@ -156,8 +105,7 @@ class SqliteLogStore:
         return [dict(r) for r in rows]
 
     def save(self, rows: list[dict]) -> None:
-        """Полная перезапись — аналог _save_log (используется при инициализации
-        лога из таблицы, см. reader.py:_maybe_init_log)."""
+        """Полная перезапись."""
         placeholders = ", ".join(f":{c}" for c in LOG_COLUMNS)
         col_list = ", ".join(LOG_COLUMNS)
         with self._connect() as conn:
@@ -177,70 +125,7 @@ class SqliteLogStore:
             )
 
 
-# ─── Shadow-run harness ────────────────────────────────────────────────────────
-
-class ShadowLogStore:
-    """
-    Пишет каждую строку одновременно в primary (source of truth — CSV,
-    CsvLogStore) и shadow (SQLite, SqliteLogStore); построчная сверка —
-    отдельным вызовом compare() в конце прогона. primary остаётся единственным источником истины —
-    ShadowLogStore ничего не переключает, только проверяет, что SQLite
-    воспроизводит то же самое.
-
-    .divergences — список (row_index, primary_row, shadow_row) для строк,
-    где primary и shadow разошлись. Пустой список после прогона — и есть
-    условие готовности Фазы 2b ("shadow-run совпал построчно").
-
-    load()/save() делегируются в primary — чтение всегда идёт из источника
-    истины, shadow не участвует в принятии решений внутри process_photo/
-    DuplicatePolicy (важно для кейса 8, раздел 2 ТЗ — рассинхронизация
-    таблицы и лога не должна тихо замаскироваться вторым источником данных).
-    """
-
-    def __init__(self, primary: LogStore, shadow: LogStore):
-        self.primary = primary
-        self.shadow = shadow
-        self.divergences: list[tuple[int, dict, dict]] = []
-
-    def load(self) -> list[dict]:
-        return self.primary.load()
-
-    def save(self, rows: list[dict]) -> None:
-        self.primary.save(rows)
-        self.shadow.save(rows)
-
-    def append(self, row: dict) -> None:
-        self.primary.append(row)
-        self.shadow.append(row)
-
-    def compare(self) -> list[tuple[int, dict, dict]]:
-        """Полная построчная сверка primary vs shadow. Вызывается один раз
-        в конце прогона (run_pipeline), а не после каждой записи: сверка
-        читает оба хранилища целиком, и вызов на каждом append давал бы
-        O(n²) чтений CSV за прогон на тысячу фото."""
-        self.divergences.clear()
-        p_rows = self.primary.load()
-        s_rows = self.shadow.load()
-        for i, (p, s) in enumerate(zip(p_rows, s_rows)):
-            p_norm = {c: str(p.get(c, "")) for c in LOG_COLUMNS}
-            s_norm = {c: str(s.get(c, "")) for c in LOG_COLUMNS}
-            if p_norm != s_norm:
-                self.divergences.append((i, p_norm, s_norm))
-        if len(p_rows) != len(s_rows):
-            self.divergences.append((
-                -1,
-                {"_row_count": str(len(p_rows))},
-                {"_row_count": str(len(s_rows))},
-            ))
-        return self.divergences
-
-    def is_clean(self) -> bool:
-        return not self.divergences
-
-
-# ─── Функции-обёртки над CSV-логом (Фаза 6) ─────────────────────────────────
-# Раньше жили в reader.py как _log_path/_load_log/_save_log/_append_log_row
-# (program2.py импортировал их оттуда). Поведение то же.
+# ─── Функции-обёртки над CSV-логом ───────────────────────────────────────────
 
 def log_path_for(table_path: str) -> str:
     """<table_name>_log.csv рядом с таблицей."""
@@ -256,8 +141,3 @@ def load_log(log_path: str) -> list[dict]:
 def save_log(log_path: str, rows: list[dict]) -> None:
     """Перезаписывает весь лог."""
     CsvLogStore(log_path).save(rows)
-
-
-def append_log_row(log_path: str, row: dict) -> None:
-    """Дописывает одну строку в лог (создаёт файл с заголовком если нет)."""
-    CsvLogStore(log_path).append(row)

@@ -1,7 +1,9 @@
 """
 Фаза 7: gmr.py — одна точка входа. process вызывает тот же run_pipeline с теми
-же настройками, что `python reader.py`; остальные команды — обёртки над tools/.
+же настройками, что `python reader.py <папка месяца>`; остальные команды —
+обёртки над tools/. С этапа 2.3b process работает только с папкой месяца.
 """
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -22,19 +24,43 @@ def captured(monkeypatch):
 
 
 def test_process_defaults_equal_reader_main(captured):
-    assert gmr.main(["process"]) == 0
+    assert gmr.main(["process", "Октябрь"]) == 0
     cfg = captured["cfg"]
-    assert cfg == reader.PipelineConfig()       # `python reader.py` — те же настройки
+    # `python reader.py Октябрь` — те же настройки
+    assert cfg == reader.PipelineConfig(month_dir="Октябрь")
     # настройки обычного прогона (до 2026-10-01 — reader.default_run_config)
     assert (cfg.move_photos, cfg.ignore_last_digits, cfg.debug_digits, cfg.draw_boxes) == (False, 2, False, False)
 
 
-def test_process_overrides(captured, tmp_path):
-    gmr.main(["process", "--input", "in", "--output", "out", "--table", "t.csv", "--move", "--shadow-sqlite"])
+def test_process_move(captured):
+    gmr.main(["process", "Октябрь", "--move"])
     cfg = captured["cfg"]
-    assert (cfg.input_dir, cfg.output_base_dir, cfg.table_path) == ("in", "out", "t.csv")
-    assert cfg.move_photos is True and cfg.shadow_sqlite_log is True
+    assert cfg.month_dir == "Октябрь" and cfg.move_photos is True
     assert cfg.digit_conf_thresh == 0.6 and cfg.serial_conf_thresh == 0.6   # пороги не трогаются
+
+
+@pytest.mark.parametrize("argv", [[], ["--input", "in", "--output", "out", "--table", "t.csv"],
+                                  ["Октябрь", "--shadow-sqlite"]])
+def test_process_old_mode_removed(captured, argv):
+    # старый режим (таблица и CSV-лог) убран на этапе 2.3b: нужна папка месяца
+    with pytest.raises(SystemExit):
+        gmr.main(["process", *argv])
+    assert "cfg" not in captured
+
+
+def _reader_script(monkeypatch, *args):
+    # `python reader.py …` в этом же процессе (отдельный процесс грузил бы модули ~5 с)
+    monkeypatch.setattr(sys, "argv", ["reader.py", *args])
+    with pytest.raises(SystemExit) as e:
+        runpy.run_path(str(ROOT / "reader.py"), run_name="__main__")
+    return e.value.code
+
+
+def test_reader_script_needs_month(tmp_path, monkeypatch, capsys):
+    assert _reader_script(monkeypatch) == 2
+    assert "python reader.py <папка месяца>" in capsys.readouterr().out
+    assert _reader_script(monkeypatch, str(tmp_path / "нет")) == 1
+    assert "Месяц не создан" in capsys.readouterr().out
 
 
 def test_other_commands_delegate(monkeypatch):
@@ -62,30 +88,22 @@ def test_help_and_unknown_command(capsys):
 def test_runs_as_script():
     out = subprocess.run([sys.executable, "gmr.py", "process", "--help"], cwd=ROOT,
                          capture_output=True, text=True)
-    assert out.returncode == 0 and "--input" in out.stdout
+    assert out.returncode == 0 and "папка месяца" in out.stdout and "--input" not in out.stdout
 
 
 # ─── Сквозной прогон: gmr.py process == run_pipeline (фейковые модели) ───────
 
-from tests.test_shadow_run_pipeline import (  # noqa: E402
-    _log_without_timestamps, _output_tree, _setup_workspace, fake_models,  # noqa: F401 (фикстура)
-)
-from src.gmr.storage import log_path_for  # noqa: E402
+from tests import _pipeline as pl  # noqa: E402
+from tests._pipeline import fake_models  # noqa: E402, F401 (фикстура)
 
 
 def test_cli_process_end_to_end_same_as_reader(tmp_path, fake_models):  # noqa: F811
-    # прогон через CLI
-    inp, table = _setup_workspace(tmp_path / "cli")
-    gmr.main(["process", "--input", str(inp), "--output", str(tmp_path / "cli" / "out"),
-              "--table", str(table)])
-    # тот же прогон напрямую, с настройками `python reader.py`
-    inp2, table2 = _setup_workspace(tmp_path / "direct")
-    reader.run_pipeline(reader.PipelineConfig(
-        input_dir=str(inp2), output_base_dir=str(tmp_path / "direct" / "out"), table_path=str(table2)))
+    cli = pl.setup_month(tmp_path / "cli")                 # прогон через CLI
+    assert gmr.main(["process", str(cli.root)]) == 0
+    direct = pl.setup_month(tmp_path / "direct")           # тот же прогон напрямую
+    reader.run_pipeline(reader.PipelineConfig(month_dir=str(direct.root)))
 
-    assert _log_without_timestamps(log_path_for(str(table))) == \
-        _log_without_timestamps(log_path_for(str(table2)))
-    assert Path(table).read_bytes() == Path(table2).read_bytes()
-    assert _output_tree(tmp_path / "cli") == _output_tree(tmp_path / "direct")
-    outcomes = [r["outcome"] for r in _log_without_timestamps(log_path_for(str(table)))]
-    assert outcomes == ["PLUS", "MINUS", "SERIAL_NOT_FOUND", "REPEAT", "NO_METER"]
+    assert pl.log_without_timestamps(cli) == pl.log_without_timestamps(direct)
+    assert pl.output_tree(cli) == pl.output_tree(direct)
+    assert [r["outcome"] for r in pl.log(cli)] == pl.OUTCOMES
+    assert pl.reading(cli, "A-1") == pl.reading(direct, "A-1") == "1200"

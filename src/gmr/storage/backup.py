@@ -1,37 +1,20 @@
 """
-src/gmr/storage/backup.py — копии таблицы и лога (2026-10-01).
+src/gmr/storage/backup.py — копии базы месяца (2026-10-01).
 
-Перед каждым прогоном reader.py и при запуске окна оператора таблица и лог
-копируются в `<папка таблицы>/gmr_backups/<имя таблицы>/<дата_время>/`.
-Хранятся последние KEEP копий, старые удаляются. Если что-то испортилось —
-можно вернуться к состоянию «до прогона». База месяца (gmr.sqlite)
-копируется средствами SQLite — backup_sqlite.
+Перед каждым прогоном reader.py, при запуске окна оператора и перед загрузкой
+обновлённой таблицы база месяца копируется в
+`<месяц>/gmr_backups/<дата_время>/gmr.sqlite` средствами SQLite. Хранятся
+последние KEEP копий, старые удаляются. Если что-то испортилось — можно
+вернуться к состоянию «до прогона». (Копии таблицы и CSV-лога старого режима
+убраны на этапе 2.3b.)
 """
 import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 KEEP = 30
-
-
-def backup_dir_for(table_path: str) -> Path:
-    t = Path(table_path)
-    return t.parent / "gmr_backups" / t.stem
-
-
-def backup_files(paths: Iterable[str], backup_root: Path, keep: int = KEEP) -> Optional[Path]:
-    """Копирует существующие файлы из paths в новую папку с датой и временем.
-    Возвращает эту папку (None — копировать было нечего)."""
-    existing = [Path(p) for p in paths if p and Path(p).is_file()]
-    if not existing:
-        return None
-    dest = _new_backup_dir(Path(backup_root))
-    for p in existing:
-        shutil.copy2(p, dest / p.name)
-    remove_old(Path(backup_root), keep)
-    return dest
 
 
 def backup_sqlite(db_path: Path, backup_root: Path, keep: int = KEEP) -> Optional[Path]:

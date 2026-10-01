@@ -7,7 +7,6 @@ from src.gmr.domain import PipelineConfig
 from src.gmr.storage import LOG_COLUMNS
 from src.gmr.domain.serial_match import one_edit_neighbors
 from tools import analyze_log as al
-from src.gmr.storage import load_table  # noqa: E402
 
 
 def row(name, outcome, source="auto", folder="", **kw):
@@ -221,11 +220,23 @@ def test_main_reads_csv_with_bom_and_writes_report(tmp_path):
 def test_table_serials_keep_leading_zeros(tmp_path):
     cfg = PipelineConfig()
     table = tmp_path / "t.csv"
-    table.write_text(f"{cfg.col_serial};{cfg.col_account_id}\n0045618;1\n 9076647 ;2\n;3\n", encoding="utf-8")
-    df = load_table(str(table))
-    if cfg.col_serial not in df.columns:   # разделитель таблицы — как в load_table
-        table.write_text(f"{cfg.col_serial},{cfg.col_account_id}\n0045618,1\n 9076647 ,2\n,3\n", encoding="utf-8")
+    # таблица читается, как при создании месяца: «;» или «,», номер без знаков по краям
+    table.write_text(f"{cfg.col_serial};{cfg.col_account_id}\n0045618;1\n 9076647. ;2\n;3\n", encoding="utf-8")
     assert al.load_table_serials(table, cfg) == {"0045618", "9076647"}
+    table.write_text(f"{cfg.col_serial},{cfg.col_account_id}\n0045618,1\n 9076647 ,2\n,3\n", encoding="utf-8")
+    assert al.load_table_serials(table, cfg) == {"0045618", "9076647"}
+
+
+def test_load_table_reads_xlsx_like_month(tmp_path):
+    # выгрузка показания.xlsx и таблица компании в .xlsx читаются одинаково
+    import openpyxl
+    cfg = PipelineConfig()
+    table = tmp_path / "показания.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.append([cfg.col_serial, cfg.col_account_id, cfg.col_last_reading])
+    wb.active.append(["0045618", 1300000013, 1000])
+    wb.save(table)
+    assert al.load_table(table, cfg) == ({"0045618"}, {"0045618": 1000.0}, {"0045618": "1300000013"})
 
 
 # ─── Проверка кандидатов по показанию ────────────────────────────────────────

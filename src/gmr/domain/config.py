@@ -1,13 +1,12 @@
 """
 src/gmr/domain/config.py — PipelineConfig.
 
-Значения по умолчанию — это настройки обычного прогона (`python gmr.py process`,
-`python reader.py`): других «настроек прогона» нет (default_run_config в
-reader.py убран 2026-10-01).
-
-Перенесено из reader.py в рамках Фазы 2a БЕЗ изменения полей и дефолтов
-(включая переменные окружения GMR_INPUT_DIR/GMR_OUTPUT_DIR/GMR_TABLE_PATH,
-добавленные в Фазе 0/1 — см. docs/MIGRATION_STATUS.md).
+Значения по умолчанию — это настройки обычного прогона (`python gmr.py process
+<папка месяца>`, `python reader.py <папка месяца>`): других «настроек прогона»
+нет (default_run_config в reader.py убран 2026-10-01). Пути к данным задаёт
+только папка месяца (month_dir); переменные окружения GMR_INPUT_DIR,
+GMR_OUTPUT_DIR, GMR_TABLE_PATH и путь к таблице убраны вместе со старым
+режимом (этап 2.3b).
 
 Внимание: код в run_pipeline() (reader.py) навешивает на экземпляр
 PipelineConfig дополнительные динамические атрибуты — `_log_rows_cache`,
@@ -17,8 +16,7 @@ PipelineConfig дополнительные динамические атриб�
 осознанно оставлено как есть в Фазе 2a; полями датакласса их не делаем, чтобы
 не расширять публичный контракт конфига без явного решения по этому вопросу.
 """
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -29,16 +27,13 @@ class PipelineConfig:
     digit_ocr_model:          str   = "meter_ocr/runs/cnn/runs/v3_platinum/best.pth"
     serial_ocr_model:         str   = "serial_id_ocr/runs/crnn/2026-06-05_01-09/best.pt"
 
-    # Пути к данным.
-    # Раньше здесь были захардкожены личные Windows-пути оператора (D:\...) —
-    # это делало "чистую установку" на другой машине невозможной (см.
-    # docs/MIGRATION_TZ.md §0). Теперь дефолты — безопасные относительные
-    # пути внутри репозитория; реальные пути задаются через переменные
-    # окружения (см. .env.example) либо передаются явно при создании
-    # PipelineConfig(...).
-    input_dir:                str   = field(default_factory=lambda: os.environ.get("GMR_INPUT_DIR", "data_for_reader_test/input"))
-    output_base_dir:          str   = field(default_factory=lambda: os.environ.get("GMR_OUTPUT_DIR", "data_for_reader_test/output"))
-    table_path:               str   = field(default_factory=lambda: os.environ.get("GMR_TABLE_PATH", "data_for_reader_test/meters_table.csv"))
+    # Папка месяца (этап 2.2b): фото из <месяц>/фото, результат в
+    # <месяц>/результат, абоненты, показания и лог — в базе <месяц>/gmr.sqlite,
+    # в конце — выгрузка показания.xlsx (src/gmr/storage/month.py).
+    month_dir:                str   = ""
+    # <месяц>/фото и <месяц>/результат — заполняет run_pipeline (reader.py)
+    input_dir:                str   = ""
+    output_base_dir:          str   = ""
 
     # Имена столбцов в таблице
     col_serial:               str   = "Номер счетчика"
@@ -56,12 +51,6 @@ class PipelineConfig:
     digit_conf_thresh:        float = 0.6
     expected_digits:          int   = 5
     delta_threshold:          float = 10_000.0
-
-    # Папка месяца (этап 2.2b): если задана — фото из <месяц>/фото, результат в
-    # <месяц>/результат, абоненты, показания и лог — в базе <месяц>/gmr.sqlite,
-    # в конце — выгрузка показания.xlsx (src/gmr/storage/month.py). input_dir,
-    # output_base_dir и table_path тогда не используются.
-    month_dir:                str   = ""
 
     # Прочее
     move_photos:              bool  = False  # True=перемещать, False=копировать
@@ -101,12 +90,3 @@ class PipelineConfig:
     # До 2026-10-01 здесь было True, но обычный прогон (`python reader.py`,
     # `gmr.py process`) всегда переопределял на False — теперь значение одно.
     draw_boxes:                bool = False
-
-    # Фаза 2b (docs/MIGRATION_TZ.md): shadow-run processing log в SQLite.
-    # False — поведение как раньше, пишется только <table>_log.csv.
-    # True  — каждая строка лога дополнительно пишется в <table>_log.sqlite,
-    #         после прогона CSV и SQLite сверяются построчно, расхождения
-    #         пишутся в лог и в <table>_log_shadow_report.txt.
-    # CSV остаётся источником истины в обоих режимах: чтение (дубли, кейсы
-    # 5-8) всегда идёт из CSV, SQLite ни на какое решение не влияет.
-    shadow_sqlite_log:         bool = False

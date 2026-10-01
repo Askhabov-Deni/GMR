@@ -3,15 +3,15 @@
 (решение владельца 2026-09-29, docs/MIGRATION_STATUS.md).
 
   1. photo_fingerprint зависит только от байтов файла.
-  2. Лог старого формата (16 столбцов) при дозаписи переписывается с новой
-     шапкой без потери данных; старая SQLite-база дополняется столбцами.
+  2. Старая SQLite-база дополняется столбцами (дозапись в CSV-лог убрана
+     вместе со старым режимом на этапе 2.3b).
   3. run_pipeline: два разных фото с одинаковым именем в разных подпапках
      обрабатываются оба; то же фото под другим именем в новой пачке узнаётся
      без запуска моделей.
   4. program2.py переносит отпечаток в ручную строку из автоматической
      строки своей подпапки.
 """
-import csv
+import shutil
 import sqlite3
 from types import SimpleNamespace
 
@@ -21,8 +21,9 @@ import pytest
 
 import reader
 from src.gmr.ml import loader
-from src.gmr.storage import LOG_COLUMNS, CsvLogStore, SqliteLogStore, photo_fingerprint
-from src.gmr.storage import append_log_row, load_log, log_path_for  # noqa: E402
+from src.gmr.storage import LOG_COLUMNS, SqliteLogStore, photo_fingerprint
+from src.gmr.storage.month import MonthDB
+from tests._month import make_month
 
 OLD_COLUMNS = LOG_COLUMNS[:16]   # формат лога до 2026-09-29
 
@@ -37,40 +38,7 @@ def test_fingerprint_depends_only_on_content(tmp_path):
     assert len(photo_fingerprint(str(a))) == 16
 
 
-# ─── 2. Переход старого лога ─────────────────────────────────────────────────
-
-def _write_old_log(path, rows):
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=OLD_COLUMNS, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(rows)
-
-
-def test_old_log_upgraded_on_append_without_losing_data(tmp_path):
-    log = tmp_path / "t_log.csv"
-    old_rows = [{c: f"{c}-{i}" for c in OLD_COLUMNS} for i in range(3)]
-    _write_old_log(log, old_rows)
-
-    new_row = {c: "" for c in LOG_COLUMNS} | {"original_filename": "new.jpg", "photo_hash": "abc"}
-    append_log_row(str(log), new_row)   # так же дописывает и program2.py
-
-    store = CsvLogStore(str(log))
-    assert store.header() == LOG_COLUMNS
-    rows = store.load()
-    assert len(rows) == 4
-    for old, got in zip(old_rows, rows):
-        assert {c: got[c] for c in OLD_COLUMNS} == old
-        assert got["photo_hash"] == "" and got["source_folder"] == ""
-    assert rows[3]["original_filename"] == "new.jpg" and rows[3]["photo_hash"] == "abc"
-
-
-def test_upgrade_is_noop_for_current_format(tmp_path):
-    log = tmp_path / "t_log.csv"
-    CsvLogStore(str(log)).save([{c: "x" for c in LOG_COLUMNS}])
-    before = log.read_bytes()
-    assert CsvLogStore(str(log)).upgrade_if_needed() is False
-    assert log.read_bytes() == before
-
+# ─── 2. Старая SQLite-база ───────────────────────────────────────────────────
 
 def test_old_sqlite_schema_gets_new_columns(tmp_path):
     db = tmp_path / "t_log.sqlite"
@@ -90,10 +58,7 @@ def test_old_sqlite_schema_gets_new_columns(tmp_path):
 # 1 -> счётчик 11111, 2 -> 22222.
 
 _BY_COLOR = {1: ("11111", "01200"), 2: ("22222", "04000")}
-_TABLE = [
-    {"Номер счетчика": "11111", "Лицевой счет": "A-1", "Последние показания": "1000", "Текущие показания": ""},
-    {"Номер счетчика": "22222", "Лицевой счет": "A-2", "Последние показания": "5000", "Текущие показания": ""},
-]
+_TABLE = [("11111", "A-1", "1000", ""), ("22222", "A-2", "5000", "")]
 
 
 def _img(color_id):
@@ -149,30 +114,20 @@ def models(monkeypatch):
     monkeypatch.setattr(loader, "CRNNInferer", lambda *a, **k: _SerialOCR())
 
 
-def _table(root):
-    path = root / "table.csv"
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(_TABLE[0]))
-        w.writeheader()
-        w.writerows(_TABLE)
-    return path
-
-
-def _run(root, inp, table):
-    reader.run_pipeline(reader.PipelineConfig(
-        input_dir=str(inp), output_base_dir=str(root / "out"),
-        table_path=str(table), draw_boxes=False,
-    ))
-    return load_log(log_path_for(str(table)))
+def _run(f):
+    reader.run_pipeline(reader.PipelineConfig(month_dir=str(f.root)))
+    with MonthDB(f.db) as db:
+        return db.log_rows()
 
 
 def test_same_filename_in_two_subfolders_both_processed(tmp_path, models):
-    inp = tmp_path / "input"
+    f = make_month(tmp_path, _TABLE)
+    inp = f.photos
     for folder, color in (("Аюб", 1), ("Сулиман", 2)):
         (inp / folder).mkdir(parents=True)
         cv2.imwrite(str(inp / folder / "IMG_0001.jpg"), _img(color))
 
-    rows = _run(tmp_path, inp, _table(tmp_path))
+    rows = _run(f)
 
     got = {(r["source_folder"], r["original_filename"]): (r["outcome"], r["account_id"]) for r in rows}
     assert got == {("Аюб", "IMG_0001.jpg"): ("PLUS", "A-1"),
@@ -181,11 +136,11 @@ def test_same_filename_in_two_subfolders_both_processed(tmp_path, models):
 
 
 def test_same_photo_renamed_in_new_batch_is_repeat_without_models(tmp_path, models):
-    inp = tmp_path / "input"
+    f = make_month(tmp_path, _TABLE)
+    inp = f.photos
     (inp / "пачка1").mkdir(parents=True)
     cv2.imwrite(str(inp / "пачка1" / "IMG_0001.jpg"), _img(1))
-    table = _table(tmp_path)
-    _run(tmp_path, inp, table)
+    _run(f)
 
     # вторая пачка: тот же файл под другим именем в другой папке
     (inp / "пачка2").mkdir()
@@ -194,7 +149,7 @@ def test_same_photo_renamed_in_new_batch_is_repeat_without_models(tmp_path, mode
     (inp / "пачка1").rmdir()
     calls_before = _Meter.calls
 
-    rows = _run(tmp_path, inp, table)
+    rows = _run(f)
 
     assert rows[-1]["original_filename"] == "переслано.jpg"
     assert rows[-1]["outcome"] == "REPEAT"
@@ -241,16 +196,16 @@ def test_program2_digits_error_file_renamed_to_account(tmp_path):
 # 4 лишние копии с ошибкой ложились оператору в question/ второй раз.
 
 def test_copies_in_one_run_reach_question_once(tmp_path, models):
-    inp = tmp_path / "input"
+    f = make_month(tmp_path, _TABLE)
+    inp = f.photos
     (inp / "Аюб").mkdir(parents=True)
     (inp / "Сулиман").mkdir(parents=True)
     cv2.imwrite(str(inp / "Аюб" / "a.jpg"), _img(3))                 # NO_METER
     data = (inp / "Аюб" / "a.jpg").read_bytes()
     (inp / "Аюб" / "b (1).jpg").write_bytes(data)                    # копия в той же папке
     (inp / "Сулиман" / "c.jpg").write_bytes(data)                    # копия в другой подпапке
-    table = _table(tmp_path)
 
-    rows = _run(tmp_path, inp, table)
+    rows = _run(f)
 
     assert [(r["source_folder"], r["original_filename"], r["outcome"]) for r in rows] == [
         ("Аюб", "a.jpg", "NO_METER"),
@@ -259,12 +214,11 @@ def test_copies_in_one_run_reach_question_once(tmp_path, models):
     ]
     assert all("duplicate file in current run" in r["notes"] for r in rows[1:])
     assert _Meter.calls == 1
-    in_question = [p for p in (tmp_path / "out").rglob("*.jpg") if "question" in p.parts]
+    in_question = [p for p in f.results.rglob("*.jpg") if "question" in p.parts]
     assert len(in_question) == 1
 
     # следующий прогон: первая копия перечитывается (правило Г), остальные — нет
-    import shutil
-    shutil.rmtree(tmp_path / "out")
-    rows = _run(tmp_path, inp, table)[3:]
+    shutil.rmtree(f.results)
+    rows = _run(f)[3:]
     assert [r["outcome"] for r in rows] == ["NO_METER", "REPEAT", "REPEAT"]
     assert _Meter.calls == 2

@@ -1,6 +1,6 @@
 """
-Общий код reader.py и program2.py (src/gmr/): таблица, лог, нормализация
-серийника, чтение и запись картинок. program2.py не зависит от reader.py
+Общий код reader.py и program2.py (src/gmr/): лог, нормализация серийника,
+чтение и запись картинок. program2.py не зависит от reader.py
 (с Фазы 6; до 2026-10-01 файл назывался test_phase6_boundaries.py).
 """
 import ast
@@ -8,13 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pandas as pd
-
 import reader
 from src.gmr.domain.serial_match import normalize_serial
-from src.gmr.storage import (
-    append_log_row, load_log, load_table, log_path_for, save_log, save_table,
-)
+from src.gmr.storage import load_log, log_path_for, save_log
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -45,27 +41,26 @@ def test_reader_legacy_names_removed():
         assert not hasattr(reader, name), name
 
 
-def test_table_roundtrip_keeps_leading_zeros(tmp_path):
-    p = tmp_path / "t.csv"
-    save_table(pd.DataFrame([{"Номер счетчика": "0045618", "Текущие показания": ""}]), str(p))
-    assert p.read_text(encoding="utf-8").splitlines()[1] == '"0045618",""'   # QUOTE_ALL
-    assert load_table(str(p)).iloc[0]["Номер счетчика"] == "0045618"
-
-
-def test_xlsx_table_roundtrip_keeps_leading_zeros(tmp_path):
-    # таблица месяца приходит в Excel; нужен openpyxl (requirements.txt)
-    p = tmp_path / "t.xlsx"
-    save_table(pd.DataFrame([{"Номер счетчика": "0045618", "Лицевой счет": "A-1"}]), str(p))
-    row = load_table(str(p)).iloc[0]
-    assert (row["Номер счетчика"], row["Лицевой счет"]) == ("0045618", "A-1")
+def test_old_mode_removed():
+    # таблица и CSV-лог (старый режим) убраны на этапе 2.3b — только папка месяца
+    import src.gmr.storage as storage
+    for name in ("_maybe_init_log", "_TableRun", "_backup_before_run", "_report_shadow_run",
+                 "load_table", "save_table", "append_log_row", "ShadowLogStore"):
+        assert not hasattr(reader, name), name
+    for name in ("load_table", "save_table", "append_log_row", "ShadowLogStore",
+                 "backup_files", "backup_dir_for"):
+        assert not hasattr(storage, name), name
+    for field in ("table_path", "shadow_sqlite_log"):
+        assert field not in reader.PipelineConfig.__dataclass_fields__, field
 
 
 def test_log_functions(tmp_path):
+    # CSV-лог старого режима: при создании месяца он переносится в базу
     assert log_path_for(str(tmp_path / "meters_table.csv")) == str(tmp_path / "meters_table_log.csv")
     lp = str(tmp_path / "l.csv")
     assert load_log(lp) == []
-    append_log_row(lp, {"original_filename": "a.jpg", "outcome": "PLUS"})
-    save_log(lp, load_log(lp) + [{"original_filename": "b.jpg", "outcome": "MINUS"}])
+    save_log(lp, [{"original_filename": "a.jpg", "outcome": "PLUS"},
+                  {"original_filename": "b.jpg", "outcome": "MINUS"}])
     assert [r["original_filename"] for r in load_log(lp)] == ["a.jpg", "b.jpg"]
 
 

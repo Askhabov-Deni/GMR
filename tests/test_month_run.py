@@ -230,9 +230,13 @@ def test_excel_open_does_not_lose_readings_in_month(tmp_path, ocr, monkeypatch):
     assert rows["A-1"] == 1200
 
 
-def test_run_requires_month(tmp_path):
+def test_run_requires_month(tmp_path, monkeypatch):
     with pytest.raises(reader.NotAMonth, match="Месяц не создан"):
         reader.run_pipeline(reader.PipelineConfig(month_dir=str(tmp_path / "нет")))
+    # без папки месяца прогона нет, даже если запустили из папки месяца
+    monkeypatch.chdir(_month(tmp_path).root)
+    with pytest.raises(reader.NotAMonth, match="Не указана папка месяца"):
+        reader.run_pipeline(reader.PipelineConfig())
 
 
 def test_cli_process_month(tmp_path, ocr, capsys):

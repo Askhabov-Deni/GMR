@@ -493,20 +493,19 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
 def load_table(path: Path, cfg: PipelineConfig) -> tuple[set[str], dict[str, Optional[float]], dict[str, str]]:
     """
     Серийники таблицы, последнее показание и лицевой счёт по каждому
-    (первая строка с этим номером).
+    (первая строка с этим номером). Таблица читается так же, как при создании
+    месяца (.xls, .xlsx, .csv; номер — без лишних знаков по краям): подходит и
+    таблица компании, и выгрузка показания.xlsx.
     """
-    from src.gmr.storage import load_table as _load_table   # те же правила чтения, что в reader.py
-    from src.gmr.domain.serial_match import normalize_serial as _normalize_serial
-    df = _load_table(str(path))
+    from src.gmr.storage.register import clean_serial, read_register
     last: dict[str, Optional[float]] = {}
     accounts: dict[str, str] = {}
-    lasts = df[cfg.col_last_reading] if cfg.col_last_reading in df.columns else [""] * len(df)
-    accs = df[cfg.col_account_id] if cfg.col_account_id in df.columns else [""] * len(df)
-    for serial, value, acc in zip(df[cfg.col_serial], lasts, accs):
-        key = _normalize_serial(str(serial))
-        if key and key != "nan" and key not in last:
-            last[key] = _float(value) if str(value).strip() not in ("", "nan") else None
-            accounts[key] = str(acc).strip()
+    for row in read_register(str(path)).rows:
+        key = clean_serial(row.get(cfg.col_serial, ""))
+        if key and key not in last:
+            value = row.get(cfg.col_last_reading, "").strip()
+            last[key] = _float(value) if value else None
+            accounts[key] = row.get(cfg.col_account_id, "").strip()
     return set(last), last, accounts
 
 
@@ -517,8 +516,10 @@ def load_table_serials(path: Path, cfg: PipelineConfig) -> set[str]:
 def main(argv=None) -> str:
     p = argparse.ArgumentParser(prog="python -m tools.analyze_log",
                                 description="Качество чтения reader.py по логу обработки.")
-    p.add_argument("log", help="лог обработки (<таблица>_log.csv)")
-    p.add_argument("--table", default=None, help="таблица счётчиков — для разбора SERIAL_NOT_FOUND")
+    p.add_argument("log", help="лог обработки: лог.csv из папки месяца (или старый <таблица>_log.csv)")
+    p.add_argument("--table", default=None,
+                   help="таблица счётчиков (показания.xlsx из папки месяца или таблица компании) — "
+                        "для разбора SERIAL_NOT_FOUND")
     p.add_argument("--out", default=None, help="сохранить отчёт в файл")
     p.add_argument("--details", action="store_true",
                    help="с --table: список SERIAL_NOT_FOUND с ответом оператора и догадкой программы "
