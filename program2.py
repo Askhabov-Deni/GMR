@@ -1,17 +1,22 @@
 """
-program2.py — ручная обработка фото из question/ которые reader.py не смог обработать.
+program2.py — окно оператора: ручной разбор фото из question/, с которыми не
+справился reader.py, и выборочная проверка его автоматических результатов.
+Запуск: `python program2.py`. «Папка с фото» — папка ОДНОГО контролёра
+(output/<контролёр>). Что program2 читает и пишет (таблица, лог, папки) —
+docs/contract_reader_program2.md.
+
 АРХИТЕКТУРА:
-App (Tk root)
+MainWindow (Tk root)
 ├── SettingsDialog      — первый запуск / смена пользователя
 ├── LoginDialog         — подтверждение входа
-├── MainWindow          — главное окно с двумя табами
-│     ├── ProcessingTab — список из question/*, кнопки открыть / нечитаемо
-│     └── VerifyTab     — список из plus/ minus/ где source=auto, verified_by=""
-├── EditScreen          — редактирование одного фото (из processing tab)
-└── VerifyScreen        — проверка одного фото (из verify tab)
-ТИХАЯ РАЗМЕТКА (клерк не знает):
-CRNN: сохраняем кроп serial_number + правильный текст в .txt файл рядом с картинкой
-CNN:  сохраняем кропы только изменённых цифр, если показания исправили
+├── ProcessingTab       — список из question/*, кнопки открыть / нечитаемо
+├── VerifyTab           — фото из plus/ minus/, авто-строка PLUS/MINUS ещё не проверена
+├── EditScreen          — разбор одного фото: Принять / Дубль / Нечитаемо / Нет в базе /
+│                         Серийник в базе с ошибкой; подсказка «похожие номера в базе»
+└── VerifyScreen        — проверка одного фото: Верно / Исправить (→ таблица) / Пропустить
+ТИХАЯ РАЗМЕТКА (оператор не видит): если оператор исправил модель —
+CRNN: кроп serial_number + правильный текст (.txt) в <папка разметки>/crnn/images
+CNN:  кропы изменённых цифр в <папка разметки>/cnn/<цифра>
 """
 import json
 import logging
@@ -571,7 +576,6 @@ def redraw_annotation(path: str, serial: str, reading_str: str) -> None:
             log.warning(f"Не удалось открыть фото для перерисовки подписи: {path}")
             return
             
-        # ИСПРАВЛЕНО: передаём обязательные аргументы photo_path и outcome
         result = PhotoResult(photo_path=path, outcome=Outcome.MINUS)
         result.serial_text = serial or None
         
@@ -699,7 +703,6 @@ class ReadingWidget(ttk.Frame):
                 bd=1,
             )
             e.grid(row=0, column=i, padx=3)
-            # ИСПРАВЛЕНО: убраны пробелы внутри скобок
             e.bind("<Key>", lambda ev, i=i: self._on_key(ev, i))
             e.bind("<FocusIn>", lambda ev, i=i: e.select_range(0, tk.END))
             self._entries.append(e)
@@ -993,7 +996,6 @@ class ProcessingTab(ttk.Frame):
         ttk.Button(btn_frame, text="✗  Нечитаемо",  command=self._unreadable, width=18).pack(pady=6)
         ttk.Button(btn_frame, text="⟳  Обновить",   command=self.refresh,     width=18).pack(pady=6)
 
-        # ИСПРАВЛЕНО: убраны пробелы
         self._tree.bind("<Double-Button-1>", lambda e: self._open())
 
     def refresh(self):
@@ -1094,7 +1096,6 @@ class VerifyTab(ttk.Frame):
         ttk.Button(btn_frame, text="✎  Открыть",  command=self._open,   width=18).pack(pady=6)
         ttk.Button(btn_frame, text="⟳  Обновить", command=self.refresh, width=18).pack(pady=6)
 
-        # ИСПРАВЛЕНО: убраны пробелы
         self._tree.bind("<Double-Button-1>", lambda e: self._open())
         self._items: list[dict] = []
 
@@ -1189,7 +1190,6 @@ class EditScreen(ttk.Frame):
         self._canvas = tk.Canvas(center, bg="#222222", width=560)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # ИСПРАВЛЕНО: убраны пробелы
         self._canvas.bind("<Configure>",       lambda e: self._display_photo())
         self._canvas.bind("<MouseWheel>",      self._on_mousewheel)
         self._canvas.bind("<Button-4>",        self._on_mousewheel)
@@ -1310,8 +1310,6 @@ class EditScreen(ttk.Frame):
         ).pack(side=tk.RIGHT, padx=4)
 
     def _bind_keys(self):
-        print("HOTKEYS BOUND")
-        # ИСПРАВЛЕНО: убраны пробелы
         for seq, cb in [
             ("<Return>",   self._hotkey_accept),
             ("<KP_Enter>", self._hotkey_accept),
@@ -1327,7 +1325,6 @@ class EditScreen(ttk.Frame):
             self.app.bind_all(seq, cb)
 
     def _unbind_keys(self):
-        # ИСПРАВЛЕНО: убраны пробелы
         for seq in ("<Return>", "<KP_Enter>", "<Escape>", "<Delete>",
                     "<d>", "<D>", "<n>", "<N>", "<b>", "<B>"):
             try:
@@ -1348,7 +1345,6 @@ class EditScreen(ttk.Frame):
         return self._focused_widget() in self._reading_widget.get_entry_widgets()
 
     def _hotkey_accept(self, event):
-        print("ENTER PRESSED")
         self._accept()
         return "break"
 
@@ -2055,7 +2051,6 @@ class VerifyScreen(ttk.Frame):
         self._canvas = tk.Canvas(center, bg="#222222", width=560)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # ИСПРАВЛЕНО: убраны пробелы
         self._canvas.bind("<Configure>",       lambda e: self._load_photo())
         self._canvas.bind("<MouseWheel>",      self._on_mousewheel)
         self._canvas.bind("<Button-4>",        self._on_mousewheel)
@@ -2142,7 +2137,6 @@ class VerifyScreen(ttk.Frame):
         ).pack(side=tk.RIGHT, padx=4)
 
     def _bind_keys(self):
-        # ИСПРАВЛЕНО: убраны пробелы
         # Enter: «Верно», а в режиме исправления — «Сохранить правку»
         self.app.bind_all("<Return>", lambda e: self._on_return())
         self.app.bind_all("<Escape>", lambda e: self._back())
@@ -2151,7 +2145,6 @@ class VerifyScreen(ttk.Frame):
         self.app.bind_all("<Right>",  lambda e: None if self._edit_mode else self._skip())
 
     def _unbind_keys(self):
-        # ИСПРАВЛЕНО: убраны пробелы
         for seq in ("<Return>", "<Escape>", "<e>", "<E>", "<Right>"):
             try:
                 self.app.unbind_all(seq)

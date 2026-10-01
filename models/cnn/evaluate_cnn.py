@@ -22,12 +22,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 try:
-    from .config_cnn import DEVICE, NUM_CLASSES, CROPS_DIR, SEED, BATCH_SIZE
-    from .dataset_cnn import make_loaders, dynamic_collate_fn
+    from .config_cnn import DEVICE, NUM_CLASSES, CROPS_DIR, BATCH_SIZE
+    from .dataset_cnn import make_loaders
     from .model_cnn import DigitCNN
 except ImportError:  # запуск как отдельный скрипт (python models/cnn/evaluate_cnn.py)
-    from config_cnn import DEVICE, NUM_CLASSES, CROPS_DIR, SEED, BATCH_SIZE
-    from dataset_cnn import make_loaders, dynamic_collate_fn
+    from config_cnn import DEVICE, NUM_CLASSES, CROPS_DIR, BATCH_SIZE
+    from dataset_cnn import make_loaders
     from model_cnn import DigitCNN
 
 
@@ -288,7 +288,7 @@ def main() -> None:
     save_error_images(results, out_dir, args.max_errors)
 
     print(f"\n{'=' * 65}")
-    print(f"  Оценка завершена успешно!")
+    print("  Оценка завершена успешно!")
     print(f"  Все результаты сохранены в: {os.path.abspath(out_dir)}")
     print(f"{'=' * 65}")
     print("\n➡️  Следующий шаг:")

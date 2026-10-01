@@ -13,3 +13,4 @@
 | `models/yolo_all_detect/labeler_yolo.py` | Разметчик рамок (Tkinter). Владелец не пользуется (2026-10-01). |
 | `models/yolo_all_detect/detect_model_train.py` | **Скрипт обучения YOLO-детектора.** Владелец не пользуется (2026-10-01). Понадобится при переобучении детектора счётчика или цифр — вернуть из архива. |
 | `models/yolo_all_detect/test.py` | Ручная проверка YOLO на фото. Заменён `python gmr.py inspect meter|digits`. |
+| `requirements-tools.txt` | Зависимости архивных утилит (easyocr, tqdm). Лежал в корне проекта до 2026-10-01. |

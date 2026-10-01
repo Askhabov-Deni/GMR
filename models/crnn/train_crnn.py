@@ -342,7 +342,7 @@ def main() -> None:
     print(f"  Test acc     : {test_acc:.4f}  |  CER: {test_cer_val:.4f}")
     print(f"  Run dir      : {save_dir}")
     print(f"{'='*55}")
-    print(f"\n➡️  Для полного анализа запусти:")
+    print("\n➡️  Для полного анализа запусти:")
     print(f"   python evaluate_crnn.py --run_dir {save_dir} --images_dir {args.images_dir} --labels_dir {args.labels_dir}")
 
 

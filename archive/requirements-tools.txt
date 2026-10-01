@@ -1,0 +1,6 @@
+# Зависимости архивных утилит (archive/utils). Версии не зафиксированы —
+# эти скрипты не запускались с 2026-09. Ставить из корня проекта:
+#   python -m pip install -r archive/requirements-tools.txt
+-r ../requirements.txt
+easyocr   # archive/utils/label_yolo_tool.py (авто-OCR серийников)
+tqdm      # archive/utils/compute_mean_std.py

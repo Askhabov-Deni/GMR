@@ -29,7 +29,7 @@ import torch.optim as optim
 try:
     from .config_cnn import (
         BATCH_SIZE, CROPS_DIR, IMG_SIZE, IMG_WIDTH,
-        DEVICE, EPOCHS, LABEL_SMOOTHING, LR,
+        EPOCHS, LABEL_SMOOTHING, LR,
         NUM_CLASSES, OUTPUT_DIR, PATIENCE, WEIGHT_DECAY, SEED
     )
     from .dataset_cnn import make_loaders
@@ -37,7 +37,7 @@ try:
 except ImportError:  # запуск как отдельный скрипт (python models/cnn/train_cnn.py)
     from config_cnn import (
         BATCH_SIZE, CROPS_DIR, IMG_SIZE, IMG_WIDTH,
-        DEVICE, EPOCHS, LABEL_SMOOTHING, LR,
+        EPOCHS, LABEL_SMOOTHING, LR,
         NUM_CLASSES, OUTPUT_DIR, PATIENCE, WEIGHT_DECAY, SEED
     )
     from dataset_cnn import make_loaders

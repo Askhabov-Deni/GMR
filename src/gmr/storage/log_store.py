@@ -11,7 +11,8 @@ docs/MIGRATION_TZ.md).
 Три класса:
   - CsvLogStore    — канонический перенос текущего CSV-поведения reader.py
                       (_load_log/_save_log/_append_log_row) без изменения
-                      формата файла. Остаётся source of truth в этой фазе.
+                      формата файла. Источник истины (SQLite пока только
+                      дублирует — см. docs/BACKLOG.md).
   - SqliteLogStore  — новое хранилище на sqlite3 (стандартная библиотека,
                       без новых зависимостей). Схема — те же _LOG_COLUMNS,
                       все поля TEXT, порядок строк = порядок вставки (id

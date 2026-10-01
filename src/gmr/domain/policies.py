@@ -9,9 +9,8 @@ str, list, set, dict). Соответствие golden tests (tests/test_golden_
 и правилам см. в докстринге каждого класса.
 
 Эти классы принимают уже готовые данные (bbox-центры, флаги, confidence),
-а не сырые кропы/модели — сам вызов моделей (YOLO/CNN/CRNN) остаётся в
-reader.py, как и предписано Фазой 2a ("reader.py продолжает работать,
-просто дёргая новые классы вместо инлайн-кода").
+а не сырые кропы/модели: модели вызываются в reader.py и
+src/gmr/application/ через контракты src/gmr/domain/ml.py.
 """
 from dataclasses import dataclass
 from typing import Optional

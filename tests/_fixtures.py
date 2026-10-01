@@ -1,18 +1,13 @@
 """
-conftest.py — общие фикстуры для golden tests reader.py (docs/MIGRATION_TZ.md, раздел 2).
+tests/_fixtures.py — fake-модели и билдеры данных для тестов reader.py
+(golden tests — docs/MIGRATION_TZ.md, раздел 2).
 
-Важно: reader.py на момент Фазы 0 импортирует models.crnn.infer_crnn /
-models.yolo_all_detect.infer_yolo / models.cnn.infer_cnn на уровне модуля
-(через sys.path-хак, см. MIGRATION_TZ.md §0), а те тянут torch/ultralytics/
-albumentations. Тесты НЕ грузят реальные веса и НЕ инстанцируют реальные
-YOLOInferer/CRNNInferer/CNNInferer — вместо них process_photo() и
-_read_meter_digits() получают лёгкие fake-объекты (см. FakeMeterDetector и
-т.д. ниже), т.к. эти функции принимают инференс-объекты как аргументы
-(dependency injection уже есть в текущем коде, тестировать это несложно).
-
-Если тяжёлые ML-библиотеки не установлены в окружении — reader.py всё равно
-не заимпортируется (import verhu файла). Это сознательно: Фаза 0 тестирует
-`reader.py` "как есть", без изменения структуры импортов (это будет Фаза 1).
+Тесты не грузят веса и не создают настоящие YOLOInferer/CRNNInferer/
+CNNInferer. Вместо них — лёгкие классы с тем же интерфейсом
+(process_image/process_array/predict/predict_with_details), обёрнутые в те же
+адаптеры, что и настоящие модели (src/gmr/ml/adapters.py) — см. process_photo
+ниже. torch/ultralytics при этом всё равно должны быть установлены: reader.py
+импортирует загрузчик моделей.
 """
 import numpy as np
 import pandas as pd

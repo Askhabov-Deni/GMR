@@ -21,10 +21,10 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
 try:
-    from .config_cnn import IMG_SIZE, IMG_WIDTH, NORM_MEAN, NORM_STD, NUM_CLASSES, MIN_CONFIDENCE, DEVICE
+    from .config_cnn import IMG_SIZE, IMG_WIDTH, NORM_MEAN, NORM_STD, MIN_CONFIDENCE, DEVICE
     from .model_cnn import DigitCNN
 except ImportError:  # запуск как отдельный скрипт: python models/cnn/infer_cnn.py
-    from config_cnn import IMG_SIZE, IMG_WIDTH, NORM_MEAN, NORM_STD, NUM_CLASSES, MIN_CONFIDENCE, DEVICE
+    from config_cnn import IMG_SIZE, IMG_WIDTH, NORM_MEAN, NORM_STD, MIN_CONFIDENCE, DEVICE
     from model_cnn import DigitCNN
 
 
@@ -64,7 +64,7 @@ class CNNInferer:
                 print(f"⚠️ Не удалось загрузить как TorchScript ({e}), пробую как state_dict...")
             
         # 2. Загрузка как обычного чекпоинта (.pth или .pt) через наш новый метод
-        print(f"🔄 Загрузка весов через DigitCNN.from_pretrained...")
+        print("🔄 Загрузка весов через DigitCNN.from_pretrained...")
         model = DigitCNN.from_pretrained(self.checkpoint_path, device=self.device)
         return model
 

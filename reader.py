@@ -1,9 +1,14 @@
 """
 reader.py — главный пайплайн обработки фотографий газовых счётчиков.
 
+Запуск: `python gmr.py process [--input --output --table]` или `python reader.py`
+(одинаковые настройки — default_run_config). Как результаты используются окном
+оператора — docs/contract_reader_program2.md.
+
 АРХИТЕКТУРА:
   process_photo(photo_path, df, config) -> PhotoResult
     │
+    ├── шаг 0: фото уже разобрано / прочитано?  → REPEAT без запуска моделей
     ├── MeterDetector    (YOLO)         → кроп gas_meter + кроп serial_numbers
     ├── SerialRecognizer (CRNN)         → текст серийного номера
     ├── lookup_in_table(serial, df)     → строка таблицы (лицевой ID, последние показания)
@@ -68,12 +73,11 @@ from src.gmr.storage import (
 from src.gmr.domain.serial_match import normalize_serial
 from src.gmr.render import draw_annotation, read_image, write_image
 
-# Модели вызываются только через контракты src/gmr/domain/ml.py (Фаза 3):
+# Модели вызываются только через контракты src/gmr/domain/ml.py:
 # загрузка — src/gmr/ml/loader.py, чтение цифр — src/gmr/application/.
 # domain-слой не знает ни про torch, ни про cv2, ни про YOLO/CNN/CRNN.
-# PipelineConfig, Outcome, PhotoResult, OUTCOME_FOLDER реэкспортируются из
-# reader.py намеренно: program2.py импортирует их отсюда напрямую
-# (см. docs/MIGRATION_STATUS.md), это не трогаем в этой фазе.
+# PipelineConfig, Outcome, PhotoResult, OUTCOME_FOLDER доступны и как
+# reader.<имя> (их так используют тесты).
 _delta_policy        = DeltaThresholdPolicy()
 _duplicate_policy    = DuplicatePolicy()
 _processed_photo_policy = ProcessedPhotoPolicy()
@@ -111,7 +115,7 @@ def _maybe_init_log(
     как было всегда). run_pipeline передаёт сюда ShadowLogStore в
     shadow-run режиме (Фаза 2b), чтобы инициализация лога из таблицы тоже
     дублировалась в SQLite. Существование лога по-прежнему проверяется по
-    CSV-файлу (log_path) — CSV остаётся источником истины в этой фазе.
+    CSV-файлу (log_path) — источник истины CSV (переход на SQLite — docs/BACKLOG.md).
     """
     store = store or CsvLogStore(log_path)
 
@@ -580,36 +584,6 @@ def process_photo(
     return result
 
 
-# ─── Тест одного фото ────────────────────────────────────────────────────────
-
-def test_one(photo_path: str, config: PipelineConfig = None):
-    """Быстрый тест одного фото — без таблицы, папок и перемещений."""
-    config = config or PipelineConfig()
-    models = load_models(config)
-
-    crops = models.meter_detector.detect(photo_path)
-    print("Найденные классы:", [c['class'] for c in crops] if crops else "ничего")
-
-    meter_entry  = find_detection(crops, "gas_meter")
-    serial_entry = find_detection(crops, "serial_number")
-
-    serial_crop = serial_entry["crop"] if serial_entry else None
-    serial_res  = models.serial_recognizer.recognize(serial_crop)
-    print(f"Серийник: '{serial_res.text}'  conf={serial_res.confidence:.3f}")
-
-    meter_crop = meter_entry["crop"] if meter_entry else None
-    reading, reading_str, err, digit_results, digit_bboxes = (
-        read_meter_digits_for_config(models, meter_crop, config).as_tuple()
-    )
-    print(f"Показания: {reading}  строка: {reading_str!r}  ошибка: {err or '—'}")
-    if digit_results:
-        print("Детали по цифрам:")
-        for r in digit_results:
-            flag = "✓" if r["ok"] else "✗"
-            conf_str = f"{r['confidence']:.3f}" if r["confidence"] is not None else "N/A"
-            print(f"  [{flag}] pos={r['position']}  digit={r['digit']}  conf={conf_str}")
-
-
 # ─── Вспомогательные функции для определения структуры входной папки ────────
 
 _PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
@@ -976,5 +950,4 @@ def default_run_config(**overrides) -> PipelineConfig:
 
 
 if __name__ == "__main__":
-    # test_one('database/raw_photos/1300000013.jpeg')
     run_pipeline(default_run_config())
