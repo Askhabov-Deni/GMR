@@ -319,7 +319,8 @@ def test_cli_month_and_export(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "МЕСЯЦ СОЗДАН" in out and "показания.xlsx" in out
     assert gmr.main(["month", m]) == 0
-    assert "абонентов в таблице: 6; с показанием: 1" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "абонентов в таблице: 6" in out and "с показанием: 1 — программа 0, оператор 0, было в таблице 1" in out
     assert gmr.main(["export", m]) == 0
     assert gmr.main(["export", str(tmp_path / "нет")]) == 1
     assert "ОШИБКА" in capsys.readouterr().out

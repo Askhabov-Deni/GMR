@@ -7,7 +7,7 @@ from .ml import (
     SerialPrediction,
     SerialRecognizer,
 )
-from .models import Outcome, OUTCOME_FOLDER, PhotoResult
+from .models import Outcome, OUTCOME_FOLDER, PhotoResult, QUESTION_REASONS
 from .policies import (
     DeltaThresholdPolicy,
     DigitForgivenessPolicy,
@@ -29,6 +29,7 @@ __all__ = [
     "PipelineConfig",
     "Outcome",
     "OUTCOME_FOLDER",
+    "QUESTION_REASONS",
     "PhotoResult",
     "DeltaThresholdPolicy",
     "DigitForgivenessPolicy",

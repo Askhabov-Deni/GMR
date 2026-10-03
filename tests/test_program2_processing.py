@@ -15,7 +15,7 @@ import pytest
 program2 = pytest.importorskip("program2")
 from src.gmr.domain import PipelineConfig  # noqa: E402
 from src.gmr.storage import LOG_COLUMNS  # noqa: E402
-from src.gmr.storage.month import MonthDB  # noqa: E402
+from src.gmr.storage.month import MonthDB, Reading  # noqa: E402
 from tests._month import changes, img, log_rows, make_month, readings  # noqa: E402
 from tests._window import has_display, new_window  # noqa: E402
 
@@ -115,13 +115,14 @@ def _window(monkeypatch, settings):
     monkeypatch.setattr(program2, "save_settings", lambda s: None)
     monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
     monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
-    answers, shown = [], []
-    monkeypatch.setattr(program2.messagebox, "askyesno", lambda *a, **k: answers.pop(0) if answers else True)
+    answers, shown, asked = [], [], []
+    monkeypatch.setattr(program2.messagebox, "askyesno",
+                        lambda *a, **k: asked.append(a) or (answers.pop(0) if answers else True))
     for name in ("showinfo", "showwarning", "showerror"):
         monkeypatch.setattr(program2.messagebox, name, lambda *a, _n=name, **k: shown.append((_n, a)))
     w = new_window(program2.MainWindow)
     w.withdraw()
-    w.answers, w.shown = answers, shown
+    w.answers, w.shown, w.asked = answers, shown, asked
     return w
 
 
@@ -343,6 +344,98 @@ def test_accept_photo_without_hash_in_old_log_goes_to_plus(app):
     _fill(app._current_screen, "A1", "01200")
     app._current_screen._accept()
     assert (app.photos / "plus" / "A1.jpg").exists() and not (app.photos / "repeat").exists()
+
+
+# ─── Этап 3, пункт 5а: у счёта уже есть показание — «Заменить?» ──────────────
+
+def _put(app, account, value, source="auto", photo="old.jpg", who="auto", date="15 09 2026"):
+    with MonthDB(app.month.db) as db, db.transaction():
+        db.put_reading(Reading(account, value, date, source, photo, "t", who))
+
+
+def test_describe_reading():
+    r = Reading("A1", "1100", "15 09 2026", "auto", "old.jpg", "t", "auto")
+    assert program2.describe_reading(r) == "записала программа по фото old.jpg, дата 15 09 2026"
+    r = Reading("A1", "1100", "", "manual", "p.jpg", "t", "Оператор")
+    assert program2.describe_reading(r) == "записал оператор Оператор"
+    r = Reading("A1", "1100", "", "table", "", "t", "тест")
+    assert program2.describe_reading(r) == "было в таблице компании"
+
+
+@needs_display
+def test_accept_no_question_without_reading(app):
+    scr = _open_first(app)
+    _fill(scr, "A1", "01200")
+    scr._accept()
+    assert app.asked == [] and readings(app.month) == {"A1": "1200"}
+
+
+@needs_display
+def test_accept_asks_before_replacing_reading(app):
+    _put(app, "A1", "1100")
+    scr = _open_first(app)
+    _fill(scr, "A1", "01200")
+    app.answers.append(False)                       # «Заменить?» — Нет
+    scr._accept()
+    (title, text), = [a[:2] for a in app.asked]
+    assert "уже есть показание" in title
+    assert "1100" in text and "1200" in text and "программа по фото old.jpg, дата 15 09 2026" in text
+    assert readings(app.month) == {"A1": "1100"} and _db_log(app) == []          # ничего не изменилось
+    assert (app.photos / "question" / "serial_not_found" / "IMG-20260915-WA0001.jpg").exists()
+    assert app._current_screen is scr                                              # то же фото
+    app.answers.append(True)                        # «Да»
+    scr._accept()
+    assert readings(app.month) == {"A1": "1200"}
+    ch = changes(app.month)[-1]
+    assert (ch["action"], ch["old"], ch["new"]) == ("показание записано", "1100", "1200")
+
+
+@needs_display
+def test_accept_does_not_overwrite_photo_in_plus(app):
+    _put(app, "A1", "1100")
+    first = img(app.photos / "plus" / "A1.jpg", 77)  # фото, по которому программа записала 1100
+    scr = _open_first(app)
+    _fill(scr, "A1", "01200")
+    scr._accept()                                   # «Заменить?» — Да
+    assert (app.photos / "plus" / "A1_2.jpg").exists()
+    assert program2.read_image(str(first))[0, 0, 0] == 77                          # не затёрто
+    assert _db_log(app)[-1]["final_filename"] == "A1_2.jpg"
+
+
+@needs_display
+def test_no_question_for_account_not_in_table(app):
+    _put(app, "A9", "100")                          # показание абонента, которого нет в таблице
+    scr = _open_first(app)
+    scr._serial_var.set("5555555")
+    scr._account_var.set("A9")
+    scr._reading_widget.set_digits("01200", None)
+    scr._update_accept_state()
+    scr._accept()
+    assert app.asked == [] and _db_log(app)[-1]["account_id"] == "A9"
+
+
+@needs_display
+def test_db_serial_fix_asks_before_replacing(app, monkeypatch):
+    _put(app, "A1", "1100", source="manual", who="Оператор")
+    scr = _open_first(app)
+    _fill(scr, "A1", "01200")
+    monkeypatch.setattr(scr, "_ask_photo_serial", lambda suggested: "1234999")
+    app.answers.append(False)
+    scr._db_serial_fix()
+    assert "записал оператор Оператор" in app.asked[0][1]
+    assert readings(app.month) == {"A1": "1100"} and _db_log(app) == []
+
+
+@needs_display
+@pytest.mark.parametrize("action,folder", [("_duplicate", "repeat"), ("_unreadable", "unreadable"),
+                                           ("_not_in_db", "not_in_db")])
+def test_decision_does_not_overwrite_photo_with_same_name(app, action, folder):
+    taken = img(app.photos / folder / "IMG-20260915-WA0001.jpg", 77)               # другое фото
+    scr = _open_first(app)
+    getattr(scr, action)()
+    assert (app.photos / folder / "IMG-20260915-WA0001_2.jpg").exists()
+    assert program2.read_image(str(taken))[0, 0, 0] == 77
+    assert _db_log(app)[-1]["final_filename"] == "IMG-20260915-WA0001_2.jpg"
 
 
 # ─── Выгрузка и закрытие окна ────────────────────────────────────────────────

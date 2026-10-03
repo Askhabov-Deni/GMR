@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.gmr.domain.config import PipelineConfig
+from src.gmr.domain.models import QUESTION_REASONS
 from src.gmr.storage.backup import backup_sqlite
 from src.gmr.storage.log_store import LOG_COLUMNS, load_log, log_path_for
 from src.gmr.storage.month import Abonent, MonthDB, MonthFolder, Reading, now_text
@@ -401,7 +402,42 @@ def is_month(folder: MonthFolder) -> bool:
         return db.meta("created_at") is not None
 
 
+WITHOUT_READING_LIST = "без_показаний.csv"     # в папке месяца — пишет month_summary
+_SOURCE_NAMES = (("auto", "программа"), ("manual", "оператор"), ("table", "было в таблице"))
+_PHOTO_EXTS = (".jpg", ".jpeg", ".png")
+
+
+def waiting_photos(results: Path) -> dict[str, int]:
+    """Сколько фото ждут оператора: файлы в результат/<контролёр>/question/<причина>/,
+    по причинам в порядке очереди (только причины, где что-то есть)."""
+    counts = {}
+    for reason in QUESTION_REASONS:
+        n = sum(1 for p in Path(results).glob(f"*/question/{reason}/*")
+                if p.is_file() and p.suffix.lower() in _PHOTO_EXTS)
+        if n:
+            counts[reason] = n
+    return counts
+
+
+def _write_without_reading(path: Path, columns: list[str], abonents: list) -> Optional[str]:
+    """Список абонентов без показания (все столбцы таблицы компании; «;» — для
+    Excel). Возвращает текст ошибки, если файл не записался (открыт в Excel)."""
+    try:
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f, delimiter=";")
+            w.writerow(columns)
+            for a in abonents:
+                w.writerow([a.data.get(c, "") for c in columns])
+    except OSError as e:
+        return f"не записан ({e}) — если открыт в Excel, закройте"
+    return None
+
+
 def month_summary(month_dir: str) -> str:
+    """Итог месяца (этап 3, пункт 6а, решение владельца 2026-10-03): сколько
+    показаний записано и кем, кто без показания (полный список — в
+    без_показаний.csv), сколько фото ждут оператора и по каким причинам,
+    сколько номеров исправил оператор."""
     folder = MonthFolder(Path(month_dir))
     if not is_month(folder):
         return (f"Месяц не создан: {folder.root}\n"
@@ -410,12 +446,28 @@ def month_summary(month_dir: str) -> str:
         in_table = db.abonents(only_in_table=True)
         everyone = db.abonents()
         readings = db.readings()
-        with_reading = sum(1 for a in in_table if a in readings)
-        return "\n".join([
-            f"Месяц: {folder.root}",
-            f"  создан: {db.meta('created_at')}, таблица: {db.meta('table')} (загружена {db.meta('table_loaded_at')})",
-            f"  абонентов в таблице: {len(in_table)}; с показанием: {with_reading}; "
-            f"без показания: {len(in_table) - with_reading}",
-            f"  нет в таблице (после обновления): {len(everyone) - len(in_table)}",
-            f"  строк в логе обработки: {len(db.log_rows())}",
-        ])
+        columns = db.columns()
+        log_rows = len(db.log_rows())
+        serial_fixes = {c["account"] for c in db.changes() if c["action"] == SERIAL_FIX_ACTION}
+        meta = (db.meta("created_at"), db.meta("table"), db.meta("table_loaded_at"))
+    with_reading = [a for a in in_table if a in readings]
+    by_source = {src: sum(1 for a in with_reading if readings[a].source == src) for src, _ in _SOURCE_NAMES}
+    without = [ab for a, ab in in_table.items() if a not in readings]
+    list_path = folder.root / WITHOUT_READING_LIST
+    list_error = _write_without_reading(list_path, columns, without)
+    waiting = waiting_photos(folder.results)
+    lines = [
+        f"Месяц: {folder.root}",
+        f"  создан: {meta[0]}, таблица: {meta[1]} (загружена {meta[2]})",
+        f"  абонентов в таблице: {len(in_table)}",
+        f"  с показанием: {len(with_reading)} — "
+        + ", ".join(f"{name} {by_source[src]}" for src, name in _SOURCE_NAMES),
+        f"  без показания: {len(without)} — список: {list_path}" + (f" ({list_error})" if list_error else ""),
+        f"  нет в таблице (после обновления): {len(everyone) - len(in_table)}",
+        f"  ждут оператора: {sum(waiting.values())} фото"
+        + (" — " + ", ".join(f"{QUESTION_REASONS[r]} {n}" for r, n in waiting.items()) if waiting else ""),
+        f"  номера счётчиков исправлены оператором: {len(serial_fixes)}"
+        + (" (для компании — db_serial_fix.csv)" if serial_fixes else ""),
+        f"  строк в логе обработки: {log_rows}",
+    ]
+    return "\n".join(lines)

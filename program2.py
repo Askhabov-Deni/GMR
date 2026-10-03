@@ -45,7 +45,7 @@ sys.path.insert(0, str(_BASE))
 # С Фазы 6 program2.py не импортирует reader.py: общий код — в src/gmr/.
 # Имена с подчёркиванием оставлены локальными псевдонимами, чтобы не трогать
 # остальной код окна.
-from src.gmr.domain import PipelineConfig, PhotoResult, Outcome
+from src.gmr.domain import PipelineConfig, PhotoResult, Outcome, QUESTION_REASONS
 from src.gmr.domain.serial_match import normalize_serial as _normalize_serial
 from src.gmr.render import draw_annotation as _draw_annotation, read_image, write_image
 from src.gmr.console import safe_console
@@ -67,29 +67,10 @@ log = logging.getLogger("program2")
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
 PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
 
-# Подпапки question/ которые обрабатываем (кроме repeat/)
-QUESTION_SUBFOLDERS = [
-    "digits_error",
-    "suspicious",
-    "serial_low_conf",
-    "serial_not_found",
-    "no_serial",
-    "no_meter",
-    "error",
-    "serial_ambiguous",
-]
-
-# Читаемые названия причин
-REASON_LABELS = {
-    "digits_error":      "Ошибка цифр",
-    "suspicious":        "Подозрительно",
-    "serial_low_conf":   "Серийник (низкая уверенность)",
-    "serial_not_found":  "Серийник не найден",
-    "no_serial":         "Нет серийника",
-    "no_meter":          "Нет счётчика",
-    "error":             "Ошибка программы",
-    "serial_ambiguous":  "Номер у нескольких абонентов",
-}
+# Подпапки question/ в порядке очереди и их читаемые названия — общие с итогом
+# месяца (src/gmr/domain/models.py)
+QUESTION_SUBFOLDERS = list(QUESTION_REASONS)
+REASON_LABELS = dict(QUESTION_REASONS)
 
 # Цвета
 CLR_GREEN  = "#2e7d32"
@@ -553,6 +534,24 @@ def free_photo_path(dst_dir: str, name: str, current: str) -> str:
     return str(p)
 
 
+def describe_reading(r) -> str:
+    """Чьё показание и когда — для вопроса «Заменить?»."""
+    who = {"auto": f"записала программа по фото {r.photo}" if r.photo else "записала программа",
+           "manual": f"записал оператор {r.updated_by}",
+           "table": "было в таблице компании"}.get(r.source, f"записал {r.updated_by}")
+    return f"{who}, дата {r.date}" if r.date else who
+
+
+def place_decision(row: dict, photo_path: str, dst_dir: str) -> str:
+    """Имя для фото в dst_dir («Дубль», «Нечитаемо», «Нет в базе»): если имя
+    занято другим фото — <имя>_2… (этап 3: файлы не затирают друг друга),
+    тогда оно же — final_filename строки лога. Возвращает имя."""
+    name = Path(free_photo_path(dst_dir, Path(photo_path).name, photo_path)).name
+    if name != Path(photo_path).name:
+        row["final_filename"] = name
+    return name
+
+
 def move_photo(src: str, dst_dir: str, new_name: Optional[str] = None) -> str:
     """Перемещает фото в dst_dir, возвращает новый путь."""
     Path(dst_dir).mkdir(parents=True, exist_ok=True)
@@ -952,6 +951,15 @@ class MainWindow(tk.Tk):
         self.session.add_row(row)
         self.log_rows.append(row)
 
+    def existing_reading(self, account: str):
+        """Показание, уже записанное лицевому счёту из таблицы (None — нет;
+        счёта нет в таблице — показание «Принять» и не пишет)."""
+        if not account or self.session is None or self.df is None:
+            return None
+        if not (self.df[self.config.col_account_id].astype(str).str.strip() == account).any():
+            return None
+        return self.session.reading(account)
+
     def _sync_df_reading(self, account: str):
         """Текущее показание абонента в таблице окна — как в базе."""
         r = self.session.reading(account)
@@ -1134,10 +1142,11 @@ class ProcessingTab(ttk.Frame):
             "processed_at":      now_iso(),
             "notes":              "нечитаемо (из списка)",
         })
-        self.app.append_log(row, path)
         dst_dir = str(controller_dir(path) / "unreadable")
+        name = place_decision(row, path, dst_dir)
+        self.app.append_log(row, path)
         try:
-            move_photo(path, dst_dir)
+            move_photo(path, dst_dir, name)
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
             return
@@ -1876,9 +1885,14 @@ class EditScreen(ttk.Frame):
         account   = self._account_var.get().strip()
         reading_s = self._reading_widget.get_string()
         reading   = int(reading_s)
+        if not self._confirm_replace(account, reading):
+            return
 
+        folder   = "minus" if outcome_str == "MINUS" else "plus"
+        dst_dir  = str(self.folder / folder)
         ext      = Path(self.photo_path).suffix
         new_name = f"{account}{ext}" if account else Path(self.photo_path).name
+        new_name = Path(free_photo_path(dst_dir, new_name, self.photo_path)).name   # не затирать другое фото
 
         last_str = self._last_reading_var.get()
         try:
@@ -1910,8 +1924,6 @@ class EditScreen(ttk.Frame):
 
         self._save_markup_silent(serial, reading_s, mr)
 
-        folder = "minus" if outcome_str == "MINUS" else "plus"
-        dst_dir = str(self.folder / folder)
         try:
             new_path = move_photo(self.photo_path, dst_dir, new_name)
             redraw_annotation(new_path, serial, reading_s)
@@ -1923,6 +1935,22 @@ class EditScreen(ttk.Frame):
             self.app.open_next_or_back(self.photo_path)
         finally:
             self._unbind_keys()
+
+    def _confirm_replace(self, account: str, reading: int) -> bool:
+        """Этап 3, пункт 5а (решение владельца 2026-10-03): у счёта уже есть
+        показание — показать, чьё и когда, и спросить «Заменить?»."""
+        old = self.app.existing_reading(account)
+        if old is None:
+            return True
+        return messagebox.askyesno(
+            "У счёта уже есть показание",
+            f"У л/с {account} уже есть показание {old.value}\n"
+            f"({describe_reading(old)}).\n\n"
+            f"Заменить на {reading}?\n\n"
+            f"«Нет» — ничего не менять: фото останется в очереди "
+            f"(если это повтор того же счётчика — кнопка «Дубль»).",
+            parent=self.app,
+        )
 
     def _save_markup_silent(self, final_serial: str, final_reading_str: str, mr: dict):
         td = self.app.settings.training_dir
@@ -1958,9 +1986,10 @@ class EditScreen(ttk.Frame):
             "processed_by":      self.app.settings.operator_name,
             "processed_at":      now_iso(),
         })
+        name = place_decision(row, self.photo_path, dst_dir)
         self.app.append_log(row, self.photo_path)
         try:
-            move_photo(self.photo_path, dst_dir)
+            move_photo(self.photo_path, dst_dir, name)
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
             return
@@ -1981,9 +2010,10 @@ class EditScreen(ttk.Frame):
             "processed_by":      self.app.settings.operator_name,
             "processed_at":      now_iso(),
         })
+        name = place_decision(row, self.photo_path, dst_dir)
         self.app.append_log(row, self.photo_path)
         try:
-            move_photo(self.photo_path, dst_dir)
+            move_photo(self.photo_path, dst_dir, name)
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
             return
@@ -2021,9 +2051,10 @@ class EditScreen(ttk.Frame):
             "model_reading_str": mr.get("reading_str") or "",
             "notes":             "счётчик не найден в базе",
         })
+        name = place_decision(row, self.photo_path, dst_dir)
         self.app.append_log(row, self.photo_path)
         try:
-            move_photo(self.photo_path, dst_dir)
+            move_photo(self.photo_path, dst_dir, name)
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
             return
@@ -2077,6 +2108,8 @@ class EditScreen(ttk.Frame):
             return
         reading_s = self._reading_widget.get_string()
         reading = int(reading_s)
+        if not self._confirm_replace(account, reading):
+            return
         if not messagebox.askyesno(
             "Серийник в базе с ошибкой",
             f"Лицевой счёт: {account}\n"

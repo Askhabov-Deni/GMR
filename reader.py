@@ -561,6 +561,29 @@ def _check_no_photos_in_root(photos_dir: Path) -> None:
             f"Разложите их и запустите снова — прогон не начинался.")
 
 
+# служебные файлы Windows/macOS и временные файлы Office — не «файлы контролёров»
+_SYSTEM_FILES = {"thumbs.db", "desktop.ini", ".ds_store"}
+
+
+def _not_taken(folder: Path, with_dirs: bool = True) -> list[str]:
+    """Что в папке программа не возьмёт (этап 3, решение владельца
+    2026-10-03 — перечислять в отчёте): файлы не .jpg/.jpeg/.png и папки
+    внутри папки контролёра (фото в них не читаются; имя — с «\\» на конце).
+    Служебные файлы не считаются."""
+    if not folder.is_dir():
+        return []
+    out = []
+    for p in sorted(folder.iterdir(), key=lambda x: x.name):
+        if p.name.lower() in _SYSTEM_FILES or p.name.startswith("~$"):
+            continue
+        if p.is_dir():
+            if with_dirs:
+                out.append(p.name + "\\")
+        elif p.suffix.lower() not in _PHOTO_EXTS:
+            out.append(p.name)
+    return out
+
+
 def _resolve_input_folders(input_dir: str) -> list[tuple[str, Path]]:
     """Папки контролёров с фото: [(имя, путь), …]. Фото в корне — ошибка
     (_check_no_photos_in_root, до начала прогона); папки без фото не берутся."""
@@ -598,11 +621,28 @@ def _skip_lines(skipped: Optional[dict]) -> list[str]:
     return [f"{label}: {skipped[k]}" for k, label in _SKIP_LABELS.items() if skipped and skipped.get(k)]
 
 
-def _format_report(title: str, stats: dict["Outcome", int], skipped: Optional[dict] = None) -> str:
+_NOT_TAKEN_SHOWN = 10
+
+
+def _where(folder: str, folder_report: bool = False) -> str:
+    if folder_report:
+        return ""
+    return f" в «{folder}»" if folder else " в корне фото\\"
+
+
+def _not_taken_line(names: list[str], where: str = "") -> str:
+    shown = ", ".join(names[:_NOT_TAKEN_SHOWN]) + (" …" if len(names) > _NOT_TAKEN_SHOWN else "")
+    return f"⚠ Не взяты{where} (не фото .jpg/.jpeg/.png или папка внутри): {len(names)} — {shown}"
+
+
+def _format_report(title: str, stats: dict["Outcome", int], skipped: Optional[dict] = None,
+                   not_taken: Optional[dict] = None, folder_report: bool = False) -> str:
     """
     Формирует текстовый отчёт по статистике этого прогона: количество и
     процент по каждому исходу + сводные метрики (успешно / на проверку /
-    дубли); skipped — сколько фото пропущено (RunSelection → число).
+    дубли); skipped — сколько фото пропущено (RunSelection → число);
+    not_taken — что программа не взяла: {папка: [имена]} ("" — корень фото\\);
+    в отчёте папки контролёра (folder_report) — без имени папки.
     """
     total = sum(stats.values())
     lines = []
@@ -611,6 +651,9 @@ def _format_report(title: str, stats: dict["Outcome", int], skipped: Optional[di
     lines.append("=" * 55)
     lines.append(f"Новых фото в этом прогоне: {total}")
     lines += _skip_lines(skipped)
+    for folder, names in (not_taken or {}).items():
+        if names:
+            lines.append(_not_taken_line(names, _where(folder, folder_report)))
     lines.append("")
 
     if total == 0:
@@ -893,13 +936,21 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
         return loaded
 
     # ── Папки контролёров ────────────────────────────────────────────────────
+    base = Path(config.input_dir)
     input_groups = _resolve_input_folders(config.input_dir)
+    # что программа не возьмёт — в журнал и в отчёты (этап 3)
+    not_taken = {"": _not_taken(base, with_dirs=False)}
+    if base.is_dir():
+        not_taken |= {d.name: _not_taken(d) for d in sorted(base.iterdir(), key=lambda x: x.name)
+                      if d.is_dir()}
+    for folder, names_ in not_taken.items():
+        if names_:
+            log.warning(_not_taken_line(names_, _where(folder)))
     if not input_groups:
         log.warning(f"В {config.input_dir} нет папок контролёров с фото.")
-        store.finish()
-        return
-    names = ", ".join(name for name, _ in input_groups)
-    log.info(f"Папок контролёров с фото: {len(input_groups)} ({names})")
+    else:
+        names = ", ".join(name for name, _ in input_groups)
+        log.info(f"Папок контролёров с фото: {len(input_groups)} ({names})")
     if config.reread_errors:
         log.info("⚙️  --reread: фото с ошибками, которые ждут оператора, читаются заново")
 
@@ -1013,13 +1064,15 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
             log.info("Пропущено: " + "; ".join(_skip_lines(skipped)))
         per_folder_stats[subfolder_name] = stats
 
-        report_text = _format_report(f"ОТЧЁТ: {subfolder_name}", stats, skipped)
+        report_text = _format_report(f"ОТЧЁТ: {subfolder_name}", stats, skipped,
+                                     {subfolder_name: not_taken.get(subfolder_name, [])}, folder_report=True)
         report_path = _save_report(output_base, report_text)
 
         log.info("\n" + report_text)
         log.info(f"💾 Отчёт сохранён: {report_path}")
 
-    overall_report_text = _format_report("ОБЩИЙ ОТЧЁТ ПО ВСЕМ ПАПКАМ", total_stats, total_skipped)
+    overall_report_text = _format_report("ОБЩИЙ ОТЧЁТ ПО ВСЕМ ПАПКАМ", total_stats, total_skipped,
+                                         {k: v for k, v in not_taken.items() if v} or None)
     if len(per_folder_stats) > 1:
         ranking_text = _format_folder_ranking(per_folder_stats)
         if ranking_text:

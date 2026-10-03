@@ -29,7 +29,8 @@ def result_file(results: Path, row: dict) -> Optional[Path]:
     None — у строки файла нет (например, строка-копия)."""
     outcome = row.get("outcome") or ""
     if row.get("source") == "manual":
-        folder, name = _MANUAL_FOLDER.get(outcome), row.get("original_filename")
+        # имя занято — program2.py пишет новое в final_filename (place_decision)
+        folder, name = _MANUAL_FOLDER.get(outcome), row.get("final_filename") or row.get("original_filename")
     else:
         folder = OUTCOME_FOLDER.get(Outcome[outcome]) if outcome in Outcome.__members__ else None
         name = row.get("final_filename") or row.get("original_filename")

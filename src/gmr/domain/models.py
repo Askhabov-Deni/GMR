@@ -49,6 +49,19 @@ OUTCOME_FOLDER = {
     Outcome.SERIAL_AMBIGUOUS: "question/serial_ambiguous",
 }
 
+# Причины в question/ — в порядке очереди оператора, с понятными названиями
+# (окно оператора и итог месяца; до этапа 3b жили в program2.py)
+QUESTION_REASONS = {
+    "digits_error":      "Ошибка цифр",
+    "suspicious":        "Подозрительно",
+    "serial_low_conf":   "Серийник (низкая уверенность)",
+    "serial_not_found":  "Серийник не найден",
+    "no_serial":         "Нет серийника",
+    "no_meter":          "Нет счётчика",
+    "error":             "Ошибка программы",
+    "serial_ambiguous":  "Номер у нескольких абонентов",
+}
+
 
 @dataclass
 class PhotoResult:

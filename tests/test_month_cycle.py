@@ -515,3 +515,95 @@ def test_photo_read_again_for_other_account_not_closed(tmp_path, models, monkeyp
     _photo(f.photos / "Аюб" / "y2.jpg", 4)                        # у A-3 появилось показание
     _run(f)
     assert _closed(f, "y1.jpg") == []                             # фото — уже про A-2
+
+
+# ─── Файлы, которые программа не берёт, — в отчёте (решение 2026-10-03) ──────
+
+def test_files_not_taken_listed_in_reports(tmp_path, models):
+    f = _month(tmp_path)
+    _photo(f.photos / "Аюб" / "a1.jpg", 1)
+    _photo(f.photos / "Аюб" / "a2.JPG", 2)                        # большие буквы — тоже фото
+    for name in ("b.webp", "c.HEIC", "видео.mp4", "Thumbs.db", "desktop.ini", "~$черновик.docx"):
+        (f.photos / "Аюб" / name).write_bytes(b"x")
+    _photo(f.photos / "Аюб" / "пачка2" / "d.jpg", 2)              # папка внутри — не читается
+    (f.photos / "Сулиман С").mkdir()
+    (f.photos / "Сулиман С" / "e.webp").write_bytes(b"x")         # фото нет совсем
+    (f.photos / "список.xlsx").write_bytes(b"x")                  # не фото в корне — не ошибка
+    _run(f)
+    assert [r["original_filename"] for r in _log(f)] == ["a1.jpg", "a2.JPG"]
+    assert ("⚠ Не взяты (не фото .jpg/.jpeg/.png или папка внутри): 4 — "
+            "b.webp, c.HEIC, видео.mp4, пачка2\\") in _report(f)
+    overall = (f.results / "report.txt").read_text(encoding="utf-8")
+    assert "Не взяты в «Аюб» (не фото .jpg/.jpeg/.png или папка внутри): 4" in overall
+    assert "Не взяты в «Сулиман С» (не фото .jpg/.jpeg/.png или папка внутри): 1 — e.webp" in overall
+    assert "Не взяты в корне фото\\ (не фото .jpg/.jpeg/.png или папка внутри): 1 — список.xlsx" in overall
+    journal = sorted((f.results / "run_logs").glob("run_*.txt"))[-1].read_text(encoding="utf-8")
+    import re
+    assert re.search(r"WARNING\s+⚠ Не взяты в «Сулиман С» .*: 1 — e\.webp", journal)   # сразу, в начале
+    assert "Thumbs.db" not in journal
+
+
+def test_no_not_taken_line_when_all_photos(tmp_path, models):
+    f = _month(tmp_path)
+    _photo(f.photos / "Аюб" / "a1.jpg", 1)
+    _run(f)
+    assert "Не взяты" not in _report(f) and "Не взяты" not in (f.results / "report.txt").read_text(encoding="utf-8")
+
+
+def test_not_taken_list_is_shortened():
+    from reader import _not_taken_line
+    line = _not_taken_line([f"{i}.webp" for i in range(12)])
+    assert line.endswith("8.webp, 9.webp …") and ": 12 — 0.webp" in line
+
+
+# ─── 6а: итог месяца (python gmr.py month <папка>) ───────────────────────────
+
+def test_month_summary(tmp_path, models):
+    f = make_month(tmp_path, TABLE + [("44444", "A-4", "10", "15")])   # у A-4 показание было в таблице
+    for name, n in (("a1.jpg", 1), ("a3.jpg", 3), ("a5.jpg", 5), ("a6.jpg", 6)):
+        _photo(f.photos / "Аюб" / name, n)
+    _run(f)
+    with MonthDB(f.db) as db, db.transaction():                   # оператор: A-2 и исправленный номер
+        db.put_reading(month.Reading("A-2", "4100", "", "manual", "p.jpg", "t", "Оператор"))
+        db.add_change("Оператор", month.SERIAL_FIX_ACTION, "A-2", "Номер счетчика", "22222", "22229")
+    text = month.month_summary(str(f.root))
+    assert "абонентов в таблице: 4" in text
+    assert "с показанием: 3 — программа 1, оператор 1, было в таблице 1" in text
+    assert f"без показания: 1 — список: {f.root / 'без_показаний.csv'}" in text
+    assert "ждут оператора: 3 фото — Ошибка цифр 1, Подозрительно 1, Серийник не найден 1" in text
+    assert "номера счётчиков исправлены оператором: 1 (для компании — db_serial_fix.csv)" in text
+    lines = (f.root / "без_показаний.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert lines[0].split(";")[:2] == ["Номер счетчика", "Лицевой счет"]
+    assert lines[1:] == ["33333;A-3;100;"]
+
+
+def test_month_summary_list_locked(tmp_path, models, monkeypatch):
+    f = _month(tmp_path)
+    real_open = open
+
+    def locked(path, *a, **k):
+        if str(path).endswith("без_показаний.csv"):
+            raise PermissionError(13, "файл занят", str(path))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", locked)
+    text = month.month_summary(str(f.root))
+    assert "без показания: 3" in text and "закройте" in text
+
+
+def test_not_in_db_renamed_file_removed_on_reread(tmp_path, models):
+    # «Нет в базе» при занятом имени: файл a5_2.jpg (имя — в final_filename)
+    f = _day1(tmp_path)
+    a5 = next(r for r in _log(f) if r["original_filename"] == "a5.jpg")
+    nid = f.results / "Аюб" / "not_in_db"
+    nid.mkdir()
+    _photo(nid / "a5.jpg", 2)                                     # чужое фото с тем же именем
+    (f.results / "Аюб" / "question" / "serial_not_found" / "a5.jpg").rename(nid / "a5_2.jpg")
+    with MonthDB(f.db) as db, db.transaction():
+        db.append_log_rows([{c: "" for c in LOG_COLUMNS} | {
+            "original_filename": "a5.jpg", "final_filename": "a5_2.jpg", "serial_id": "99999",
+            "outcome": "NOT_IN_DB", "source": "manual", "photo_hash": a5["photo_hash"],
+            "source_folder": "Аюб"}])
+    month.load_table(str(f.root), str(_with_99999(tmp_path)))
+    _run(f)
+    assert not (nid / "a5_2.jpg").exists() and (nid / "a5.jpg").exists()
