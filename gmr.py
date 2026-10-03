@@ -5,7 +5,8 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py month <папка> --table <файл>  создать месяц из таблицы компании / загрузить обновлённую
   python gmr.py month <папка>                 сводка месяца
   python gmr.py export <папка>                выгрузить показания.xlsx и лог.csv ещё раз
-  python gmr.py process <папка месяца>        прогон reader.py: фото\\ → результат\\, база, выгрузка
+  python gmr.py process <папка месяца>        прогон reader.py: новые фото из фото\\ → результат\\, база, выгрузка
+  python gmr.py process <папка месяца> --reread   то же + заново фото с ошибками (после замены модели)
   python gmr.py analyze <лог.csv> [--table <таблица>] [--details]   качество по логу
   python gmr.py inspect <модель> <фото|папка> [...]                  посмотреть модель
   python gmr.py weights [--write]                                     файлы весов
@@ -25,18 +26,23 @@ from typing import Optional
 def _process(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         prog="python gmr.py process",
-        description="Автоматическая обработка фото месяца (reader.py): фото из <месяц>\\фото "
-                    "(в нём фото или папки контролёров), результат в <месяц>\\результат, показания "
-                    "и лог — в базе месяца, в конце — выгрузка показания.xlsx.",
+        description="Автоматическая обработка фото месяца (reader.py): новые фото из "
+                    "<месяц>\\фото\\<контролёр>, результат в <месяц>\\результат, показания и лог — "
+                    "в базе месяца, в конце — выгрузка показания.xlsx. Уже разобранные фото "
+                    "пропускаются, фото с ошибками ждут оператора (заново — с --reread).",
     )
     p.add_argument("month", help="папка месяца (создаётся командой `gmr.py month`)")
     p.add_argument("--move", action="store_true", help="перемещать фото, а не копировать")
+    p.add_argument("--reread", action="store_true",
+                   help="прочитать заново фото с ошибками, которые ждут оператора (например после "
+                        "замены модели); обычный прогон читает только новые фото")
     args = p.parse_args(argv)
 
     import reader
     try:
-        reader.run_pipeline(reader.PipelineConfig(month_dir=args.month, move_photos=args.move))
-    except reader.NotAMonth as e:
+        reader.run_pipeline(reader.PipelineConfig(month_dir=args.month, move_photos=args.move,
+                                                  reread_errors=args.reread))
+    except (reader.NotAMonth, reader.PhotosInRoot) as e:
         print(f"ОШИБКА: {e}")
         return 1
     return 0

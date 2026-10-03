@@ -3,8 +3,8 @@
 
 Фейковые модели узнают фото по имени файла (детектор счётчика) и по значению
 пикселя в кропе (остальные модели) — иначе детектор цифр не знает, из какого
-фото пришёл кроп счётчика. Фото лежат прямо в <месяц>/фото (без папок
-контролёров), результат — в <месяц>/результат.
+фото пришёл кроп счётчика. Фото лежат в <месяц>/фото/Аюб (фото кладут только
+в папки контролёров), результат — в <месяц>/результат/Аюб.
 
 До этапа 2.3b это жило в tests/test_shadow_run_pipeline.py (прогон по
 таблице и CSV-логу).
@@ -31,6 +31,7 @@ PHOTOS = {
 ORDER = sorted(PHOTOS)
 OUTCOMES = ["PLUS", "MINUS", "SERIAL_NOT_FOUND", "REPEAT", "NO_METER"]
 TABLE = [("11111", "A-1", "1000", ""), ("22222", "A-2", "5000", ""), ("33333", "A-3", "100", "")]
+CONTROLLER = "Аюб"
 
 
 def _tag(name):
@@ -93,14 +94,22 @@ def image(name):
     return np.full((100, 200, 3), 20 + 40 * ORDER.index(name), dtype=np.uint8)
 
 
+def photos_dir(folder: MonthFolder) -> Path:
+    return folder.photos / CONTROLLER
+
+
+def results_dir(folder: MonthFolder) -> Path:
+    return folder.results / CONTROLLER
+
+
 def put_photos(folder: MonthFolder) -> None:
-    folder.photos.mkdir(parents=True, exist_ok=True)
+    photos_dir(folder).mkdir(parents=True, exist_ok=True)
     for name in ORDER:
-        cv2.imwrite(str(folder.photos / name), image(name))
+        cv2.imwrite(str(photos_dir(folder) / name), image(name))
 
 
 def setup_month(root: Path) -> MonthFolder:
-    """Месяц из TABLE и пять фото в <месяц>/фото."""
+    """Месяц из TABLE и пять фото в <месяц>/фото/Аюб."""
     folder = make_month(Path(root), TABLE)
     put_photos(folder)
     return folder
@@ -130,5 +139,7 @@ def reading(folder: MonthFolder, account: str) -> str:
 
 
 def output_tree(folder: MonthFolder) -> list[str]:
-    # через «/» и на Windows — тесты сравнивают с путями, записанными текстом
-    return sorted(p.relative_to(folder.results).as_posix() for p in folder.results.rglob("*.jpg"))
+    """Файлы результата контролёра (через «/» и на Windows — тесты сравнивают
+    с путями, записанными текстом)."""
+    base = results_dir(folder)
+    return sorted(p.relative_to(base).as_posix() for p in base.rglob("*.jpg"))

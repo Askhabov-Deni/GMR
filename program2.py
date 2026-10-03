@@ -966,7 +966,7 @@ class MainWindow(tk.Tk):
         in_table = account and (self.df[self.config.col_account_id].astype(str).str.strip() == account).any()
         if in_table:
             date_name = (src or {}).get("original_filename") or row.get("original_filename", "")
-            self.session.accept(row, date_name)
+            self.session.accept(row, date_name, keep=photo_path)
             self._sync_df_reading(account)
         else:
             self.session.add_row(row)
@@ -976,7 +976,7 @@ class MainWindow(tk.Tk):
         """«Серийник в базе с ошибкой»: номер в базе — как на фото, показание сразу."""
         src = self._with_photo_identity(row, photo_path)
         date_name = (src or {}).get("original_filename") or row.get("original_filename", "")
-        old = self.session.fix_serial_and_accept(row, photo_serial, date_name)
+        old = self.session.fix_serial_and_accept(row, photo_serial, date_name, keep=photo_path)
         acc = self.df[self.config.col_account_id].astype(str).str.strip()
         self.df.loc[acc == row["account_id"], self.config.col_serial] = photo_serial
         self._sync_df_reading(row["account_id"])

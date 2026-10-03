@@ -60,6 +60,8 @@ from src.gmr.domain import (
     DeltaThresholdPolicy,
     DuplicatePolicy,
     ProcessedPhotoPolicy,
+    RunSelection,
+    RunSelectionPolicy,
     DigitDetector,
     DigitRecognizer,
     MeterDetector,
@@ -72,6 +74,7 @@ from src.gmr.application import (
     describe_substitutions,
 )
 from src.gmr.ml.loader import default_device, load_models
+from src.gmr.application.cycle import close_waiting, free_name, move_files, result_file
 from src.gmr.application.month import ExportLocked, NotAMonth, export_month, is_month
 from src.gmr.console import safe_console
 from src.gmr.domain.photo_date import reading_date
@@ -89,6 +92,7 @@ from src.gmr.render import draw_annotation, read_image, write_image
 _delta_policy        = DeltaThresholdPolicy()
 _duplicate_policy    = DuplicatePolicy()
 _processed_photo_policy = ProcessedPhotoPolicy()
+_run_selection       = RunSelectionPolicy()
 
 
 # ─── Цвета боксов ────────────────────────────────────────────────────────────
@@ -280,6 +284,7 @@ def process_photo(
     digit_recognizer: DigitRecognizer,
     serial_recognizer: SerialRecognizer,
     photo_hash: Optional[str] = None,
+    reread: bool = False,
 ) -> PhotoResult:
     """
     Обрабатывает одну фотографию. Возвращает PhotoResult.
@@ -287,6 +292,8 @@ def process_photo(
 
     photo_hash — отпечаток содержимого фото (photo_fingerprint). Если задан,
     шаг 0 узнаёт фото в логе по нему, иначе по имени файла.
+    reread — прогон уже решил прочитать фото заново (RunSelectionPolicy:
+    --reread, номер появился в таблице), шаг 0 пропускается.
 
     Модели — в виде контрактов src/gmr/domain/ml.py (Фаза 3); реальные
     модели создаёт src.gmr.ml.loader.load_models.
@@ -308,7 +315,7 @@ def process_photo(
         Path(photo_path).name, getattr(config, "_log_rows_cache", []), photo_hash,
         hashes_in_run=frozenset(getattr(config, "_processed_hashes_cache", ())),
     )
-    if _seen.skip:
+    if _seen.skip and not reread:
         row = _seen.row or {}
         result.outcome = Outcome.REPEAT
         result.error_detail = _seen.reason
@@ -539,29 +546,29 @@ def _list_photos(folder: Path) -> list[Path]:
     )
 
 
+class PhotosInRoot(ValueError):
+    """В корне <месяц>/фото лежат фото — фото кладут только в папки
+    контролёров (решение владельца 2026-10-03, этап 3, пункт 4б)."""
+
+
+def _check_no_photos_in_root(photos_dir: Path) -> None:
+    loose = _list_photos(photos_dir) if photos_dir.is_dir() else []
+    if loose:
+        names = ", ".join(p.name for p in loose[:5]) + (" …" if len(loose) > 5 else "")
+        raise PhotosInRoot(
+            f"В папке {photos_dir} лежат фото без папки контролёра ({len(loose)} шт.: {names}). "
+            f"Фото кладут только в папки контролёров: фото\\<контролёр>\\. "
+            f"Разложите их и запустите снова — прогон не начинался.")
+
+
 def _resolve_input_folders(input_dir: str) -> list[tuple[str, Path]]:
-    """
-    Определяет режим работы с input_dir.
-
-    Возвращает список пар (subfolder_name, folder_path):
-      - если input_dir сам содержит фото (хотя бы одно) → [("", input_dir)]
-        subfolder_name = "" означает "без подпапки", обычный режим
-      - если input_dir содержит подпапки с фото (глубина 1) →
-        [(f1.name, f1), (f2.name, f2), ...]
-
-    Подпапки без фото внутри игнорируются.
-    """
+    """Папки контролёров с фото: [(имя, путь), …]. Фото в корне — ошибка
+    (_check_no_photos_in_root, до начала прогона); папки без фото не берутся."""
     base = Path(input_dir)
-
-    if _list_photos(base):
-        return [("", base)]
-
-    result = []
-    for sub in sorted(p for p in base.iterdir() if p.is_dir()):
-        if _list_photos(sub):
-            result.append((sub.name, sub))
-
-    return result
+    if not base.is_dir():
+        return []
+    return [(sub.name, sub) for sub in sorted(p for p in base.iterdir() if p.is_dir())
+            if _list_photos(sub)]
 
 
 # ─── Формирование отчёта ──────────────────────────────────────────────────────
@@ -580,21 +587,34 @@ _QUESTION_OUTCOMES = (
 )
 
 
-def _format_report(title: str, stats: dict["Outcome", int]) -> str:
+_SKIP_LABELS = {
+    RunSelection.SKIP_DONE:    "Уже разобраны раньше (пропущены)",
+    RunSelection.SKIP_WAITING: "Ждут оператора с прошлых прогонов",
+    RunSelection.SKIP_COPY:    "Тот же файл ещё раз (копия)",
+}
+
+
+def _skip_lines(skipped: Optional[dict]) -> list[str]:
+    return [f"{label}: {skipped[k]}" for k, label in _SKIP_LABELS.items() if skipped and skipped.get(k)]
+
+
+def _format_report(title: str, stats: dict["Outcome", int], skipped: Optional[dict] = None) -> str:
     """
-    Формирует текстовый отчёт по статистике: количество и процент по каждому
-    исходу + сводные метрики (успешно / на проверку / дубли).
+    Формирует текстовый отчёт по статистике этого прогона: количество и
+    процент по каждому исходу + сводные метрики (успешно / на проверку /
+    дубли); skipped — сколько фото пропущено (RunSelection → число).
     """
     total = sum(stats.values())
     lines = []
     lines.append("=" * 55)
     lines.append(title)
     lines.append("=" * 55)
-    lines.append(f"Всего фото: {total}")
+    lines.append(f"Новых фото в этом прогоне: {total}")
+    lines += _skip_lines(skipped)
     lines.append("")
 
     if total == 0:
-        lines.append("(нет данных)")
+        lines.append("(новых фото нет)")
         lines.append("=" * 55)
         return "\n".join(lines)
 
@@ -691,6 +711,7 @@ def run_pipeline(config: PipelineConfig) -> None:
     if not is_month(month):
         raise NotAMonth(f"Месяц не создан: {month.root}. Сначала: "
                         f"python gmr.py month \"{month.root}\" --table <таблица компании>")
+    _check_no_photos_in_root(month.photos)
     config.input_dir = str(month.photos)
     config.output_base_dir = str(month.results)
 
@@ -761,8 +782,12 @@ class _MonthRun:
         log.info(f"Месяц: {month.root}; абонентов: {len(abonents)}, с показанием: "
                  f"{sum(1 for a in abonents if a in readings)}, строк лога: {len(self.log_rows)}")
 
-    def record(self, result: PhotoResult, log_row: dict, photo_name: str) -> None:
+    def record(self, result: PhotoResult, log_row: dict, photo_name: str) -> list[dict]:
+        """Показание и строка лога — одной транзакцией. Если у счёта появилось
+        показание, его фото, ждущие оператора, закрываются (этап 3, пункт 3) —
+        возвращаются их строки REPEAT."""
         cfg = self.config
+        closed, moves = [], []
         with self.db.transaction():
             if result.outcome in (Outcome.PLUS, Outcome.MINUS) and result.account_id:
                 account, value = result.account_id, str(result.reading)
@@ -774,6 +799,15 @@ class _MonthRun:
                 self.df.loc[self.df[cfg.col_account_id] == account, cfg.col_new_reading] = value
                 self.log.info(f"  ✅ Записано в базу: account={account}, reading={value}")
             self.db.append_log_rows([log_row])
+            if result.outcome in (Outcome.PLUS, Outcome.MINUS) and result.account_id:
+                closed, moves = close_waiting(self.db, self.month.results, result.account_id,
+                                              photo_name, "auto")
+        for row in closed:
+            self.log.info(f"  ↪ {row['original_filename']}: ждало оператора, у л/с "
+                          f"{row['account_id']} теперь есть показание → repeat/{row['final_filename']}")
+        for err in move_files(moves):
+            self.log.warning(f"  ⚠️  Не удалось перенести фото в repeat/: {err}")
+        return closed
 
     def finish(self) -> None:
         try:
@@ -785,77 +819,142 @@ class _MonthRun:
         self.db.close()
 
 
+class _PhotoIndex:
+    """Строки лога по фото — как ProcessedPhotoPolicy.row_matches: строка с
+    отпечатком совпадает по отпечатку, без отпечатка — по имени файла."""
+
+    def __init__(self, rows: list[dict]):
+        self._n = 0
+        self._by_hash: dict[str, list] = {}
+        self._no_hash_by_name: dict[str, list] = {}
+        self._by_name: dict[str, list] = {}
+        for r in rows:
+            self.add(r)
+
+    def add(self, row: dict) -> None:
+        self._n += 1
+        item = (self._n, row)
+        name = row.get("original_filename") or ""
+        self._by_name.setdefault(name, []).append(item)
+        if row.get("photo_hash"):
+            self._by_hash.setdefault(row["photo_hash"], []).append(item)
+        else:
+            self._no_hash_by_name.setdefault(name, []).append(item)
+
+    def rows(self, name: str, photo_hash: str) -> list[dict]:
+        if photo_hash:
+            found = self._by_hash.get(photo_hash, []) + self._no_hash_by_name.get(name, [])
+        else:
+            found = self._by_name.get(name, [])
+        return [r for _, r in sorted(found, key=lambda x: x[0])]
+
+
+def _serial_lookup(df: pd.DataFrame, config: PipelineConfig):
+    """Есть ли номер в таблице — так же, как ищет process_photo (шаг 3):
+    номер, '0'+номер, '00'+номер."""
+    serials = {normalize_serial(str(s)) for s in df[config.col_serial]}
+
+    def in_table(serial: str) -> bool:
+        s = normalize_serial(serial)
+        return any(c in serials for c in (s, "0" + s, "00" + s))
+    return in_table
+
+
 def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
     df = store.df
     config._log_rows_cache           = store.log_rows   # нужен для проверки pre_existing
-    config._processed_accounts_cache = set()            # account_id обработанных в этом прогоне
-    config._processed_hashes_cache   = set()            # отпечатки фото, обработанных в этом прогоне
+    config._processed_accounts_cache = set()            # счета, получившие показание в этом прогоне
+    config._processed_hashes_cache   = set()            # отпечатки фото, прочитанных в этом прогоне
+    index = _PhotoIndex(store.log_rows)
+    serial_in_table = _serial_lookup(df, config)
+    models = None                                       # загружаются, только если есть что читать
 
-    log.info("Загружаем модели...")
-    device = default_device()
-    log.info(f"Устройство: {device}")
+    def load():
+        log.info("Загружаем модели...")
+        device = default_device()
+        log.info(f"Устройство: {device}")
+        loaded = load_models(config, device=device)
+        log.info("Модели загружены ✓")
+        if config.ignore_last_digits > 0:
+            log.info(
+                f"⚙️  ignore_last_digits={config.ignore_last_digits}: "
+                f"последние {config.ignore_last_digits} цифр(ы) — ошибки конфиданса прощаются, "
+                f"подставляется '{config.forgiven_digit_placeholder}'"
+            )
+        if config.debug_digits:
+            log.info("⚙️  debug_digits=True: кропы цифр и meta.json будут сохраняться в question/digits_error/<account_id>/")
+        if config.ignore_last_digits > 0 and config.debug_digits:
+            log.warning(
+                "⚠️  ignore_last_digits и debug_digits включены одновременно: "
+                "ошибки на прощённых позициях НЕ попадут в digits_error и не будут продебажены."
+            )
+        if config.draw_boxes:
+            log.info("⚙️  draw_boxes=True: на фото будут нарисованы боксы детекций")
+        return loaded
 
-    models = load_models(config, device=device)
-    log.info("Модели загружены ✓")
-
-    if config.ignore_last_digits > 0:
-        log.info(
-            f"⚙️  ignore_last_digits={config.ignore_last_digits}: "
-            f"последние {config.ignore_last_digits} цифр(ы) — ошибки конфиданса прощаются, "
-            f"подставляется '{config.forgiven_digit_placeholder}'"
-        )
-    if config.debug_digits:
-        log.info("⚙️  debug_digits=True: кропы цифр и meta.json будут сохраняться в question/digits_error/<account_id>/")
-    if config.ignore_last_digits > 0 and config.debug_digits:
-        log.warning(
-            "⚠️  ignore_last_digits и debug_digits включены одновременно: "
-            "ошибки на прощённых позициях НЕ попадут в digits_error и не будут продебажены."
-        )
-    if config.draw_boxes:
-        log.info("⚙️  draw_boxes=True: на фото будут нарисованы боксы детекций")
-
-    # ── Определяем структуру входной папки ──────────────────────────────────
+    # ── Папки контролёров ────────────────────────────────────────────────────
     input_groups = _resolve_input_folders(config.input_dir)
-
     if not input_groups:
-        log.warning(f"В {config.input_dir} не найдено ни фото, ни подпапок с фото.")
+        log.warning(f"В {config.input_dir} нет папок контролёров с фото.")
+        store.finish()
         return
-
-    if len(input_groups) == 1 and input_groups[0][0] == "":
-        log.info(f"Режим: одна папка с фото ({config.input_dir})")
-    else:
-        names = ", ".join(name for name, _ in input_groups)
-        log.info(f"Режим: папка с подпапками. Найдено подпапок с фото: {len(input_groups)} ({names})")
+    names = ", ".join(name for name, _ in input_groups)
+    log.info(f"Папок контролёров с фото: {len(input_groups)} ({names})")
+    if config.reread_errors:
+        log.info("⚙️  --reread: фото с ошибками, которые ждут оператора, читаются заново")
 
     total_stats: dict[Outcome, int] = {o: 0 for o in Outcome}
+    total_skipped: dict[str, int] = {}
     per_folder_stats: dict[str, dict[Outcome, int]] = {}
 
     for subfolder_name, folder_path in input_groups:
-        if subfolder_name:
-            log.info(f"\n{'=' * 55}")
-            log.info(f"Обрабатываем подпапку: {subfolder_name}")
-            log.info("=" * 55)
-            output_base = str(Path(config.output_base_dir) / subfolder_name)
-        else:
-            output_base = config.output_base_dir
+        log.info(f"\n{'=' * 55}")
+        log.info(f"Папка контролёра: {subfolder_name}")
+        log.info("=" * 55)
+        output_base = str(Path(config.output_base_dir) / subfolder_name)
 
         photos = _list_photos(folder_path)
-        log.info(f"Найдено фото: {len(photos)}\n")
+        log.info(f"Фото в папке: {len(photos)}\n")
 
         stats: dict[Outcome, int] = {o: 0 for o in Outcome}
+        skipped: dict[str, int] = {}
 
         for i, photo_path_obj in enumerate(photos, 1):
             photo_path = photo_path_obj  # совместимость с process_photo (ожидает str)
-            log.info(f"[{i}/{len(photos)}] {photo_path.name}")
 
-            photo_hash = ""
+            # ── Читать или пропустить (этап 3: каждое фото разбирается один раз)
+            photo_hash, hash_error = "", None
             try:
                 photo_hash = photo_fingerprint(str(photo_path))
+            except Exception as e:      # файл не читается — ниже станет ERROR
+                hash_error = e
+            rows = index.rows(photo_path.name, photo_hash)
+            choice = _run_selection.decide(
+                rows, bool(photo_hash) and photo_hash in config._processed_hashes_cache,
+                serial_in_table, reread=config.reread_errors)
+            if choice != RunSelection.READ:
+                skipped[choice] = skipped.get(choice, 0) + 1
+                total_skipped[choice] = total_skipped.get(choice, 0) + 1
+                continue
+
+            log.info(f"[{i}/{len(photos)}] {photo_path.name}" + ("  (читается заново)" if rows else ""))
+            if rows:
+                # прежний файл результата этого фото (question/…, not_in_db/) убрать:
+                # сейчас фото разложится заново
+                old = result_file(Path(config.output_base_dir), rows[-1])
+                if old is not None and old.is_file():
+                    old.unlink()
+            if models is None:
+                models = load()
+
+            try:
+                if hash_error is not None:
+                    raise hash_error
                 result = process_photo(
                     str(photo_path), df, config,
                     models.meter_detector, models.digit_detector,
                     models.digit_recognizer, models.serial_recognizer,
-                    photo_hash=photo_hash,
+                    photo_hash=photo_hash, reread=bool(rows),
                 )
             except Exception as e:
                 # Ошибка на одном фото не останавливает прогон: фото → question/error,
@@ -876,9 +975,12 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                 f"→ {result.outcome.name}  {detail}"
             )
 
-            # Сохраняем аннотированное фото в нужную папку
+            # Сохраняем аннотированное фото в нужную папку. Имя занято другим
+            # фото — <имя>_2, <имя>_3… (этап 3: файлы не затирают друг друга)
             dst_dir  = str(Path(output_base) / OUTCOME_FOLDER[result.outcome])
-            new_name = result.new_photo_name or photo_path.name
+            new_name = free_name(Path(dst_dir), result.new_photo_name or photo_path.name)
+            if new_name != (result.new_photo_name or photo_path.name):
+                result.new_photo_name = new_name
             try:
                 _save_annotated(
                     str(photo_path), dst_dir, new_name, result,
@@ -897,32 +999,35 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                 photo_path_obj.name, result, config,
                 photo_hash=photo_hash, source_folder=subfolder_name,
             )
-            store.record(result, log_row, photo_path_obj.name)
-            config._log_rows_cache.append(log_row)
-            if result.account_id:
+            closed = store.record(result, log_row, photo_path_obj.name)
+            for row in [log_row, *closed]:
+                config._log_rows_cache.append(row)
+                index.add(row)
+            # Счёт «обработан в прогоне», только если получил показание: неудачное
+            # фото не блокирует следующее фото того же счётчика (этап 3, пункт 3)
+            if result.account_id and result.outcome in (Outcome.PLUS, Outcome.MINUS):
                 config._processed_accounts_cache.add(result.account_id)
             config._processed_hashes_cache.add(photo_hash)
 
-        per_folder_stats[subfolder_name or Path(config.input_dir).name] = stats
+        if skipped:
+            log.info("Пропущено: " + "; ".join(_skip_lines(skipped)))
+        per_folder_stats[subfolder_name] = stats
 
-        report_title = f"ОТЧЁТ: {subfolder_name or Path(config.input_dir).name}"
-        report_text = _format_report(report_title, stats)
+        report_text = _format_report(f"ОТЧЁТ: {subfolder_name}", stats, skipped)
         report_path = _save_report(output_base, report_text)
 
         log.info("\n" + report_text)
         log.info(f"💾 Отчёт сохранён: {report_path}")
 
-    if len(input_groups) > 1 or input_groups[0][0]:
-        overall_report_text = _format_report("ОБЩИЙ ОТЧЁТ ПО ВСЕМ ПАПКАМ", total_stats)
-
-        if len(per_folder_stats) > 1:
-            ranking_text = _format_folder_ranking(per_folder_stats)
+    overall_report_text = _format_report("ОБЩИЙ ОТЧЁТ ПО ВСЕМ ПАПКАМ", total_stats, total_skipped)
+    if len(per_folder_stats) > 1:
+        ranking_text = _format_folder_ranking(per_folder_stats)
+        if ranking_text:
             overall_report_text = overall_report_text + "\n\n" + ranking_text
 
-        overall_report_path = _save_report(config.output_base_dir, overall_report_text)
-
-        log.info("\n" + overall_report_text)
-        log.info(f"💾 Общий отчёт сохранён: {overall_report_path}")
+    overall_report_path = _save_report(config.output_base_dir, overall_report_text)
+    log.info("\n" + overall_report_text)
+    log.info(f"💾 Общий отчёт сохранён: {overall_report_path}")
 
     store.finish()
 
@@ -936,6 +1041,6 @@ if __name__ == "__main__":
         sys.exit(2)
     try:
         run_pipeline(PipelineConfig(month_dir=sys.argv[1]))
-    except NotAMonth as e:
+    except (NotAMonth, PhotosInRoot) as e:
         print(f"ОШИБКА: {e}")
         sys.exit(1)

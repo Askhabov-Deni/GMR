@@ -42,11 +42,11 @@ def test_model_error_on_one_photo_does_not_stop_run(tmp_path, monkeypatch):
     assert log["p0.jpg"]["outcome"] == "ERROR"
     assert log["p0.jpg"]["notes"] == "ошибка программы: RuntimeError: CUDA out of memory"
     assert log["p0.jpg"]["photo_hash"]                       # фото узнаётся при следующем прогоне
-    assert (f.results / "question" / "error" / "p0.jpg").exists()
+    assert (pl.results_dir(f) / "question" / "error" / "p0.jpg").exists()
     # остальные фото обработаны как обычно
     assert log["p1.jpg"]["outcome"] == "MINUS" and _reading(f, "A-2") == "4000"
     assert log["p3.jpg"]["outcome"] == "PLUS"                # счёт A-1 не был занят p0
-    report = (f.results / "report.txt").read_text(encoding="utf-8")
+    report = (pl.results_dir(f) / "report.txt").read_text(encoding="utf-8")
     assert re.search(r"ERROR\s+1\b", report) and re.search(r"На проверку \(question/\):\s+3\b", report)
 
 

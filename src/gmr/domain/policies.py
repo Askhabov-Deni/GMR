@@ -317,6 +317,90 @@ class ProcessedPhotoPolicy:
         return ProcessedPhotoDecision(skip=False)
 
 
+# ─── Месячный цикл: какие фото читать в этом прогоне (этап 3) ────────────────
+
+class PhotoState:
+    """Состояние фото по его строкам лога (последнее решение)."""
+    NEW       = "new"         # в логе его нет
+    DONE      = "done"        # разобрано: показание, повтор или решение оператора
+    WAITING   = "waiting"     # авто-ошибка, ждёт оператора в question/
+    ERROR     = "error"       # программа упала на фото (question/error)
+    NOT_IN_DB = "not_in_db"   # оператор: «Нет в базе»
+
+
+def meaningful_rows(rows: list) -> list:
+    """Строки фото без строк-копий в прогоне (REPEAT «duplicate file in
+    current run» до этапа 3): они ничего не говорят о самом фото."""
+    return [r for r in rows
+            if not (r.get("notes") or "").startswith(ProcessedPhotoPolicy.COPY_IN_RUN_NOTE)]
+
+
+def photo_state(rows: list) -> str:
+    """
+    rows — строки лога этого фото в порядке записи (совпадение — как в
+    ProcessedPhotoPolicy.row_matches). Строки-копии в прогоне не учитываются.
+    Решает последняя строка: решение оператора, затем каждый новый прогон.
+    """
+    rows = meaningful_rows(rows)
+    if not rows:
+        return PhotoState.NEW
+    last = rows[-1]
+    outcome = last.get("outcome")
+    if last.get("source") == "manual":
+        return PhotoState.NOT_IN_DB if outcome == "NOT_IN_DB" else PhotoState.DONE
+    if outcome in ProcessedPhotoPolicy.DONE_OUTCOMES:
+        return PhotoState.DONE
+    if outcome == "ERROR":
+        return PhotoState.ERROR
+    return PhotoState.WAITING
+
+
+class RunSelection:
+    READ         = "read"           # читать моделями
+    SKIP_DONE    = "skip_done"      # уже разобрано — пропустить молча
+    SKIP_WAITING = "skip_waiting"   # ждёт оператора в question/ — пропустить
+    SKIP_COPY    = "skip_copy"      # тот же файл уже прочитан в этом прогоне
+
+
+class RunSelectionPolicy:
+    """
+    Какие фото из <месяц>/фото читать в этом прогоне. Папку фото за месяц
+    только пополняют, программа её не меняет; каждое фото разбирается один
+    раз (решения владельца 2026-10-03, этап 3, пункты 1а и 2а):
+
+      - фото нет в логе                                      → читать
+      - тот же файл (по отпечатку) уже прочитан в прогоне    → пропустить
+      - разобрано: PLUS/MINUS/REPEAT, решение оператора      → пропустить
+      - программа упала на фото (ERROR)                      → читать заново
+        (решение 2026-10-01, этап 2.1b)
+      - авто-ошибка, ждёт оператора                          → пропустить;
+        читать заново, если reread («перечитать фото с ошибками», например
+        после замены модели) или если это SERIAL_NOT_FOUND, а номер теперь
+        есть в таблице (таблицу обновили)
+      - оператор отметил «Нет в базе»                        → пропустить;
+        читать заново, если номер теперь есть в таблице (решение 2026-10-01)
+
+    serial_in_table(номер) — есть ли номер в таблице (так же, как ищет
+    reader.py: номер, '0'+номер, '00'+номер).
+    """
+
+    def decide(self, rows: list, copy_in_run: bool, serial_in_table, reread: bool = False) -> str:
+        if copy_in_run:
+            return RunSelection.SKIP_COPY
+        state = photo_state(rows)
+        if state in (PhotoState.NEW, PhotoState.ERROR):
+            return RunSelection.READ
+        if state == PhotoState.DONE:
+            return RunSelection.SKIP_DONE
+        last = meaningful_rows(rows)[-1]
+        serial = (last.get("serial_id") or "").strip()
+        if state == PhotoState.NOT_IN_DB:
+            return RunSelection.READ if serial and serial_in_table(serial) else RunSelection.SKIP_DONE
+        if reread or (last.get("outcome") == "SERIAL_NOT_FOUND" and serial and serial_in_table(serial)):
+            return RunSelection.READ
+        return RunSelection.SKIP_WAITING
+
+
 # ─── Исходная строка для файла из выходной папки (для program2.py) ───────────
 
 def find_auto_row_for_output_file(

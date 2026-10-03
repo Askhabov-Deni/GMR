@@ -310,6 +310,41 @@ def test_photos_of_two_controllers_go_to_their_folders(app):
     assert (other / "unreadable" / "s1.jpg").exists() and not (app.photos / "unreadable").exists()
 
 
+@needs_display
+def test_accept_closes_waiting_photo_of_same_account(app):
+    # этап 3: у A1 появилось показание — его фото «цифры не прочитаны» уходит в repeat/
+    other = app.month.results / "Сулиман С"
+    waiting = img(other / "question" / "digits_error" / "A1.jpg", 40)
+    with MonthDB(app.month.db) as db, db.transaction():
+        db.append_log_rows([{c: "" for c in LOG_COLUMNS} | {
+            "original_filename": "s1.jpg", "final_filename": "A1.jpg", "account_id": "A1",
+            "outcome": "DIGITS_ERROR", "source": "auto", "photo_hash": "h-s1", "source_folder": "Сулиман С"}])
+    app.refresh_tabs()
+    app.open_edit_screen(str(app.photos / "question" / "serial_not_found" / "IMG-20260915-WA0001.jpg"),
+                         "serial_not_found")
+    _fill(app._current_screen, "A1", "01200")
+    app._current_screen._accept()
+    assert not waiting.exists() and (other / "repeat" / "A1.jpg").exists()
+    assert log_rows(app.month)[-1]["outcome"] == "REPEAT"
+    assert os.path.basename(app._current_screen.photo_path) == "p2.jpg"   # следующее — не закрытое
+
+
+@needs_display
+def test_accept_photo_without_hash_in_old_log_goes_to_plus(app):
+    # строка старого лога без отпечатка: принимаемое фото не «закрывается» само собой
+    q = app.photos / "question" / "digits_error"
+    img(q / "A1.jpg", 50)
+    with MonthDB(app.month.db) as db, db.transaction():
+        db.append_log_rows([{c: "" for c in LOG_COLUMNS} | {
+            "original_filename": "old.jpg", "final_filename": "A1.jpg", "account_id": "A1",
+            "outcome": "DIGITS_ERROR", "source": "auto", "source_folder": "Аюб"}])
+    app.refresh_tabs()
+    app.open_edit_screen(str(q / "A1.jpg"), "digits_error")
+    _fill(app._current_screen, "A1", "01200")
+    app._current_screen._accept()
+    assert (app.photos / "plus" / "A1.jpg").exists() and not (app.photos / "repeat").exists()
+
+
 # ─── Выгрузка и закрытие окна ────────────────────────────────────────────────
 
 @needs_display

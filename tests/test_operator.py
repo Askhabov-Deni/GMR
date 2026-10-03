@@ -181,3 +181,67 @@ def test_export(session):
 
 def test_backup(session):
     assert (session.backup() / "gmr.sqlite").is_file()
+
+
+# ─── Этап 3, пункт 3: у счёта появилось показание — его ждущие фото закрываются
+
+def _waiting(session, name, account="A1", outcome="DIGITS_ERROR", h="h-w"):
+    """Авто-строка «цифры не прочитаны» и её файл в question/ контролёра Аюб."""
+    from tests._month import img
+    folder = {"DIGITS_ERROR": "digits_error", "SUSPICIOUS": "suspicious"}[outcome]
+    path = img(session.folder.results / "Аюб" / "question" / folder / f"{account}.jpg")
+    with session.db.transaction():
+        session.db.append_log_rows([_row(source="auto", processed_by="auto", original_filename=name,
+                                         final_filename=f"{account}.jpg", serial_id="1284567",
+                                         account_id=account, outcome=outcome, photo_hash=h,
+                                         source_folder="Аюб")])
+    return path
+
+
+def test_accept_closes_waiting_photos_of_account(session):
+    path = _waiting(session, "w.jpg")
+    session.accept(_row(original_filename="p.jpg", account_id="A1", reading="1200", outcome="PLUS"), "p.jpg")
+    assert not path.exists()
+    assert (session.folder.results / "Аюб" / "repeat" / "A1.jpg").is_file()
+    closed = log_rows(session.folder)[-1]
+    assert (closed["original_filename"], closed["outcome"], closed["source"], closed["photo_hash"]) == (
+        "w.jpg", "REPEAT", "auto", "h-w")
+    assert "у счёта появилось показание" in closed["notes"] and "p.jpg" in closed["notes"]
+    assert closed["processed_by"] == "Оператор"
+
+
+def test_accept_keeps_photo_operator_is_handling(session):
+    path = _waiting(session, "w.jpg")
+    # оператор разбирает этот самый файл (отпечаток не нашёлся — строка без него)
+    session.accept(_row(original_filename="A1.jpg", account_id="A1", reading="1200", outcome="PLUS"),
+                   "A1.jpg", keep=str(path))
+    assert path.exists() and log_rows(session.folder)[-1]["source"] == "manual"
+
+
+def test_other_account_and_other_outcomes_untouched(session):
+    a2 = _waiting(session, "w2.jpg", account="A2", h="h2")
+    with session.db.transaction():
+        session.db.append_log_rows([_row(source="auto", original_filename="n.jpg", account_id="A1",
+                                         outcome="SERIAL_AMBIGUOUS", photo_hash="h3")])
+    session.accept(_row(original_filename="p.jpg", account_id="A1", reading="1200", outcome="PLUS"), "p.jpg")
+    assert a2.exists() and log_rows(session.folder)[-1]["original_filename"] == "p.jpg"
+
+
+def test_fix_serial_and_correction_close_waiting(session):
+    s1 = _waiting(session, "s.jpg", outcome="SUSPICIOUS", h="h-s")
+    session.fix_serial_and_accept(_row(original_filename="w.jpg", account_id="A1", reading="1050",
+                                       outcome="PLUS"), "1284999", "w.jpg")
+    assert not s1.exists()
+    a2 = _waiting(session, "w2.jpg", account="A2", h="h2")
+    r = _auto(session)                                      # reader: A1 1300 по w.jpg
+    session.apply_correction(r, _c("1234567", 5300, "A1", "A2", 5000.0, 300.0, "PLUS"), "Оп", "t")
+    assert not a2.exists()                                  # показание перенесено к A2
+
+
+def test_old_rows_without_hash_matched_by_name(session):
+    # строки старых логов без отпечатка: фото узнаётся по имени файла
+    path = _waiting(session, "w.jpg", h="")
+    with session.db.transaction():                            # оператор разобрал это фото
+        session.db.append_log_rows([_row(original_filename="w.jpg", outcome="UNREADABLE")])
+    session.accept(_row(original_filename="p.jpg", account_id="A1", reading="1200", outcome="PLUS"), "p.jpg")
+    assert path.exists() and log_rows(session.folder)[-1]["original_filename"] == "p.jpg"

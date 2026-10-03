@@ -188,8 +188,9 @@ def test_rerun_month_leaves_readings(tmp_path, ocr):
     _photo(f.photos / "Аюб" / "p1.jpg", 1)
     _run(f)
     _run(f)
+    # этап 3: разобранное фото второй раз не пишется (tests/test_month_cycle.py)
     rows = [r for r in _log_list(f) if r["original_filename"] == "p1.jpg"]
-    assert [r["outcome"] for r in rows] == ["PLUS", "REPEAT"]
+    assert [r["outcome"] for r in rows] == ["PLUS"]
     assert _readings(f)["A-1"].value == "1200"
 
 

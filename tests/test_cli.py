@@ -32,10 +32,15 @@ def test_process_defaults_equal_reader_main(captured):
     assert (cfg.move_photos, cfg.ignore_last_digits, cfg.debug_digits, cfg.draw_boxes) == (False, 2, False, False)
 
 
+def test_process_reread(captured):
+    gmr.main(["process", "Октябрь", "--reread"])
+    assert captured["cfg"].reread_errors is True and captured["cfg"].move_photos is False
+
+
 def test_process_move(captured):
     gmr.main(["process", "Октябрь", "--move"])
     cfg = captured["cfg"]
-    assert cfg.month_dir == "Октябрь" and cfg.move_photos is True
+    assert cfg.month_dir == "Октябрь" and cfg.move_photos is True and cfg.reread_errors is False
     assert cfg.digit_conf_thresh == 0.6 and cfg.serial_conf_thresh == 0.6   # пороги не трогаются
 
 

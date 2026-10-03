@@ -216,8 +216,25 @@ class MonthDB:
     def log_rows(self, with_id: bool = False) -> list[dict]:
         """Строки лога по порядку. with_id — с ключом "_id" (номер строки в базе:
         по нему окно оператора меняет отметку проверки и исправления)."""
+        return self._log_where("1", (), with_id)
+
+    def log_rows_of_account(self, account: str, outcomes: tuple) -> list[dict]:
+        """Авто-строки лога лицевого счёта с этими исходами (по порядку)."""
+        marks = ", ".join("?" for _ in outcomes)
+        return self._log_where(f'source=\'auto\' AND account_id=? AND outcome IN ({marks})',
+                               (account, *outcomes))
+
+    def log_rows_of_photo(self, photo_hash: str, name: str) -> list[dict]:
+        """Строки лога одного фото — как ProcessedPhotoPolicy.row_matches: по
+        отпечатку, а строки без отпечатка — по имени исходного файла."""
+        if photo_hash:
+            return self._log_where("photo_hash=? OR (photo_hash='' AND original_filename=?)",
+                                   (photo_hash, name))
+        return self._log_where("original_filename=?", (name,))
+
+    def _log_where(self, where: str, params: tuple, with_id: bool = False) -> list[dict]:
         cols = ", ".join(f'"{c}"' for c in LOG_COLUMNS)
-        rows = self.conn.execute(f"SELECT id, {cols} FROM processing_log ORDER BY id")
+        rows = self.conn.execute(f"SELECT id, {cols} FROM processing_log WHERE {where} ORDER BY id", params)
         out = []
         for r in rows:
             d = dict(r)

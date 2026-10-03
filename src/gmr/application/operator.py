@@ -9,9 +9,11 @@ src/gmr/application/operator.py — действия окна оператора
 номеру), а не таблица и лог целиком, — поэтому окно не затирает того, что
 в это же время записал reader.py (известные ошибки этапа 2).
 """
+import logging
 from pathlib import Path
 from typing import Optional
 
+from src.gmr.application.cycle import close_waiting, move_files
 from src.gmr.application.month import (
     SERIAL_FIX_ACTION, ExportReport, NotAMonth, export_month, is_month,
 )
@@ -81,15 +83,30 @@ class OperatorSession:
         self.db.add_change(who, action, account, self.cfg.col_new_reading,
                            old.value if old else "", value, note=photo)
 
-    def accept(self, row: dict, date_name: str) -> None:
+    def _close_waiting(self, account: str, photo: str, who: str, keep: Optional[str]) -> list:
+        """В транзакции: у счёта появилось показание — его фото, ждущие
+        оператора (цифры, подозрительно), закрываются (этап 3, пункт 3).
+        Возвращает переносы файлов — их делает _move после записи."""
+        return close_waiting(self.db, self.folder.results, account, photo, who, keep=keep)[1]
+
+    def _move(self, moves: list) -> None:
+        for err in move_files(moves):     # фото закрыто в базе, файл остался в question/
+            logging.getLogger(__name__).warning(f"Не удалось перенести фото в repeat/: {err}")
+
+    def accept(self, row: dict, date_name: str, keep: Optional[str] = None) -> None:
         """«Принять»: показание row["reading"] лицевому счёту row["account_id"]
-        и строка лога. date_name — имя исходного фото (из него — «Дата»)."""
+        и строка лога. date_name — имя исходного фото (из него — «Дата»).
+        keep — файл, который оператор сейчас разбирает (его не трогать)."""
         with self.db.transaction():
             self._put_reading(row["account_id"], row["reading"], reading_date(date_name),
                               row.get("original_filename", ""), row["processed_by"], "показание записано")
             self.db.append_log_rows([row])
+            moves = self._close_waiting(row["account_id"], row.get("original_filename", ""),
+                                        row["processed_by"], keep)
+        self._move(moves)
 
-    def fix_serial_and_accept(self, row: dict, photo_serial: str, date_name: str) -> str:
+    def fix_serial_and_accept(self, row: dict, photo_serial: str, date_name: str,
+                              keep: Optional[str] = None) -> str:
         """«Серийник в базе с ошибкой» (решение владельца 2026-10-01): номер
         абонента в базе исправляется на номер с фото, показание записывается
         сразу. Возвращает номер, который был в базе."""
@@ -105,6 +122,8 @@ class OperatorSession:
             self._put_reading(account, row["reading"], reading_date(date_name),
                               row.get("original_filename", ""), who, "показание записано")
             self.db.append_log_rows([row])
+            moves = self._close_waiting(account, row.get("original_filename", ""), who, keep)
+        self._move(moves)
         return old_serial
 
     def mark_verified(self, row: dict, who: str, at: str) -> None:
@@ -151,7 +170,9 @@ class OperatorSession:
                 "notes":        (row.get("notes", "") + " | " + note).strip(" |"),
             }
             self.db.update_log_row(row["_id"], fields)
+            moves = self._close_waiting(c.new_account, photo, who, None)
         row.update(fields)
+        self._move(moves)
 
     def rename_photo_in_log(self, row: dict, final_filename: str) -> None:
         """Имя фото в plus/ или minus/ после переноса (если имя было занято)."""

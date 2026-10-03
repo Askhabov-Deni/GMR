@@ -14,10 +14,15 @@ from .policies import (
     DuplicateDecision,
     DuplicatePolicy,
     MissingDigitRecoveryPolicy,
+    PhotoState,
     ProcessedPhotoDecision,
     ProcessedPhotoPolicy,
     RecoveryDecision,
+    RunSelection,
+    RunSelectionPolicy,
     find_auto_row_for_output_file,
+    meaningful_rows,
+    photo_state,
 )
 
 __all__ = [
@@ -33,6 +38,11 @@ __all__ = [
     "ProcessedPhotoDecision",
     "ProcessedPhotoPolicy",
     "RecoveryDecision",
+    "PhotoState",
+    "RunSelection",
+    "RunSelectionPolicy",
+    "meaningful_rows",
+    "photo_state",
     "find_auto_row_for_output_file",
     "MeterDetector",
     "SerialRecognizer",

@@ -7,11 +7,10 @@
      вместе со старым режимом на этапе 2.3b).
   3. run_pipeline: два разных фото с одинаковым именем в разных подпапках
      обрабатываются оба; то же фото под другим именем в новой пачке узнаётся
-     без запуска моделей.
+     без запуска моделей и (с этапа 3) пропускается молча.
   4. program2.py переносит отпечаток в ручную строку из автоматической
      строки своей подпапки.
 """
-import shutil
 import sqlite3
 from types import SimpleNamespace
 
@@ -135,7 +134,7 @@ def test_same_filename_in_two_subfolders_both_processed(tmp_path, models):
     assert rows[0]["photo_hash"] != rows[1]["photo_hash"] != ""
 
 
-def test_same_photo_renamed_in_new_batch_is_repeat_without_models(tmp_path, models):
+def test_same_photo_renamed_in_new_batch_is_skipped_without_models(tmp_path, models):
     f = make_month(tmp_path, _TABLE)
     inp = f.photos
     (inp / "пачка1").mkdir(parents=True)
@@ -151,10 +150,10 @@ def test_same_photo_renamed_in_new_batch_is_repeat_without_models(tmp_path, mode
 
     rows = _run(f)
 
-    assert rows[-1]["original_filename"] == "переслано.jpg"
-    assert rows[-1]["outcome"] == "REPEAT"
-    assert "already in log" in rows[-1]["notes"]
+    # этап 3: уже разобранное фото пропускается молча — строки нет
+    assert [r["original_filename"] for r in rows] == ["IMG_0001.jpg"]
     assert _Meter.calls == calls_before     # модели не запускались
+    assert not list((f.results / "пачка2").rglob("*.jpg"))
 
 
 # ─── 4. program2.py: отпечаток в ручной строке ───────────────────────────────
@@ -207,18 +206,16 @@ def test_copies_in_one_run_reach_question_once(tmp_path, models):
 
     rows = _run(f)
 
+    # с этапа 3 копии пропускаются молча (строки нет), в отчёте — «копия»
     assert [(r["source_folder"], r["original_filename"], r["outcome"]) for r in rows] == [
-        ("Аюб", "a.jpg", "NO_METER"),
-        ("Аюб", "b (1).jpg", "REPEAT"),
-        ("Сулиман", "c.jpg", "REPEAT"),
-    ]
-    assert all("duplicate file in current run" in r["notes"] for r in rows[1:])
+        ("Аюб", "a.jpg", "NO_METER")]
     assert _Meter.calls == 1
     in_question = [p for p in f.results.rglob("*.jpg") if "question" in p.parts]
     assert len(in_question) == 1
 
-    # следующий прогон: первая копия перечитывается (правило Г), остальные — нет
-    shutil.rmtree(f.results)
-    rows = _run(f)[3:]
-    assert [r["outcome"] for r in rows] == ["NO_METER", "REPEAT", "REPEAT"]
+    # следующий прогон: фото ждёт оператора — не перечитывается; с --reread — одна копия
+    _run(f)
+    assert _Meter.calls == 1
+    reader.run_pipeline(reader.PipelineConfig(month_dir=str(f.root), reread_errors=True))
     assert _Meter.calls == 2
+    assert len([p for p in f.results.rglob("*.jpg") if "question" in p.parts]) == 1
