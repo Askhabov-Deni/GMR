@@ -2,8 +2,8 @@
 Обучение CNN-классификатора цифр (0-9) и экспорт в TorchScript.
 
 ИСПОЛЬЗОВАНИЕ:
-Обучение с нуля:
-    python train_cnn.py
+Обучение с нуля (из папки проекта; датасет — database/datasets/digits_cnn):
+    python models/cnn/train_cnn.py
 
 Продолжение прерванного обучения (resume):
     python train_cnn.py --resume runs/cnn/best.pth
@@ -11,7 +11,10 @@
 Дообучение (fine-tuning, сброс оптимизатора):
     python train_cnn.py --finetune runs/cnn/best.pth --lr 1e-4
 
-РЕЗУЛЬТАТЫ в OUTPUT_DIR (по умолчанию runs/cnn/):
+РЕЗУЛЬТАТЫ в --output_dir (по умолчанию новая папка <OUTPUT_DIR>/<дата-время>,
+при --resume — папка чекпоинта):
+    run_info.json    — датасет (отпечаток), коммит кода, пакеты, деление (этап 5)
+    split/*.txt      — какие файлы попали в train / val / test
     best.pth         — чекпоинт (веса модели + оптимизатор + метрики)
     best_model.pt    — TorchScript для продакшена (инференс)
     history.json     — метрики по эпохам + финальный тест
@@ -19,7 +22,9 @@
 """
 import argparse
 import json
+import sys
 import time
+from datetime import datetime
 from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
@@ -42,13 +47,19 @@ except ImportError:  # запуск как отдельный скрипт (pyth
     )
     from dataset_cnn import make_loaders
     from model_cnn import DigitCNN
+try:
+    from ..datasets import write_run_info, write_split_lists
+except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from models.datasets import write_run_info, write_split_lists
 
 
 # ─── Аргументы командной строки ──────────────────────────────────────────────
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Обучение CNN классификатора цифр")
     p.add_argument("--crops_dir", type=str, default=CROPS_DIR, help="Путь к папке с кропами")
-    p.add_argument("--output_dir", type=str, default=OUTPUT_DIR, help="Папка для сохранения результатов")
+    p.add_argument("--output_dir", type=str, default=None,
+                   help=f"Папка результата (по умолчанию {OUTPUT_DIR}/<дата-время>; при --resume — папка чекпоинта)")
     p.add_argument("--epochs", type=int, default=EPOCHS, help="Количество эпох")
     p.add_argument("--lr", type=float, default=LR, help="Learning rate")
     p.add_argument("--batch_size", type=int, default=BATCH_SIZE, help="Размер батча")
@@ -150,6 +161,26 @@ def export_torchscript(output_dir: Path, device: torch.device) -> None:
     print("   (Для инференса класс DigitCNN больше не нужен, загружайте напрямую .pt)")
 
 
+def run_dir_for(args: argparse.Namespace) -> Path:
+    """Куда писать результат: --output_dir; при --resume — папка чекпоинта;
+    иначе новая папка <OUTPUT_DIR>/<дата-время> (не затирает прежние прогоны)."""
+    if args.output_dir:
+        return Path(args.output_dir)
+    if args.resume:
+        return Path(args.resume).parent
+    return Path(OUTPUT_DIR) / datetime.now().strftime("%Y-%m-%d_%H-%M")
+
+
+def save_split(output_dir: Path, crops_dir: Path, train_loader, val_loader, test_loader,
+               args: argparse.Namespace) -> None:
+    """split/*.txt и run_info.json: на чём и как обучали (этап 5)."""
+    parts = {name: [p for p, _ in loader.dataset.samples]
+             for name, loader in (("train", train_loader), ("val", val_loader), ("test", test_loader))}
+    files = [f for v in parts.values() for f in v]
+    write_split_lists(output_dir, parts, crops_dir)
+    write_run_info(output_dir, crops_dir, files, parts, args.seed, vars(args))
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 def main() -> None:
     args = parse_args()
@@ -160,7 +191,7 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    output_dir = Path(args.output_dir)
+    output_dir = run_dir_for(args)
     output_dir.mkdir(parents=True, exist_ok=True)
     crops_dir = Path(args.crops_dir)
 
@@ -177,6 +208,7 @@ def main() -> None:
     train_loader, val_loader, test_loader = make_loaders(
         crops_dir, batch_size=args.batch_size, seed=args.seed,
     )
+    save_split(output_dir, crops_dir, train_loader, val_loader, test_loader, args)
 
     # 2. Модель и оптимизатор
     model = DigitCNN(num_classes=NUM_CLASSES).to(device)

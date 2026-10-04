@@ -1,4 +1,4 @@
-import random
+import sys
 from pathlib import Path
 
 import torch
@@ -10,6 +10,11 @@ try:
     from .config_crnn import IMG_W, IMG_H, _MEAN, _STD, MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
 except ImportError:  # запуск как отдельный скрипт (python models/crnn/dataset_crnn.py)
     from config_crnn import IMG_W, IMG_H, _MEAN, _STD, MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
+try:
+    from ..datasets import split_by_photo
+except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from models.datasets import split_by_photo
 
 
 # ── Загрузка аннотаций ────────────────────────────────────────────────
@@ -91,13 +96,11 @@ def load_dataset(images_dir: str, labels_dir: str) -> list[dict]:
 # ── Train / val / test split ──────────────────────────────────────────
 
 def split(metadata: list, train: float = 0.7, val: float = 0.15, seed: int = 42) -> tuple:
-    data = metadata.copy()
-    random.seed(seed)
-    random.shuffle(data)
-    n = len(data)
-    a = int(n * train)
-    b = int(n * (train + val))
-    return data[:a], data[a:b], data[b:]
+    """Деление по фото (этап 5, models/datasets.py): кропы одного фото
+    (`<фото>__…`) — в одной части; доля фото — по отпечатку имени, новые
+    файлы не перетасовывают старые."""
+    parts = split_by_photo(metadata, lambda m: m["file"].name, seed, train, val)
+    return parts["train"], parts["val"], parts["test"]
 
 
 # ── Transforms ───────────────────────────────────────────────────────

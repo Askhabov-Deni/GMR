@@ -8,7 +8,8 @@ tools.inspect_model (появились в Фазе 4, docs/MIGRATION_TZ.md; д�
   3. Все torch.load в models/ — с weights_only=True; чекпоинт формата
      train_crnn.py грузится, чужой pickle — нет (находка 3).
   4. extract_digit_crops.py в архиве (находка 4).
-  5. train_val_split.py: одинаковый split при повторном запуске (находка 5).
+  5. (train_val_split.py убран на этапе 5: YOLO делится при обучении —
+     models/yolo_all_detect/train_yolo.py, tests/test_datasets.py.)
   6. Нет абсолютных путей C:\\AD\\... в models/ (находка 6).
   7. tools.inspect_model — все режимы на fake-моделях.
   8. tools.weights_manifest — отпечатки и запись в docs/models.md.
@@ -120,33 +121,6 @@ def test_crnn_refuses_arbitrary_pickle(tmp_path):
 def test_extract_digit_crops_archived():
     assert not (ROOT / "models/cnn/extract_digit_crops.py").exists()
     assert (ROOT / "archive/models/cnn/extract_digit_crops.py").exists()
-
-
-# ─── 5. Воспроизводимый split ────────────────────────────────────────────────
-
-def _run_split(root: Path, out_name: str, create_order) -> tuple[list, list]:
-    images, labels = root / "images", root / "labels"
-    images.mkdir(parents=True, exist_ok=True)
-    labels.mkdir(exist_ok=True)
-    for name in create_order:
-        (images / f"{name}.jpg").write_bytes(b"x")
-        (labels / f"{name}.txt").write_text("0 0.5 0.5 0.1 0.1")
-    out = root / out_name
-    subprocess.run(
-        [sys.executable, str(ROOT / "models/yolo_all_detect/train_val_split.py"),
-         "--images_dir", str(images), "--labels_dir", str(labels), "--output_dir", str(out)],
-        check=True, capture_output=True, cwd=root,
-    )
-    return (sorted(p.name for p in (out / "train/images").iterdir()),
-            sorted(p.name for p in (out / "val/images").iterdir()))
-
-
-def test_train_val_split_is_reproducible(tmp_path):
-    names = [f"p{i:03d}" for i in range(50)]
-    a = _run_split(tmp_path / "a", "out", names)
-    b = _run_split(tmp_path / "b", "out", list(reversed(names)))  # другой порядок на диске
-    assert a == b
-    assert len(a[0]) == 40 and len(a[1]) == 10
 
 
 # ─── 6. Абсолютные пути ─────────────────────────────────────────────────────

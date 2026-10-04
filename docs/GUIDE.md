@@ -202,31 +202,53 @@ git, ошибок в коде нет, тесты прошли). В конце д
 4. **Записать, что сделано:** строка в «Истории замен» в
    `docs/models.md`.
 
+### 5.0. Где лежат датасеты (этап 5)
+
+Все датасеты — в `database\datasets\` (в git не попадают). Команда
+`python gmr.py datasets` создаёт недостающие папки (ничего не переносит
+и не удаляет) и показывает, что лежит в каждом датасете и что не так.
+Её вывод можно прислать: в нём только числа.
+
+| Папка | Модель | Что внутри |
+|---|---|---|
+| `meter_yolo\` | детектор на фото (показания, серийник, лицевой счёт) | `images\`, `labels\`, `classes.txt`; `new\` — фото на ручную разметку |
+| `digits_yolo\` | детектор цифр на кропе показаний | `images\`, `labels\`, `classes.txt` (`digit`) |
+| `digits_cnn\` | цифра (CNN) | `0\` … `9\`; `new\0\` … `new\9\` — цифры, исправленные оператором |
+| `serials_crnn\` | серийник (CRNN) | `images\`, `labels\<имя>.txt` (номер); `new\` — серийники, исправленные оператором |
+| `etalon\` | эталон для сравнения моделей | в обучение не идёт |
+
+- Датасет — **одна папка без train/val**: новые файлы просто докладываются.
+- Обучение само делит датасет при запуске — **по фото**: кропы одного
+  фото (`<фото>__…`) всегда в одной части. Часть определяется
+  отпечатком имени фото, поэтому новые фото не перетасовывают старые.
+- Что попало в обучение и что в проверку — `split\*.txt` в папке
+  результата обучения; там же `run_info.json`: отпечаток датасета, коммит
+  кода, версии пакетов. В папке датасета ничего не появляется.
+- **`new\` обучение не читает.** Просмотрите её и перенесите хорошие
+  примеры в датасет сами.
+- Точность после этапа 5 со старыми числами (`test_acc 0.974` у
+  `v3_platinum`) не сравнивать: раньше цифры одного фото попадали и в
+  обучение, и в тест, и число было завышено. Сравнивать — на реальных
+  фото (5.4).
+
 ### 5.1. CNN — модель цифр (чаще всего нужна именно она)
 
-Датасет CNN — простая структура «папка = цифра»:
-`database/meter_ocr_data/cnn_dataset_gold/0/*.jpg … 9/*.jpg`
-(путь — `CROPS_DIR` в `models/cnn/config_cnn.py`). Формат совпадает с
-`<папка разметки>/cnn/`, поэтому новые кропы просто докладываются.
-
 ```powershell
-# 0) копия датасета — чтобы можно было вернуться
-Copy-Item database\meter_ocr_data\cnn_dataset_gold database\meter_ocr_data\cnn_dataset_v4 -Recurse
+# 1) просмотреть кропы в database\datasets\digits_cnn\new\<цифра>\ (Проводник → «Крупные значки»)
+#    и перенести хорошие в database\datasets\digits_cnn\<цифра>\
+#    (пока окно кладёт исправленные цифры в <папка разметки>\cnn\<цифра>\ — раздел 4 — берите оттуда)
+python gmr.py datasets
 
-# 1) доложить проверенные кропы из program2 (для каждой цифры 0..9)
-0..9 | ForEach-Object { Copy-Item "<папка разметки>\cnn\$_\*" "database\meter_ocr_data\cnn_dataset_v4\$_\" }
-
-# 2) дообучить от текущих весов, маленький шаг обучения, НОВАЯ папка
-python models\cnn\train_cnn.py --crops_dir database\meter_ocr_data\cnn_dataset_v4 `
-    --output_dir meter_ocr\runs\cnn\runs\v4 `
-    --finetune meter_ocr\runs\cnn\runs\v3_platinum\best.pth --lr 1e-4
+# 2) дообучить от текущих весов, маленький шаг обучения
+#    (результат — новая папка meter_ocr\runs\cnn\runs\<дата-время>)
+python models\cnn\train_cnn.py --finetune meter_ocr\runs\cnn\runs\v3_platinum\best.pth --lr 1e-4
 
 # 3) отчёт: точность по классам, матрица ошибок, картинки ошибок
-python models\cnn\evaluate_cnn.py --run_dir meter_ocr\runs\cnn\runs\v4 --crops_dir database\meter_ocr_data\cnn_dataset_v4
+python models\cnn\evaluate_cnn.py --run_dir meter_ocr\runs\cnn\runs\<дата-время>
 
 # 4) старая и новая модель на одних и тех же реальных цифрах
 python gmr.py inspect digit <папка с кропами цифр>
-python gmr.py inspect digit <папка с кропами цифр> --weights meter_ocr\runs\cnn\runs\v4\best.pth
+python gmr.py inspect digit <папка с кропами цифр> --weights meter_ocr\runs\cnn\runs\<дата-время>\best.pth
 ```
 
 `--finetune` или с нуля? `--finetune` — продолжить от текущих весов:
@@ -235,21 +257,20 @@ python gmr.py inspect digit <папка с кропами цифр> --weights me
 
 ### 5.2. CRNN — модель серийника
 
-Датасет CRNN — картинки и `.txt` с правильным номером, имена совпадают
-(`123.jpeg` ↔ `123.txt`). Папки картинок и ответов можно указать одну и
-ту же, как в `<папка разметки>/crnn/images`.
+Картинка `images\<имя>.jpg` и номер в `labels\<имя>.txt` (только цифры,
+4–10 штук).
 
 ```powershell
-# 1) собрать датасет: старые таблички + новые из program2 в одну НОВУЮ папку
-#    (картинки → images\, .txt → labels\)
+# 1) просмотреть database\datasets\serials_crnn\new\ и перенести хорошие в images\ и labels\
+#    (пока окно кладёт их в <папка разметки>\crnn\images\ — картинка и .txt рядом)
+python gmr.py datasets
 
 # 2) дообучение (результат — serial_id_ocr\runs\crnn\<дата-время>\)
-python models\crnn\train_crnn.py --images_dir <images> --labels_dir <labels> `
-    --save_dir serial_id_ocr\runs\crnn `
-    --finetune serial_id_ocr\runs\crnn\2026-06-05_01-09\best.pt --lr 1e-4
+python models\crnn\train_crnn.py --finetune serial_id_ocr\runs\crnn\2026-06-05_01-09\best.pt --lr 1e-4
 
 # 3) отчёт: точность всего номера, точность по позициям, ошибки
-python models\crnn\evaluate_crnn.py --run_dir serial_id_ocr\runs\crnn\<дата-время> --images_dir <images> --labels_dir <labels>
+python models\crnn\evaluate_crnn.py --run_dir serial_id_ocr\runs\crnn\<дата-время> `
+    --images_dir database\datasets\serials_crnn\images --labels_dir database\datasets\serials_crnn\labels
 
 # 4) сравнение на реальных фото
 python gmr.py inspect serial <папка с фото>
@@ -260,18 +281,28 @@ python gmr.py inspect serial <папка с фото> --weights serial_id_ocr\ru
 позиции, сначала проверьте кроп (`docs/BACKLOG.md`, задача 2), а не
 переобучайте.
 
-### 5.3. YOLO — детекторы (редко)
+### 5.3. YOLO — детекторы
 
-Детекторам нужна **разметка рамками** (прямоугольник вокруг счётчика,
-таблички или каждой цифры), `program2.py` её не собирает. Нужно, только
-если детектор часто не находит счётчик или цифры (NO_METER, «не 5 цифр»).
-- Разметка: любой разметчик в формате YOLO (Label Studio, CVAT, Roboflow)
-  или старый `archive/models/yolo_all_detect/labeler_yolo.py`.
-- Разбивка: `python models\yolo_all_detect\train_val_split.py --images_dir … --labels_dir … --output_dir …`.
-- Обучение: скрипт в архиве —
-  `git mv archive/models/yolo_all_detect/detect_model_train.py models/yolo_all_detect/`,
-  поменять в нём `data=`, `name=` (новое имя!) и, для дообучения,
-  `YOLO('<старые>/best.pt')` вместо `yolov8n.pt`.
+Детекторам нужна **разметка рамками** в формате YOLO: `labels\<фото>.txt`,
+строка «класс cx cy w h» (доли от 0 до 1), названия классов — в
+`classes.txt` (строка 1 — класс 0). Разметчик — любой с форматом YOLO
+(Label Studio, CVAT, LabelImg).
+
+```powershell
+# 1) предразметка: текущая модель ставит рамки на фото без разметки
+#    (готовую разметку не трогает; где не нашла ничего — файла нет)
+python gmr.py prelabel database\datasets\meter_yolo\images
+# 2) поправить рамки в разметчике, проверить
+python gmr.py datasets
+# 3) обучение: деление на обучение и проверку — при запуске (около 20% фото на проверку)
+python models\yolo_all_detect\train_yolo.py --data database\datasets\meter_yolo `
+    --model yolov8s.pt --project meter_detect\runs\detect --name meter_v2 --imgsz 640 --epochs 200
+#    дообучение — --model meter_detect\runs\detect\gas_meter_all_classes_s_v1\weights\best.pt
+#    детектор цифр — --data database\datasets\digits_yolo --model yolov8n.pt
+#                    --project meter_ocr\runs\yolo --name digits_v5 --imgsz 480 --epochs 50
+```
+
+Без видеокарты добавьте `--device cpu` (детектор цифр так и обучался).
 
 ### 5.4. Ввод новой модели в работу (для любой)
 

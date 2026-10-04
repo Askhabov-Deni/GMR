@@ -6,8 +6,11 @@
 import torch
 
 # ── Данные ────────────────────────────────────────────────────────────────────
-CROPS_DIR  = "database/meter_ocr_data/cnn_dataset_gold"
-OUTPUT_DIR = "meter_ocr/runs/cnn/runs/v2_gold"
+# Датасет — database/datasets/digits_cnn/<цифра>/ (этап 5, models/datasets.py).
+# Результат обучения — новая папка <OUTPUT_DIR>/<дата-время> (train_cnn.py):
+# раньше по умолчанию писалось в папку прогона v2_gold и затирало её.
+CROPS_DIR  = "database/datasets/digits_cnn"
+OUTPUT_DIR = "meter_ocr/runs/cnn/runs"
 
 IMG_SIZE  = 96  # Целевой размер длинной стороны (для A.LongestMaxSize)
 IMG_WIDTH = 48  # Целевая ширина канваса (для A.PadIfNeeded, min_width)
@@ -33,6 +36,7 @@ NORM_MEAN = [0.4618, 0.4503, 0.4438]
 NORM_STD  = [0.2871, 0.2865, 0.2913]
 
 # ── Split данных ──────────────────────────────────────────────────────────────
+# По фото, а не по кропам (models/datasets.py): доли примерные.
 TRAIN_RATIO = 0.7
 VAL_RATIO   = 0.15   # test = 1 - TRAIN_RATIO - VAL_RATIO
 

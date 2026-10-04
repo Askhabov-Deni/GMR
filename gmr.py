@@ -12,6 +12,8 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py weights [--write]                                     файлы весов
   python gmr.py check                                                 проверка перед коммитом
   python gmr.py shortcut                                              ярлык «Счётчики» на рабочем столе
+  python gmr.py datasets [--list]                                     папки датасетов и их проверка
+  python gmr.py prelabel <папка с фото>                               предразметка YOLO текущей моделью
   python gmr.py <команда> --help                                      подробности
 
 Ничего нового команды не делают: process вызывает тот же run_pipeline с теми же
@@ -111,6 +113,16 @@ def _shortcut(argv):
     return shortcut.main(argv)
 
 
+def _datasets(argv):
+    from tools import datasets
+    return datasets.main(argv)
+
+
+def _prelabel(argv):
+    from models.yolo_all_detect import prelabel
+    return prelabel.main(argv)
+
+
 COMMANDS = {
     "month":   (_month,   "папка месяца: создать / загрузить обновлённую таблицу / сводка"),
     "export":  (_export,  "выгрузить показания.xlsx и лог.csv"),
@@ -120,6 +132,9 @@ COMMANDS = {
     "weights": (_weights, "какие файлы весов в работе (tools/weights_manifest.py)"),
     "check":   (_check,   "проверка перед коммитом: данные, код, тесты (tools/check.py)"),
     "shortcut": (_shortcut, "ярлык «Счётчики» на рабочем столе — окно оператора (tools/shortcut.py)"),
+    "datasets": (_datasets, "папки датасетов моделей: создать недостающие и проверить (tools/datasets.py)"),
+    "prelabel": (_prelabel, "предразметка YOLO: рамки текущей модели на фото без разметки "
+                            "(models/yolo_all_detect/prelabel.py)"),
 }
 
 

@@ -143,6 +143,8 @@ python program2.py         # или так — из PowerShell
 python gmr.py analyze <месяц>\лог.csv --table <месяц>\показания.xlsx   # качество чтения; --details — разбор ненайденных серийников
 python gmr.py inspect photo <фото или папка>        # что видят модели; режимы: meter, digits, serial, digit, photo
 python gmr.py weights --write                       # обновить таблицу весов в docs/models.md
+python gmr.py datasets                              # датасеты моделей: папки database\datasets\ и их проверка (docs/GUIDE.md, 5.0)
+python gmr.py prelabel <папка с фото>               # предразметка YOLO текущей моделью
 python gmr.py check                                 # перед коммитом: данные, код, тесты
 ```
 

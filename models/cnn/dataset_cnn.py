@@ -6,6 +6,7 @@ crops_dir/
 ...
 9/  *.jpg
 """
+import sys
 from pathlib import Path
 
 import albumentations as A
@@ -40,6 +41,12 @@ except ImportError:  # запуск как отдельный скрипт: pyth
         TRAIN_RATIO,
         VAL_RATIO,
     )
+
+try:
+    from ..datasets import require_parts, split_by_photo
+except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from models.datasets import require_parts, split_by_photo
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
@@ -143,26 +150,12 @@ def _collect_samples(root: Path):
 
 
 def _train_val_test_split(samples, train_ratio=TRAIN_RATIO, val_ratio=VAL_RATIO, seed=SEED):
-    rng = np.random.default_rng(seed)
-    by_class: dict = {}
-    for s in samples:
-        by_class.setdefault(s[1], []).append(s)
-
-    train, val, test = [], [], []
-    for items in by_class.values():
-        items = np.array(items, dtype=object)
-        rng.shuffle(items)
-
-        n = len(items)
-        n_val   = int(n * val_ratio)
-        n_test  = int(n * (1.0 - train_ratio - val_ratio))
-        n_train = n - n_val - n_test
-
-        train.extend(items[:n_train].tolist())
-        val.extend(items[n_train: n_train + n_val].tolist())
-        test.extend(items[n_train + n_val:].tolist())
-
-    return train, val, test
+    """Деление по фото (этап 5, models/datasets.py): все цифры одного фото
+    (`<фото>__…__digit_N.jpg`) — в одной части. До этапа 5 делились кропы
+    по классам, и цифры одного фото попадали и в обучение, и в тест —
+    test_acc был завышен."""
+    parts = split_by_photo(samples, lambda s: s[0].name, seed, train_ratio, val_ratio)
+    return parts["train"], parts["val"], parts["test"]
 
 
 # ─────────────────────────────────────────────
@@ -198,6 +191,7 @@ def make_loaders(
     """
     all_samples = _collect_samples(dataset_dir)
     train_samples, val_samples, test_samples = _train_val_test_split(all_samples, seed=seed)
+    require_parts({"train": train_samples, "val": val_samples, "test": test_samples}, ("train", "val", "test"))
 
     train_ds = DigitDataset(train_samples, _train_transform())
     val_ds   = DigitDataset(val_samples,   _val_transform())

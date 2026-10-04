@@ -3,8 +3,9 @@
 
 ИСПОЛЬЗОВАНИЕ:
 
-1. Обучение с нуля:
-    python train_crnn.py --images_dir data/images --labels_dir data/labels
+1. Обучение с нуля (из папки проекта; датасет по умолчанию —
+   database/datasets/serials_crnn/images и labels):
+    python models/crnn/train_crnn.py
 
 2. Resume (продолжение прерванного обучения):
     python train_crnn.py --images_dir data/images --labels_dir data/labels \\
@@ -14,7 +15,9 @@
     python train_crnn.py --images_dir data/images --labels_dir data/labels \\
         --finetune runs/2026-06-04_14-25/best.pt --lr 1e-4
 
-РЕЗУЛЬТАТЫ в runs/<дата-время>/:
+РЕЗУЛЬТАТЫ в <save_dir>/<дата-время>/ (по умолчанию serial_id_ocr/runs/crnn):
+  run_info.json    — датасет (отпечаток), коммит кода, пакеты, деление (этап 5)
+  split/*.txt      — какие файлы попали в train / val / test
   best.pt          — чекпоинт (веса + оптимизатор)
   best_model.pt    — TorchScript для продакшена
   history.json     — метрики по эпохам
@@ -28,9 +31,11 @@
 """
 
 import os
+import sys
 import json
 import argparse
 import datetime
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -45,18 +50,23 @@ except ImportError:  # запуск как отдельный скрипт (pyth
     from dataset_crnn import load_dataset, split, MeterDataset, train_transform, val_transform, collate
     from metrics_crnn import exact_match, cer
     from model_crnn import CRNN, ctc_loss, predict
+try:
+    from ..datasets import DATASETS_DIR, require_parts, write_run_info, write_split_lists
+except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from models.datasets import DATASETS_DIR, require_parts, write_run_info, write_split_lists
 
 
 # ── Аргументы ────────────────────────────────────────────────────────
 
 def parse() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--images_dir",   required=True)
-    p.add_argument("--labels_dir",   required=True)
+    p.add_argument("--images_dir",   default=str(DATASETS_DIR / "serials_crnn" / "images"))
+    p.add_argument("--labels_dir",   default=str(DATASETS_DIR / "serials_crnn" / "labels"))
     p.add_argument("--epochs",       type=int,   default=100)
     p.add_argument("--batch_size",   type=int,   default=32)
     p.add_argument("--lr",           type=float, default=3e-4)
-    p.add_argument("--save_dir",     default="runs/crnn")
+    p.add_argument("--save_dir",     default="serial_id_ocr/runs/crnn")
     p.add_argument("--seed",         type=int,   default=42)
     p.add_argument("--resume",       type=str,   default=None)
     p.add_argument("--finetune",     type=str,   default=None)
@@ -172,6 +182,19 @@ def save_plots(history: list[dict], save_dir: str) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────
 
+def save_split(save_dir: str, args: argparse.Namespace, meta, train_meta, val_meta, test_meta) -> None:
+    """split/*.txt и run_info.json: на чём и как обучали (этап 5). Отпечаток
+    датасета — по картинкам и их разметке."""
+    images, labels = Path(args.images_dir).resolve(), Path(args.labels_dir).resolve()
+    base = Path(os.path.commonpath([images, labels]))
+    parts = {"train": [m["file"].resolve() for m in train_meta],
+             "val":   [m["file"].resolve() for m in val_meta],
+             "test":  [m["file"].resolve() for m in test_meta]}
+    files = [m["file"].resolve() for m in meta] + [labels / (m["file"].stem + ".txt") for m in meta]
+    write_split_lists(save_dir, parts, base)
+    write_run_info(save_dir, base, files, parts, args.seed, vars(args))
+
+
 def main() -> None:
     args = parse()
 
@@ -198,6 +221,8 @@ def main() -> None:
     meta = load_dataset(args.images_dir, args.labels_dir)
     train_meta, val_meta, test_meta = split(meta, seed=args.seed)
     print(f"📊 train={len(train_meta)} | val={len(val_meta)} | test={len(test_meta)}")
+    require_parts({"train": train_meta, "val": val_meta, "test": test_meta}, ("train", "val", "test"))
+    save_split(save_dir, args, meta, train_meta, val_meta, test_meta)
 
     train_dl = DataLoader(
         MeterDataset(train_meta, train_transform()),
