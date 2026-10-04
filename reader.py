@@ -757,10 +757,14 @@ def run_pipeline(config: PipelineConfig) -> None:
     _check_no_photos_in_root(month.photos)
     config.input_dir = str(month.photos)
     config.output_base_dir = str(month.results)
+    month.stop_file.unlink(missing_ok=True)          # старая просьба остановиться — не в счёт
 
     run_logs = Path(config.output_base_dir) / "run_logs"
     run_logs.mkdir(parents=True, exist_ok=True)
-    journal = run_logs / f"run_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.txt"
+    stamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+    journal, n = run_logs / f"run_{stamp}.txt", 2
+    while journal.exists():                          # два прогона в одну секунду — свой журнал у каждого
+        journal, n = run_logs / f"run_{stamp}_{n}.txt", n + 1
     handler = logging.FileHandler(journal, encoding="utf-8")
     handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
     log.addHandler(handler)
@@ -776,6 +780,7 @@ def run_pipeline(config: PipelineConfig) -> None:
         log.exception("Прогон прерван")
         raise
     finally:
+        month.stop_file.unlink(missing_ok=True)
         log.removeHandler(handler)
         handler.close()
         remove_old(run_logs, KEEP)
@@ -954,11 +959,32 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
     if config.reread_errors:
         log.info("⚙️  --reread: фото с ошибками, которые ждут оператора, читаются заново")
 
+    # ── Сколько новых фото прочитать — для полосы прогресса окна (этап 4).
+    # Отпечатки считаются один раз и запоминаются.
+    hashed: dict[Path, tuple[str, Optional[Exception]]] = {}
+    expected, seen = 0, set()
+    for _, folder_path in input_groups:
+        for p in _list_photos(folder_path):
+            try:
+                h, err = photo_fingerprint(str(p)), None
+            except Exception as e:      # файл не читается — при чтении станет ERROR
+                h, err = "", e
+            hashed[p] = (h, err)
+            if _run_selection.decide(index.rows(p.name, h), bool(h) and h in seen, serial_in_table,
+                                     reread=config.reread_errors) == RunSelection.READ:
+                expected += 1
+                seen.add(h)
+    log.info(f"Новых фото к чтению: {expected}")
+    stop_file = MonthFolder(Path(config.month_dir)).stop_file if config.month_dir else None
+    done, stopped = 0, False
+
     total_stats: dict[Outcome, int] = {o: 0 for o in Outcome}
     total_skipped: dict[str, int] = {}
     per_folder_stats: dict[str, dict[Outcome, int]] = {}
 
     for subfolder_name, folder_path in input_groups:
+        if stopped:
+            break
         log.info(f"\n{'=' * 55}")
         log.info(f"Папка контролёра: {subfolder_name}")
         log.info("=" * 55)
@@ -970,15 +996,11 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
         stats: dict[Outcome, int] = {o: 0 for o in Outcome}
         skipped: dict[str, int] = {}
 
-        for i, photo_path_obj in enumerate(photos, 1):
+        for photo_path_obj in photos:
             photo_path = photo_path_obj  # совместимость с process_photo (ожидает str)
 
             # ── Читать или пропустить (этап 3: каждое фото разбирается один раз)
-            photo_hash, hash_error = "", None
-            try:
-                photo_hash = photo_fingerprint(str(photo_path))
-            except Exception as e:      # файл не читается — ниже станет ERROR
-                hash_error = e
+            photo_hash, hash_error = hashed[photo_path]
             rows = index.rows(photo_path.name, photo_hash)
             choice = _run_selection.decide(
                 rows, bool(photo_hash) and photo_hash in config._processed_hashes_cache,
@@ -988,15 +1010,21 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                 total_skipped[choice] = total_skipped.get(choice, 0) + 1
                 continue
 
-            log.info(f"[{i}/{len(photos)}] {photo_path.name}" + ("  (читается заново)" if rows else ""))
+            if stop_file is not None and stop_file.exists():   # «Остановить» в окне (этап 4)
+                stopped = True
+                log.warning(f"⏹ Остановлено оператором: прочитано {done} из {expected}. "
+                            "Остальные фото прочитает следующий запуск.")
+                break
+            if models is None:                       # до строки «Фото 1 из N»: окно покажет «Загружаем модели…»
+                models = load()
+            done += 1
+            log.info(f"Фото {done} из {expected}: {photo_path.name}" + ("  (читается заново)" if rows else ""))
             if rows:
                 # прежний файл результата этого фото (question/…, not_in_db/) убрать:
                 # сейчас фото разложится заново
                 old = result_file(Path(config.output_base_dir), rows[-1])
                 if old is not None and old.is_file():
                     old.unlink()
-            if models is None:
-                models = load()
 
             try:
                 if hash_error is not None:

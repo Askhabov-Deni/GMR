@@ -7,6 +7,7 @@
 Оконные тесты — под xvfb-run (без экрана пропускаются).
 """
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -110,12 +111,12 @@ AUTO = [  # авто-строки reader.py, создавшие файлы в qu
 ]
 
 
-def _window(monkeypatch, settings):
+def _window(monkeypatch, settings, answers=None):
     monkeypatch.setattr(program2, "load_settings", lambda: settings)
     monkeypatch.setattr(program2, "save_settings", lambda s: None)
     monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
     monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
-    answers, shown, asked = [], [], []
+    answers, shown, asked = list(answers or []), [], []
     monkeypatch.setattr(program2.messagebox, "askyesno",
                         lambda *a, **k: asked.append(a) or (answers.pop(0) if answers else True))
     for name in ("showinfo", "showwarning", "showerror"):
@@ -476,10 +477,11 @@ def test_not_a_month_folder_asks_settings_again(tmp_path, monkeypatch):
         return SimpleNamespace(result=program2.AppSettings("Оператор", str(f.root), ""))
 
     monkeypatch.setattr(program2, "SettingsDialog", settings_dialog)
-    w = _window(monkeypatch, program2.AppSettings("Оператор", str(tmp_path / "нет"), ""))
+    # «Создать в этой папке новый месяц?» — Нет: окно снова спрашивает папку
+    w = _window(monkeypatch, program2.AppSettings("Оператор", str(tmp_path / "нет"), ""), answers=[False])
     try:
         assert asked == [str(tmp_path / "нет")]
-        assert w.shown[0][0] == "showerror" and "Месяц не создан" in w.shown[0][1][1]
+        assert "Месяц не создан" in w.asked[0][1] and "Создать в этой папке" in w.asked[0][1]
         assert w.session.folder.root == f.root
     finally:
         w.destroy()
@@ -503,3 +505,281 @@ def test_change_user_cancelled_keeps_settings(tmp_path, monkeypatch):
 @needs_display
 def test_window_start_backs_up_month_db(app):
     assert list(app.month.backups.glob("*/gmr.sqlite"))
+
+
+# ─── Этап 4: «Обработать новые» из окна ──────────────────────────────────────
+# Настоящий прогон — отдельный процесс `gmr.py process` с моделями; здесь вместо
+# него скрипт, который печатает те же строки (формат строк — общий с reader.py,
+# см. tests/test_month_cycle.py::test_progress_lines_parse_in_window).
+
+import sys  # noqa: E402
+
+from src.gmr.ui import run_dialog  # noqa: E402
+
+FAKE_RUN = r"""
+import sys, time
+from pathlib import Path
+stop, results = Path(sys.argv[1]), Path(sys.argv[2])
+print("Загружаем модели...", flush=True)
+print("Новых фото к чтению: 3", flush=True)
+for k, name in enumerate(["a.jpg", "b.jpg", "c.jpg"], 1):
+    for _ in range(int(sys.argv[3]) * 50):            # «долгое» фото: ждём «Остановить»
+        if stop.exists():
+            break
+        time.sleep(0.02)
+    if stop.exists():
+        print(f"WARNING  ⏹ Остановлено оператором: прочитано {k - 1} из 3.", flush=True)
+        stop.unlink()
+        break
+    print(f"INFO  Фото {k} из 3: {name}", flush=True)
+results.mkdir(parents=True, exist_ok=True)
+if len(sys.argv) > 5:                                  # прогон положил фото в очередь
+    Path(sys.argv[6]).parent.mkdir(parents=True, exist_ok=True)
+    Path(sys.argv[6]).write_bytes(Path(sys.argv[5]).read_bytes())
+(results / "report.txt").write_text("ОБЩИЙ ОТЧЁТ\nНовых фото в этом прогоне: 3\n", encoding="utf-8")
+sys.exit(int(sys.argv[4]))
+"""
+
+
+def _fake_run(monkeypatch, app, slow=0, code=0, calls=None, new_photo=()):
+    def cmd(project, month, reread=False):
+        if calls is not None:
+            calls.append((month, reread))
+        return [sys.executable, "-c", FAKE_RUN, str(app.month.stop_file), str(app.month.results),
+                str(slow), str(code), *map(str, new_photo)]
+    monkeypatch.setattr(program2, "process_command", cmd)
+    shown = []
+    monkeypatch.setattr(program2, "show_text", lambda parent, title, text: shown.append((title, text)))
+    return shown
+
+
+def test_parse_progress():
+    assert run_dialog.parse_progress("12:00  INFO  Новых фото к чтению: 40") == ("total", 40)
+    assert run_dialog.parse_progress("INFO  Фото 3 из 40: IMG 1.jpg  (читается заново)") == (
+        "photo", 3, 40, "IMG 1.jpg  (читается заново)")
+    assert run_dialog.parse_progress("WARNING ⏹ Остановлено оператором: прочитано 1 из 3") == ("stopped",)
+    assert run_dialog.parse_progress("INFO  Загружаем модели...") == ("models",)
+    assert run_dialog.parse_progress("INFO  Фото в папке: 12") is None
+
+
+def test_process_command(tmp_path, monkeypatch):
+    cmd = run_dialog.process_command(tmp_path, "D:/Май")
+    assert cmd[1:] == [str(tmp_path / "gmr.py"), "process", "D:/Май"]
+    assert run_dialog.process_command(tmp_path, "D:/Май", reread=True)[-1] == "--reread"
+    # ярлык запускает окно через pythonw.exe — прогону нужен python.exe рядом
+    (tmp_path / "pythonw.exe").write_bytes(b"")
+    (tmp_path / "python.exe").write_bytes(b"")
+    monkeypatch.setattr(run_dialog.sys, "executable", str(tmp_path / "pythonw.exe"))
+    assert run_dialog.process_command(tmp_path, "D:/Май")[0] == str(tmp_path / "python.exe")
+
+
+@needs_display
+def test_process_new_shows_report_and_refreshes(app, monkeypatch):
+    calls = []
+    img(app.month.root.parent / "new.jpg")
+    shown = _fake_run(monkeypatch, app, calls=calls,       # «прогон» добавит фото в очередь
+                      new_photo=(app.month.root.parent / "new.jpg", app.photos / "question" / "no_meter" / "new.jpg"))
+    _open_first(app)                                       # экран разбора открыт
+    app.process_new()
+    assert calls == [(str(app.month.root), False)]
+    assert not hasattr(app, "_current_screen") or not app._current_screen.winfo_exists()
+    assert shown == [("Итог обработки", "ОБЩИЙ ОТЧЁТ\nНовых фото в этом прогоне: 3\n")]
+    assert len(app._proc_tab._items) == 4                  # очередь перечитана после прогона
+    lines = app._process_dialog.lines
+    assert "INFO  Фото 3 из 3: c.jpg" in lines and not app._process_dialog.winfo_exists()
+    app._process_dialog.stop()                             # «Остановить» уже после конца — ничего
+    assert not app.month.stop_file.exists()
+
+
+@needs_display
+def test_reread_runs_with_reread(app, monkeypatch):
+    calls, titles = [], []
+    _fake_run(monkeypatch, app, calls=calls)
+    real = program2.ProcessDialog
+    monkeypatch.setattr(program2, "ProcessDialog", lambda *a, **k: titles.append(k["title"]) or real(*a, **k))
+    app.process_new(reread=True)
+    assert calls == [(str(app.month.root), True)] and titles == ["Обработка фото с ошибками"]
+
+
+@needs_display
+def test_process_new_stop(app, monkeypatch):
+    shown = _fake_run(monkeypatch, app, slow=1)
+    app.after(400, lambda: app._process_dialog.stop())     # оператор нажал «Остановить»
+    app.process_new()
+    assert any("Остановлено оператором: прочитано 0 из 3" in x for x in app._process_dialog.lines)
+    assert not app.month.stop_file.exists() and shown[0][0] == "Итог обработки"
+
+
+@needs_display
+def test_process_new_failure_shows_output(app, monkeypatch):
+    shown = _fake_run(monkeypatch, app, code=1)
+    app.process_new()
+    (title, text), = shown
+    assert title == "Обработка не удалась" and "Код завершения: 1" in text and "Фото 3 из 3" in text
+
+
+# ─── Этап 4: меню «Месяц» ────────────────────────────────────────────────────
+
+from src.gmr.application import month as month_app  # noqa: E402
+from tests._month import TABLE_HEAD  # noqa: E402
+
+
+def _table_csv(path, rows):
+    import csv
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(TABLE_HEAD)
+        w.writerows(rows)
+    return path
+
+
+def _dialogs(monkeypatch, files=(), dirs=()):
+    files, dirs = list(files), list(dirs)
+    monkeypatch.setattr(program2.filedialog, "askopenfilename", lambda **k: str(files.pop(0)) if files else "")
+    monkeypatch.setattr(program2.filedialog, "askdirectory", lambda **k: str(dirs.pop(0)) if dirs else "")
+    shown = []
+    monkeypatch.setattr(program2, "show_text", lambda parent, title, text: shown.append((title, text)))
+    return shown
+
+
+@needs_display
+def test_first_run_creates_month_from_window(tmp_path, monkeypatch):
+    table = _table_csv(tmp_path / "компания" / "Май.csv", [("1234567", "A1", "1000", "")])
+    shown = _dialogs(monkeypatch, files=[table])
+    folder = tmp_path / "Май_2026"
+    w = _window(monkeypatch, program2.AppSettings("Оператор", str(folder), ""), answers=[True])
+    try:
+        assert w.session.folder.root == folder and (folder / "gmr.sqlite").is_file()
+        assert shown[0][0] == "Месяц создан" and "МЕСЯЦ СОЗДАН" in shown[0][1]
+        assert (folder / "показания.xlsx").is_file() and (folder / "фото").is_dir()
+    finally:
+        w.destroy()
+
+
+@needs_display
+def test_new_month_from_menu_switches_window(app, tmp_path, monkeypatch):
+    table = _table_csv(tmp_path / "компания" / "Июнь.csv", [("7777777", "B1", "10", "")])
+    shown = _dialogs(monkeypatch, files=[table], dirs=[tmp_path / "Июнь_2026"])
+    saved = []
+    monkeypatch.setattr(program2, "save_settings", lambda s: saved.append(s.month_dir))
+    app.new_month()
+    assert app.session.folder.root == tmp_path / "Июнь_2026"
+    assert saved == [str(tmp_path / "Июнь_2026")] and "Июнь_2026" in app._month_var.get()
+    assert list(app.df["Лицевой счет"]) == ["B1"] and app._proc_tab._items == []
+    assert shown[0][0] == "Месяц создан"
+
+
+@needs_display
+def test_new_month_refuses_existing_month(app, tmp_path, monkeypatch):
+    table = _table_csv(tmp_path / "компания" / "Июнь.csv", [("7777777", "B1", "10", "")])
+    shown = _dialogs(monkeypatch, files=[table], dirs=[app.month.root])
+    app.new_month()
+    assert shown == []
+    assert any(t == "showerror" and "месяц уже есть" in a[1] for t, a in app.shown)
+    assert list(app.df["Лицевой счет"]) == ["A1", "A2"]
+
+
+@needs_display
+@pytest.mark.parametrize("answer,rows", [(False, 0), (True, 1)])
+def test_new_month_asks_about_old_log(app, tmp_path, monkeypatch, answer, rows):
+    table = _table_csv(tmp_path / "компания" / "Июнь.csv", [("7777777", "B1", "10", "")])
+    from src.gmr.storage import LOG_COLUMNS as cols, save_log
+    save_log(str(tmp_path / "компания" / "Июнь_log.csv"),
+             [{c: "" for c in cols} | {"original_filename": "old.jpg", "outcome": "PLUS"}])
+    _dialogs(monkeypatch, files=[table], dirs=[tmp_path / "Июнь_2026"])
+    app.answers.append(answer)
+    app.new_month()
+    assert "старой версии программы" in app.asked[0][1]
+    assert len(log_rows(MonthFolderOf(tmp_path / "Июнь_2026"))) == rows
+
+
+def MonthFolderOf(path):
+    from src.gmr.storage.month import MonthFolder
+    return MonthFolder(path)
+
+
+@needs_display
+def test_update_table_from_menu(app, tmp_path, monkeypatch):
+    table = _table_csv(tmp_path / "компания" / "новая.csv",
+                       [("1234567", "A1", "1000", ""), ("7654321", "A2", "500", ""), ("5555555", "A3", "1", "")])
+    shown = _dialogs(monkeypatch, files=[table, table])
+    app.answers.append(False)                              # «Загрузить таблицу?» — Нет
+    app.update_table()
+    assert list(app.df["Лицевой счет"]) == ["A1", "A2"] and shown == []
+    _open_first(app)                                       # экран разбора закрывается
+    app.update_table()
+    assert not app._current_screen.winfo_exists()
+    assert list(app.df["Лицевой счет"]) == ["A1", "A2", "A3"]
+    assert shown[0][0] == "Таблица обновлена" and "Выгрузка" in shown[0][1]
+    assert list(app.month.backups.glob("*/gmr.sqlite"))
+
+
+@needs_display
+def test_summary_and_choose_month(app, tmp_path, monkeypatch):
+    other = make_month(tmp_path / "другой", [("9999999", "C1", "5", "")], name="Июль")
+    shown = _dialogs(monkeypatch, dirs=[other.root, tmp_path / "пусто"])
+    app.show_summary()
+    assert shown[-1][0] == "Итог месяца" and shown[-1][1] == month_app.month_summary(str(app.month.root))
+    app.choose_month()
+    assert app.session.folder.root == other.root
+    (tmp_path / "пусто").mkdir()
+    session = app.session
+    app.answers.append(False)                              # «Создать месяц здесь?» — Нет
+    app.choose_month()
+    assert app.session is session                          # открытый месяц не трогается
+    asked = len(app.asked)
+    _dialogs(monkeypatch, dirs=[tmp_path / "пусто"])       # «Да», но таблицу не выбрали
+    app.choose_month()
+    assert app.session.folder.root == other.root and len(app.asked) == asked + 1
+    assert app.settings.month_dir == str(other.root)
+
+
+@needs_display
+def test_month_that_does_not_open_keeps_window_in_old_month(app, tmp_path, monkeypatch):
+    saved = []
+    monkeypatch.setattr(program2, "save_settings", lambda s: saved.append(s.month_dir))
+    app.answers.append(False)                              # не месяц и создавать не нужно
+    app._switch_month(str(tmp_path / "пусто"))
+    assert app.session.folder.root == app.month.root and saved == [str(app.month.root)]
+    assert app.settings.month_dir == str(app.month.root)
+
+
+@needs_display
+def test_reread_errors_from_menu(app, monkeypatch):
+    calls = []
+    monkeypatch.setattr(app, "process_new", lambda reread=False: calls.append(reread))
+    app.answers.append(False)
+    app.reread_errors()
+    app.reread_errors()
+    assert calls == [True]
+
+
+def test_window_log_goes_to_file_without_console():
+    # окно с ярлыка (pythonw.exe): консоли нет — журнал в program2.log папки программы
+    assert program2._log_handlers_for(sys.stderr) is None
+    (h,) = program2._log_handlers_for(None)
+    try:
+        assert Path(h.baseFilename) == program2._BASE / "program2.log"
+        assert h.maxBytes == 1_000_000 and h.backupCount == 3
+    finally:
+        h.close()
+
+
+def test_open_in_explorer(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(os, "startfile", opened.append, raising=False)
+    program2.open_in_explorer(tmp_path)
+    assert opened == [str(tmp_path)]
+
+    def broken(path):
+        raise OSError("нет программы для папок")
+    monkeypatch.setattr(os, "startfile", broken, raising=False)
+    program2.open_in_explorer(tmp_path)                    # ошибка не роняет окно
+
+
+@needs_display
+def test_error_in_button_shown_to_operator(app):
+    app.report_callback_exception(ValueError, ValueError("сломалось"), None)
+    assert any(t == "showerror" and "ValueError: сломалось" in a[1] and "Подробности" in a[1]
+               for t, a in app.shown)

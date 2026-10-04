@@ -86,3 +86,9 @@ def test_project_code_compiles_without_warnings():
             compile(p.read_text(encoding="utf-8"), str(rel), "exec")
         found += [f"{rel}:{x.lineno}: {x.message}" for x in w]
     assert found == []
+
+
+def test_operator_screenshots_allowed():
+    # снимки экрана инструкции оператора — на выдуманных данных, в git намеренно
+    assert check.data_files(["docs/img/operator_main.png", "docs/фото.png", "img/a.png"]) == [
+        "docs/фото.png", "img/a.png"]

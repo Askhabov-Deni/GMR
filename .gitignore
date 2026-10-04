@@ -31,6 +31,7 @@ __pycache__/
 # Прочее
 .env
 *.log
+*.log.*
 
 database/
 data_for_reader_test/
@@ -63,6 +64,8 @@ run_logs/
 лог.csv
 # Файлы для тестов с выдуманными данными — в git
 !tests/data/*.xls
+# Снимки экрана для docs/OPERATOR.md (выдуманные данные) — в git
+!docs/img/*.png
 # Windows thumbnails and WhatsApp videos
 Thumbs.db
 *.mp4

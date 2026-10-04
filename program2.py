@@ -52,15 +52,34 @@ from src.gmr.console import safe_console
 from src.gmr.storage import LOG_COLUMNS as _LOG_COLUMNS
 # С этапа 2.3 окно работает с базой папки месяца (src/gmr/storage/month.py):
 # каждое действие — одна транзакция (src/gmr/application/operator.py).
+from src.gmr.application import month as month_app
 from src.gmr.application.month import ExportLocked, NotAMonth
+from src.gmr.storage import log_path_for
 from src.gmr.application.operator import OperatorSession
+# Этап 4: прогон из окна (отдельный процесс gmr.py process) и окно с текстом
+from src.gmr.ui.run_dialog import ProcessDialog, process_command, show_text
 from src.gmr.domain import find_auto_row_for_output_file
 from src.gmr.domain.serial_match import alphabet_for, one_char_matches
 # Модели — через контракты и общий с reader.py сервис распознавания (Фаза 3)
 from src.gmr.application import digit_crops_by_position, recognize_photo
 from src.gmr.ml.loader import default_device, load_models
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
+_LOG_FILE = _BASE / "program2.log"
+
+
+def _log_handlers_for(stderr):
+    """С ярлыка (pythonw.exe, этап 4) консоли нет (sys.stderr is None): журнал
+    окна — в program2.log в папке программы (последние 4 файла по 1 МБ), иначе
+    ошибки пропадали бы. Файл появляется с первой записью."""
+    if stderr is not None:
+        return None
+    from logging.handlers import RotatingFileHandler
+    return [RotatingFileHandler(_LOG_FILE, maxBytes=1_000_000, backupCount=3, encoding="utf-8", delay=True)]
+
+
+_log_handlers = _log_handlers_for(sys.stderr)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s",
+                    handlers=_log_handlers)
 log = logging.getLogger("program2")
 
 # ─── Константы ────────────────────────────────────────────────────────────────
@@ -534,6 +553,19 @@ def free_photo_path(dst_dir: str, name: str, current: str) -> str:
     return str(p)
 
 
+def open_in_explorer(path) -> None:
+    """Открыть папку в проводнике (Windows) или файловом менеджере."""
+    import os
+    import subprocess
+    try:
+        if hasattr(os, "startfile"):
+            os.startfile(str(path))                       # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except OSError as e:
+        log.warning(f"Не удалось открыть {path}: {e}")
+
+
 def describe_reading(r) -> str:
     """Чьё показание и когда — для вопроса «Заменить?»."""
     who = {"auto": f"записала программа по фото {r.photo}" if r.photo else "записала программа",
@@ -797,6 +829,15 @@ class MainWindow(tk.Tk):
 
         self._do_login()
 
+    def report_callback_exception(self, exc, val, tb):
+        """Ошибка в обработчике кнопки: в журнал и оператору (с ярлыка консоли
+        нет — без этого ошибка была бы не видна)."""
+        log.error("Ошибка в окне", exc_info=(exc, val, tb))
+        where = (f"в журнале {_LOG_FILE.name} (папка программы)" if _log_handlers
+                 else "в окне PowerShell, из которого запущена программа")
+        messagebox.showerror("Ошибка программы", f"{exc.__name__}: {val}\n\nПодробности — {where}.",
+                             parent=self)
+
     def _do_login(self):
         if not self.settings.operator_name or not self.settings.month_dir:
             if not self._open_settings(first_run=True):
@@ -830,8 +871,14 @@ class MainWindow(tk.Tk):
         try:
             self.session = OperatorSession(self.settings.month_dir, self.config)
         except NotAMonth as e:
-            messagebox.showerror("Папка месяца", str(e))
-            return False
+            # этап 4: месяц можно создать прямо отсюда, без PowerShell
+            if not (self.settings.month_dir and messagebox.askyesno(
+                    "Папка месяца",
+                    f"{e}\n\nСоздать в этой папке новый месяц из таблицы компании?")):
+                return False
+            if not self.create_month(self.settings.month_dir):
+                return False
+            self.session = OperatorSession(self.settings.month_dir, self.config)
         try:
             dest = self.session.backup()
             if dest is not None:
@@ -875,11 +922,132 @@ class MainWindow(tk.Tk):
                 "Программа продолжит работу, но автораспознавание недоступно.",
             )
 
+    # ─── Месяц: создать, обновить таблицу, итог (этап 4) ───────────────────────
+    def _ask_table(self) -> Optional[str]:
+        return filedialog.askopenfilename(
+            parent=self, title="Таблица компании",
+            filetypes=[("Таблицы", "*.xls *.xlsx *.csv"), ("Все файлы", "*.*")]) or None
+
+    def create_month(self, folder: str, table: Optional[str] = None) -> bool:
+        """Новый месяц в папке folder из таблицы компании (то же, что
+        `gmr.py month <папка> --table <таблица>`). True — месяц создан."""
+        if month_app.is_month(month_app.MonthFolder(Path(folder))):
+            messagebox.showerror("Новый месяц", f"В папке {folder} месяц уже есть.\n"
+                                 "Новая таблица компании — меню «Месяц» → «Обновить таблицу…».", parent=self)
+            return False
+        table = table or self._ask_table()
+        if not table:
+            return False
+        old_log = Path(log_path_for(table))
+        import_log = old_log.is_file() and messagebox.askyesno(
+            "Старый лог",
+            f"Рядом с таблицей лежит лог старой версии программы:\n{old_log.name}\n\n"
+            "Перенести его в базу месяца? Тогда фото из этого лога будут считаться уже разобранными.\n"
+            "Обычно — «Нет»: месяц начинается с чистого листа.", default="no", parent=self)
+        try:
+            rep = month_app.load_table(folder, table, self.config, who=self.settings.operator_name,
+                                       import_old_log=import_log)
+            exported = month_app.export_month(folder, self.config).text()
+        except (ValueError, OSError, ExportLocked) as e:
+            messagebox.showerror("Новый месяц", str(e), parent=self)
+            return False
+        show_text(self, "Месяц создан", rep.text() + "\n\n" + exported)
+        return True
+
+    def _switch_month(self, folder: str):
+        """Окно — на другой папке месяца (настройки сохраняются). Если месяц
+        не открылся, окно остаётся в прежнем месяце."""
+        self._close_screen()
+        old = self.settings
+        self.settings = AppSettings(old.operator_name, folder, old.training_dir)
+        opened = False
+        try:
+            opened = self._load_data()
+        finally:
+            if not opened:
+                self.settings = old
+                self._load_data()
+        save_settings(self.settings)
+        self._month_var.set(f"Месяц: {self.session.folder.root}")
+        self.refresh_tabs()
+
+    def new_month(self):
+        """Меню «Месяц» → «Новый месяц…»: таблица компании и папка нового месяца."""
+        table = self._ask_table()
+        if not table:
+            return
+        folder = filedialog.askdirectory(parent=self, title="Папка нового месяца (пустая или новая)")
+        if folder and self.create_month(folder, table):
+            self._switch_month(folder)
+
+    def update_table(self):
+        """Меню «Месяц» → «Обновить таблицу…»: компания прислала новую таблицу."""
+        table = self._ask_table()
+        if not table or not messagebox.askyesno(
+                "Обновить таблицу", f"Загрузить таблицу\n{table}\nв месяц {self.session.folder.root}?\n\n"
+                "Сверка — по лицевому счёту; показания из базы сохраняются.", parent=self):
+            return
+        self._close_screen()
+        try:
+            rep = month_app.load_table(str(self.session.folder.root), table, self.config,
+                                       who=self.settings.operator_name)
+            exported = month_app.export_month(str(self.session.folder.root), self.config).text()
+        except (ValueError, OSError, ExportLocked) as e:
+            messagebox.showerror("Обновить таблицу", str(e), parent=self)
+            return
+        self.refresh_tabs()
+        show_text(self, "Таблица обновлена", rep.text() + "\n\n" + exported)
+
+    def choose_month(self):
+        """Меню «Месяц» → «Открыть другой месяц…»."""
+        folder = filedialog.askdirectory(parent=self, title="Папка месяца")
+        if not folder:
+            return
+        if not month_app.is_month(month_app.MonthFolder(Path(folder))):
+            if not messagebox.askyesno("Папка месяца", f"В папке {folder} месяц не создан.\n\n"
+                                       "Создать новый месяц из таблицы компании?", parent=self):
+                return
+            if not self.create_month(folder):
+                return
+        self._switch_month(folder)
+
+    def show_summary(self):
+        """«Итог месяца»: то же, что `gmr.py month <папка>`."""
+        show_text(self, "Итог месяца", month_app.month_summary(str(self.session.folder.root)))
+
+    def open_month_folder(self):
+        open_in_explorer(self.session.folder.root)
+
+    def reread_errors(self):
+        """Меню «Месяц» → «Прочитать заново фото с ошибками…» (после замены модели)."""
+        if messagebox.askyesno(
+                "Прочитать заново", "Прочитать заново все фото с ошибками, которые ждут оператора?\n\n"
+                "Нужно, например, после замены модели. Разобранные фото не трогаются.", parent=self):
+            self.process_new(reread=True)
+
     def _build_ui(self):
+        menubar = tk.Menu(self)
+        m = tk.Menu(menubar, tearoff=False)
+        m.add_command(label="Итог месяца", command=self.show_summary)
+        m.add_command(label="Открыть папку месяца", command=self.open_month_folder)
+        m.add_separator()
+        m.add_command(label="Новый месяц…", command=self.new_month)
+        m.add_command(label="Обновить таблицу компании…", command=self.update_table)
+        m.add_command(label="Открыть другой месяц…", command=self.choose_month)
+        m.add_separator()
+        m.add_command(label="Прочитать заново фото с ошибками…", command=self.reread_errors)
+        menubar.add_cascade(label="Месяц", menu=m)
+        self.configure(menu=menubar)        # self.config — это PipelineConfig, поэтому configure
+        self._month_menu = m
+
         top = ttk.Frame(self)
         top.pack(fill=tk.X, padx=8, pady=(8, 0))
-        ttk.Label(top, text=f"Месяц: {self.session.folder.root}", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self._month_var = tk.StringVar(value=f"Месяц: {self.session.folder.root}")
+        ttk.Label(top, textvariable=self._month_var, font=("Segoe UI", 9)).pack(side=tk.LEFT)
         ttk.Button(top, text="⇩  Выгрузить показания", command=self.export).pack(side=tk.RIGHT)
+        ttk.Button(top, text="Итог месяца", command=self.show_summary).pack(side=tk.RIGHT, padx=(0, 8))
+        tk.Button(top, text="▶  Обработать новые", command=self.process_new,
+                  bg=CLR_GREEN, fg="white", relief="flat", padx=10).pack(side=tk.RIGHT, padx=8)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._notebook = ttk.Notebook(self)
@@ -895,6 +1063,33 @@ class MainWindow(tk.Tk):
         self.reload()
         self._proc_tab.refresh()
         self._verify_tab.refresh()
+
+    def _close_screen(self):
+        """Вернуться к спискам (экран разбора закрывается)."""
+        scr = getattr(self, "_current_screen", None)
+        if scr is not None and scr.winfo_exists():
+            scr._back()
+
+    def process_new(self, reread: bool = False):
+        """«Обработать новые» (этап 4): прогон новых фото месяца с полосой
+        прогресса; пока он идёт, разбирать фото нельзя (решение 2а)."""
+        if self.session is None:
+            return
+        self._close_screen()
+        dlg = ProcessDialog(self, process_command(_BASE, str(self.session.folder.root), reread),
+                            self.session.folder.stop_file, self._after_process, cwd=_BASE,
+                            title="Обработка фото с ошибками" if reread else "Обработка новых фото")
+        self._process_dialog = dlg
+        self.wait_window(dlg)
+
+    def _after_process(self, code: int, lines: list[str]):
+        self.refresh_tabs()
+        report = self.session.folder.results / "report.txt"
+        if code == 0 and report.is_file():
+            show_text(self, "Итог обработки", report.read_text(encoding="utf-8"))
+        else:
+            tail = "\n".join(lines[-25:]) or "(нет вывода)"
+            show_text(self, "Обработка не удалась", f"Код завершения: {code}\n\n{tail}")
 
     def export(self) -> bool:
         """Кнопка «Выгрузить показания»: показания.xlsx и лог.csv."""

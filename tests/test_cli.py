@@ -112,3 +112,48 @@ def test_cli_process_end_to_end_same_as_reader(tmp_path, fake_models):  # noqa: 
     assert pl.output_tree(cli) == pl.output_tree(direct)
     assert [r["outcome"] for r in pl.log(cli)] == pl.OUTCOMES
     assert pl.reading(cli, "A-1") == pl.reading(direct, "A-1") == "1200"
+
+
+# ─── Этап 4: ярлык «Счётчики» на рабочем столе ───────────────────────────────
+
+from tools import shortcut  # noqa: E402
+
+
+def test_shortcut_script():
+    ps = shortcut.powershell_script("Счётчики", Path("C:/x/.venv/Scripts/pythonw.exe"),
+                                    Path("C:/x/program2.py"), Path("C:/x"))
+    assert "GetFolderPath('Desktop')" in ps and "'Счётчики.lnk'" in ps
+    assert f"$s.TargetPath = '{Path('C:/x/.venv/Scripts/pythonw.exe')}'" in ps
+    assert f"$s.Arguments = '\"{Path('C:/x/program2.py')}\"'" in ps
+    assert "$s.Save()" in ps
+    assert shortcut._q("O'Brien") == "'O''Brien'"                 # кавычка в пути не ломает команду
+
+
+def test_shortcut_only_windows(monkeypatch, capsys):
+    monkeypatch.setattr(shortcut, "_is_windows", lambda: False)
+    assert gmr.main(["shortcut"]) == 1
+    assert "только на Windows" in capsys.readouterr().out
+
+
+def test_shortcut_creates_via_powershell(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(shortcut, "_is_windows", lambda: True)
+    monkeypatch.setattr(shortcut.sys, "executable", str(tmp_path / "python.exe"))
+    assert gmr.main(["shortcut"]) == 1                             # pythonw.exe нет — ошибка
+    assert "pythonw.exe" in capsys.readouterr().out
+    (tmp_path / "pythonw.exe").write_bytes(b"")
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="C:\\Users\\op\\Desktop\\Счётчики.lnk\n", stderr="")
+
+    monkeypatch.setattr(shortcut.subprocess, "run", run)
+    assert gmr.main(["shortcut"]) == 0
+    (cmd,) = calls
+    assert cmd[0] == "powershell" and str(tmp_path / "pythonw.exe") in cmd[-1]
+    assert str(ROOT / "program2.py") in cmd[-1]
+    assert "Ярлык создан: C:\\Users\\op\\Desktop\\Счётчики.lnk" in capsys.readouterr().out
+    monkeypatch.setattr(shortcut.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="доступ запрещён"))
+    assert gmr.main(["shortcut"]) == 1
+    assert "ярлык не создан" in capsys.readouterr().out

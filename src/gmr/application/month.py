@@ -152,10 +152,12 @@ class LoadReport:
 
 
 def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig] = None,
-               who: Optional[str] = None) -> LoadReport:
+               who: Optional[str] = None, import_old_log: bool = True) -> LoadReport:
     """Создаёт месяц из таблицы компании или загружает её обновлённую версию.
     Ошибка ValueError — если таблица не читается или в ней нет нужных столбцов;
-    тогда база не меняется."""
+    тогда база не меняется. import_old_log=False — не переносить лог старого
+    режима (<таблица>_log.csv рядом с таблицей) при создании месяца: окно
+    оператора спрашивает об этом (этап 4)."""
     cfg = config or PipelineConfig()
     who = who or _who()
     folder = MonthFolder(Path(month_dir))
@@ -250,7 +252,7 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
             if created:
                 db.set_meta("created_at", stamp)
                 old_log = Path(log_path_for(table_path))
-                if old_log.is_file():
+                if import_old_log and old_log.is_file():
                     rows = load_log(str(old_log))
                     db.append_log_rows(rows)
                     rep.log_rows = len(rows)

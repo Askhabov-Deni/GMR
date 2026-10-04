@@ -607,3 +607,89 @@ def test_not_in_db_renamed_file_removed_on_reread(tmp_path, models):
     month.load_table(str(f.root), str(_with_99999(tmp_path)))
     _run(f)
     assert not (nid / "a5_2.jpg").exists() and (nid / "a5.jpg").exists()
+
+
+# ─── Этап 4: прогресс для окна и «Остановить» ────────────────────────────────
+
+def _journal(f):
+    return sorted((f.results / "run_logs").glob("run_*.txt"))[-1].read_text(encoding="utf-8")
+
+
+def test_progress_lines_count_only_new_photos(tmp_path, models):
+    f = _day1(tmp_path)                                           # a1, a3, a5 уже разобраны
+    _photo(f.photos / "Аюб" / "b2.jpg", 2)
+    _photo(f.photos / "Сулиман С" / "c4.jpg", 4)
+    (f.photos / "Сулиман С" / "c4 (1).jpg").write_bytes((f.photos / "Сулиман С" / "c4.jpg").read_bytes())
+    _run(f)
+    j = _journal(f)
+    assert "Новых фото к чтению: 2" in j                          # копия и старые — не в счёт
+    assert "Фото 1 из 2: b2.jpg" in j and "Фото 2 из 2: c4 (1).jpg" in j   # «c4 (1)» раньше «c4»
+    assert "Фото 3 из" not in j
+
+
+def test_stop_file_stops_between_photos(tmp_path, models, monkeypatch):
+    f = _month(tmp_path)
+    for name, n in (("a.jpg", 1), ("b.jpg", 2), ("c.jpg", 4)):
+        _photo(f.photos / "Аюб" / name, n)
+    real = reader.process_photo
+
+    def press_stop_after_first(*a, **k):                          # оператор нажал «Остановить»
+        res = real(*a, **k)
+        f.stop_file.write_text("", encoding="utf-8")
+        return res
+
+    monkeypatch.setattr(reader, "process_photo", press_stop_after_first)
+    _run(f)
+    assert [r["original_filename"] for r in _log(f)] == ["a.jpg"]   # a.jpg записан целиком
+    assert "Остановлено оператором: прочитано 1 из 3" in _journal(f)
+    assert not f.stop_file.exists() and f.export_xlsx.is_file()   # выгрузка сделана
+    monkeypatch.setattr(reader, "process_photo", real)
+    _run(f)                                                        # следующий запуск дочитывает
+    assert [r["original_filename"] for r in _log(f)] == ["a.jpg", "b.jpg", "c.jpg"]
+
+
+def test_stop_stops_whole_run_not_only_one_controller(tmp_path, models, monkeypatch):
+    f = _month(tmp_path)
+    _photo(f.photos / "Аюб" / "a.jpg", 1)
+    _photo(f.photos / "Аюб" / "b.jpg", 2)
+    _photo(f.photos / "Сулиман С" / "c.jpg", 4)
+    real = reader.process_photo
+    monkeypatch.setattr(reader, "process_photo",
+                        lambda *a, **k: (real(*a, **k), f.stop_file.write_text("", encoding="utf-8"))[0])
+    _run(f)
+    j = _journal(f)
+    assert j.count("Остановлено оператором") == 1 and "Папка контролёра: Сулиман С" not in j
+    assert [r["original_filename"] for r in _log(f)] == ["a.jpg"]
+
+
+def test_two_runs_in_one_second_keep_own_journals(tmp_path, models, monkeypatch):
+    class SameSecond(reader.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return reader.datetime(2026, 10, 3, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(reader, "datetime", SameSecond)
+    f = _month(tmp_path)
+    _photo(f.photos / "Аюб" / "a.jpg", 1)
+    _run(f)
+    _run(f)
+    logs = f.results / "run_logs"
+    assert "Новых фото к чтению: 1" in (logs / "run_2026-10-03_120000.txt").read_text(encoding="utf-8")
+    assert "Новых фото к чтению: 0" in (logs / "run_2026-10-03_120000_2.txt").read_text(encoding="utf-8")
+
+
+def test_old_stop_file_ignored(tmp_path, models):
+    f = _month(tmp_path)
+    _photo(f.photos / "Аюб" / "a.jpg", 1)
+    f.stop_file.write_text("", encoding="utf-8")                  # осталась от прошлого раза
+    _run(f)
+    assert len(_log(f)) == 1 and not f.stop_file.exists()
+
+
+def test_progress_lines_parse_in_window(tmp_path, models):
+    # строки прогона, по которым окно оператора двигает полосу (src/gmr/ui/run_dialog.py)
+    from src.gmr.ui.run_dialog import parse_progress
+    f = _day1(tmp_path)
+    got = [p for p in map(parse_progress, _journal(f).splitlines()) if p]
+    assert got == [("total", 3), ("models",), ("photo", 1, 3, "a1.jpg"), ("photo", 2, 3, "a3.jpg"),
+                   ("photo", 3, 3, "a5.jpg")]

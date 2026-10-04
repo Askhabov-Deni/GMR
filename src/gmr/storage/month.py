@@ -53,6 +53,10 @@ class MonthFolder:
     def tables(self) -> Path: return self.root / "таблицы"
     @property
     def backups(self) -> Path: return self.root / "gmr_backups"
+    # окно оператора просит прогон остановиться (кнопка «Остановить», этап 4):
+    # reader.py проверяет файл между фото и заканчивает аккуратно
+    @property
+    def stop_file(self) -> Path: return self.root / ".gmr_stop"
 
     def exists(self) -> bool:
         return self.db.is_file()

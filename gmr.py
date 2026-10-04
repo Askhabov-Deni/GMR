@@ -11,6 +11,7 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py inspect <модель> <фото|папка> [...]                  посмотреть модель
   python gmr.py weights [--write]                                     файлы весов
   python gmr.py check                                                 проверка перед коммитом
+  python gmr.py shortcut                                              ярлык «Счётчики» на рабочем столе
   python gmr.py <команда> --help                                      подробности
 
 Ничего нового команды не делают: process вызывает тот же run_pipeline с теми же
@@ -105,6 +106,11 @@ def _check(argv):
     return check.main(argv)
 
 
+def _shortcut(argv):
+    from tools import shortcut
+    return shortcut.main(argv)
+
+
 COMMANDS = {
     "month":   (_month,   "папка месяца: создать / загрузить обновлённую таблицу / сводка"),
     "export":  (_export,  "выгрузить показания.xlsx и лог.csv"),
@@ -113,6 +119,7 @@ COMMANDS = {
     "inspect": (_inspect, "посмотреть, что делает модель (tools/inspect_model.py)"),
     "weights": (_weights, "какие файлы весов в работе (tools/weights_manifest.py)"),
     "check":   (_check,   "проверка перед коммитом: данные, код, тесты (tools/check.py)"),
+    "shortcut": (_shortcut, "ярлык «Счётчики» на рабочем столе — окно оператора (tools/shortcut.py)"),
 }
 
 
