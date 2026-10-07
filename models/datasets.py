@@ -38,8 +38,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
+from src.gmr.domain.datasets import DATASETS_DIR, to_etalon  # noqa: F401 (общие с окном оператора)
+
 ROOT = Path(__file__).resolve().parent.parent
-DATASETS_DIR = Path("database") / "datasets"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 DIGITS = [str(d) for d in range(10)]
 
@@ -48,7 +49,7 @@ LAYOUT: dict[str, list[str]] = {
     "meter_yolo":   ["images", "labels", "new"],
     "digits_yolo":  ["images", "labels"],
     "digits_cnn":   DIGITS + [f"new/{d}" for d in DIGITS],
-    "serials_crnn": ["images", "labels", "new"],
+    "serials_crnn": ["images", "labels", "new/images", "new/labels"],
     "etalon":       [],
 }
 # classes.txt, который известен заранее (детектор цифр — один класс, как в

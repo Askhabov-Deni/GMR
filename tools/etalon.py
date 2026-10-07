@@ -26,7 +26,6 @@ tools/etalon.py — эталон: трудные фото с правильны�
 import argparse
 import csv
 import dataclasses
-import hashlib
 import shutil
 import sys
 from collections import Counter
@@ -35,14 +34,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from models.datasets import DATASETS_DIR, IMAGE_EXTS
+from models.datasets import DATASETS_DIR, IMAGE_EXTS, to_etalon
 from src.gmr.application.operator import CORRECTED_NOTE
 from src.gmr.domain import PipelineConfig
 from src.gmr.domain.models import QUESTION_REASONS
 from src.gmr.domain.serial_match import normalize_serial
 
 ETALON_DIR = DATASETS_DIR / "etalon"
-ETALON_SHARE = 1 / 3
 # авто-исходы «модель не справилась»; ERROR — сбой программы, а не модели
 FAILED = ("NO_METER", "NO_SERIAL", "SERIAL_LOW_CONF", "SERIAL_NOT_FOUND", "SERIAL_AMBIGUOUS",
           "DIGITS_ERROR", "SUSPICIOUS")
@@ -59,12 +57,6 @@ class Answer:
     serial: str
     reading: str
     reason: str
-
-
-def to_etalon(photo_hash: str) -> bool:
-    """Эталон или обучение: каждое третье фото по отпечатку (решение 1а)."""
-    x = int(hashlib.sha256(f"etalon:{photo_hash}".encode("utf-8")).hexdigest()[:12], 16) / 16 ** 12
-    return x < ETALON_SHARE
 
 
 def _reading(value) -> str:

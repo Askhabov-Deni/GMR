@@ -28,7 +28,7 @@ def test_layout_created_and_nothing_touched(tmp_path):
     keep = touch(tmp_path / "digits_cnn" / "3" / "a.jpg", b"crop")
     created = ds.ensure_layout(tmp_path)
     for d in ("meter_yolo/images", "meter_yolo/labels", "meter_yolo/new", "digits_yolo/labels",
-              "digits_cnn/0", "digits_cnn/new/9", "serials_crnn/new", "etalon"):
+              "digits_cnn/0", "digits_cnn/new/9", "serials_crnn/new/images", "serials_crnn/new/labels", "etalon"):
         assert (tmp_path / d).is_dir(), d
     assert (tmp_path / "digits_yolo" / "classes.txt").read_text(encoding="utf-8") == "digit\n"
     assert keep.read_bytes() == b"crop" and tmp_path / "digits_cnn" / "3" not in created
@@ -184,6 +184,7 @@ def test_check_cnn_and_crnn(tmp_path):
     touch(crnn / "images" / "s2.jpg", b"2")
     touch(crnn / "labels" / "s2.txt", b"12")                        # коротко
     touch(crnn / "images" / "s3.jpg", b"3")
+    touch(crnn / "new" / "images" / "1234567__h1.jpg")              # исправил оператор (окно)
     out = check_ds.run(tmp_path)
     c = out.split("digits_cnn —")[1].split("serials_crnn —")[0]
     lines = c.splitlines()
@@ -196,6 +197,7 @@ def test_check_cnn_and_crnn(tmp_path):
     s = out.split("serials_crnn —")[1].split("etalon —")[0]
     assert "фото: 3, с годным номером: 1" in s and "длина номера: 7 цифр — 1" in s
     assert "фото без разметки: 1" in s and "номер не годится" in s
+    assert "new/ (исправил оператор): 1 фото" in s
     assert "Имена проблемных файлов — с --list" in out
 
 

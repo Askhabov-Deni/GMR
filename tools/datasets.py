@@ -166,7 +166,7 @@ def check_crnn(root: Path, rep: Report) -> None:
     rep.problem("одинаковые фото", [" = ".join(p.name for p in g) for g in _duplicates(images)])
     if good:
         rep.add(_split_line(split_by_photo(good, lambda p: p.name, CRNN_SEED, CRNN_TRAIN, CRNN_VAL)))
-    new = images_in(root / "new")
+    new = images_in(root / "new" / "images")
     rep.add(f"  new/ (исправил оператор): {len(new)} фото")
 
 

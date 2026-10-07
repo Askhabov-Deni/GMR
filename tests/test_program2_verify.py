@@ -174,8 +174,7 @@ def _window(monkeypatch, settings):
 
 
 def _settings(f, tmp_path):
-    return program2.AppSettings(operator_name="Оператор", month_dir=str(f.root),
-                                training_dir=str(tmp_path / "train"))
+    return program2.AppSettings(operator_name="Оператор", month_dir=str(f.root))
 
 
 @pytest.fixture

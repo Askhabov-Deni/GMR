@@ -16,9 +16,11 @@ MainWindow (Tk root)
 ├── EditScreen          — разбор одного фото: Принять / Дубль / Нечитаемо / Нет в базе /
 │                         Серийник в базе с ошибкой; подсказка «похожие номера в базе»
 └── VerifyScreen        — проверка одного фото: Верно / Исправить (→ база) / Пропустить
-ТИХАЯ РАЗМЕТКА (оператор не видит): если оператор исправил модель —
-CRNN: кроп serial_number + правильный текст (.txt) в <папка разметки>/crnn/images
-CNN:  кропы изменённых цифр в <папка разметки>/cnn/<цифра>
+ТИХАЯ РАЗМЕТКА (оператор не видит): если оператор исправил модель — в папки
+new/ датасетов проекта (database/datasets, этап 5c; фото эталона — нет):
+CRNN: кроп serial_number + правильный номер — serials_crnn/new/images, new/labels
+CNN:  кропы изменённых цифр — digits_cnn/new/<цифра>
+YOLO: «Нет счётчика», а оператор ввёл показание — исходное фото в meter_yolo/new
 """
 import json
 import logging
@@ -27,7 +29,6 @@ import shutil
 import sys
 import sqlite3
 import threading
-import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,7 @@ from src.gmr.domain.serial_match import alphabet_for, one_char_matches
 # Модели — через контракты и общий с reader.py сервис распознавания (Фаза 3)
 from src.gmr.application import digit_crops_by_position, recognize_photo
 from src.gmr.ml.loader import default_device, load_models
+from src.gmr.domain.datasets import DATASETS_DIR, to_etalon
 
 _LOG_FILE = _BASE / "program2.log"
 
@@ -104,8 +106,23 @@ CLR_WHITE  = "#ffffff"
 @dataclass
 class AppSettings:
     operator_name: str = ""
-    month_dir:     str = ""   # папка месяца (gmr.py month): база, фото, результат
-    training_dir:  str = ""
+    month_dir:     str = ""   # папка месяца: база, фото, результат
+    # «Папки для разметки» больше нет (2026-10-07): исправления оператора идут
+    # в папки new/ датасетов проекта (DATASETS_ROOT); старый ключ в
+    # settings.json просто не читается.
+
+
+# Датасеты моделей (database/datasets, docs/GUIDE.md 5.0): тихая разметка
+DATASETS_ROOT = _BASE / DATASETS_DIR
+
+RU_MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август",
+             "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+
+
+def default_month_name(day=None) -> str:
+    """Имя папки нового месяца по умолчанию: «Октябрь_2026»."""
+    day = day or datetime.now()
+    return f"{RU_MONTHS[day.month - 1]}_{day.year}"
 
 def load_settings() -> AppSettings:
     if SETTINGS_FILE.exists():
@@ -123,13 +140,15 @@ def save_settings(s: AppSettings) -> None:
 
 # ─── Диалоги входа ────────────────────────────────────────────────────────────
 class SettingsDialog(tk.Toplevel):
-    """Первый запуск или смена пользователя."""
-    def __init__(self, parent, settings: AppSettings):
+    """Первый запуск или смена пользователя: имя и папка месяца. «Новый…» —
+    создать месяц из таблицы компании (new_month(диалог, имя) → папка | None)."""
+    def __init__(self, parent, settings: AppSettings, new_month=None):
         super().__init__(parent)
         self.title("Настройки")
         self.resizable(False, False)
         self.grab_set()
         self.result: Optional[AppSettings] = None
+        self._new_month = new_month
         self._build(settings)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.wait_window()
@@ -143,46 +162,41 @@ class SettingsDialog(tk.Toplevel):
             row=0, column=0, columnspan=3, pady=(0, 16), sticky="w"
         )
 
-        fields = [
-            ("Ваше имя:",            "name",     None),
-            ("Папка месяца:",        "month",    "dir"),
-            ("Папка для разметки:",  "training",  "dir"),
-        ]
-
-        self._vars = {}
-        for i, (label, key, mode) in enumerate(fields, start=1):
-            ttk.Label(f, text=label).grid(row=i, column=0, sticky="w", **pad)
-            var = tk.StringVar(value=getattr(s, {
-                "name": "operator_name", "month": "month_dir", "training": "training_dir",
-            }[key]))
-            self._vars[key] = var
-            entry = ttk.Entry(f, textvariable=var, width=42)
-            entry.grid(row=i, column=1, **pad)
-            if mode:
-                ttk.Button(f, text="…", width=3,
-                           command=lambda v=var, m=mode: self._browse(v, m)
-                           ).grid(row=i, column=2, padx=(0, 12))
+        self._vars = {"name": tk.StringVar(value=s.operator_name), "month": tk.StringVar(value=s.month_dir)}
+        ttk.Label(f, text="Ваше имя:").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Entry(f, textvariable=self._vars["name"], width=42).grid(row=1, column=1, columnspan=2, **pad)
+        ttk.Label(f, text="Папка месяца:").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Entry(f, textvariable=self._vars["month"], width=42).grid(row=2, column=1, columnspan=2, **pad)
+        ttk.Button(f, text="Открыть…", command=self._browse).grid(row=3, column=1, sticky="w", padx=12)
+        if self._new_month is not None:
+            ttk.Button(f, text="Новый месяц…", command=self._create).grid(row=3, column=2, sticky="e", padx=12)
 
         btns = ttk.Frame(f)
         btns.grid(row=10, column=0, columnspan=3, pady=(16, 0))
         ttk.Button(btns, text="Сохранить", command=self._save).pack(side=tk.LEFT, padx=6)
         ttk.Button(btns, text="Отмена",    command=self._cancel).pack(side=tk.LEFT, padx=6)
 
-    def _browse(self, var: tk.StringVar, mode: str):
-        p = filedialog.askdirectory(title="Выберите папку")
+    def _browse(self):
+        p = filedialog.askdirectory(parent=self, title="Папка месяца")
         if p:
-            var.set(p)
+            self._vars["month"].set(p)
+
+    def _create(self):
+        folder = self._new_month(self, self._vars["name"].get().strip())
+        if folder:
+            self._vars["month"].set(folder)
 
     def _save(self):
         name = self._vars["name"].get().strip()
         if not name:
             messagebox.showwarning("Ошибка", "Введите имя оператора", parent=self)
             return
-        self.result = AppSettings(
-            operator_name=name,
-            month_dir=self._vars["month"].get().strip(),
-            training_dir=self._vars["training"].get().strip(),
-        )
+        month = self._vars["month"].get().strip()
+        if not month:
+            messagebox.showwarning("Папка месяца", "Откройте папку месяца или создайте новый месяц "
+                                   "из таблицы компании («Новый месяц…»).", parent=self)
+            return
+        self.result = AppSettings(operator_name=name, month_dir=month)
         self.destroy()
 
     def _cancel(self):
@@ -639,45 +653,42 @@ def now_iso() -> str:
     return datetime.now().strftime("%d.%m.%Y %H:%M")
 
 # ─── Разметка (тихо) ─────────────────────────────────────────────────────────
+# Этап 5c (2026-10-07): в папки new/ датасетов проекта (DATASETS_ROOT), имена —
+# с отпечатком фото (обучение делит датасет по фото, models/datasets.py). Что в
+# new/ — владелец просматривает и переносит в датасет сам.
 def save_crnn_markup(
-    training_dir: str,
-    photo_path: str,
+    root: Path,
+    photo_key: str,
     serial_crop: Optional[np.ndarray],
     correct_text: str,
     model_text: Optional[str],
 ) -> None:
-    """Сохраняем разметку CRNN только если серийник исправили."""
+    """Кроп серийника и правильный номер — только если номер исправили:
+    serials_crnn/new/images/<номер>__<фото>.jpg и new/labels/… .txt."""
     if serial_crop is None:
         return
     if model_text is not None and correct_text == model_text:
         return
-    out_dir = Path(training_dir) / "crnn" / "images"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    safe_text = "".join(c for c in correct_text if c.isalnum() or c in "-_")
-    if not safe_text:
-        safe_text = Path(photo_path).stem
-    out_fname = f"{safe_text}.jpeg"
-    
-    out_img = out_dir / out_fname
-    if out_img.exists():
-        out_img = out_dir / f"{safe_text}_{uuid.uuid4().hex[:6]}.jpeg"
-    if not write_image(out_img, serial_crop):
-        log.warning(f"CRNN разметка: не удалось сохранить {out_img}")
+    safe_text = "".join(c for c in correct_text if c.isalnum() or c in "-_") or "serial"
+    name = f"{safe_text}__{photo_key}"
+    new = Path(root) / "serials_crnn" / "new"
+    (new / "images").mkdir(parents=True, exist_ok=True)
+    (new / "labels").mkdir(parents=True, exist_ok=True)
+    if not write_image(new / "images" / f"{name}.jpg", serial_crop):
+        log.warning(f"CRNN разметка: не удалось сохранить {name}.jpg")
         return
-
-    out_txt = out_img.with_suffix(".txt")
-    out_txt.write_text(correct_text, encoding="utf-8")
-    log.info(f"CRNN разметка: {out_img.name} → '{correct_text}'")
+    (new / "labels" / f"{name}.txt").write_text(correct_text, encoding="utf-8")
+    log.info(f"CRNN разметка: {name}.jpg → '{correct_text}'")
 
 def save_cnn_markup(
-    training_dir: str,
+    root: Path,
+    photo_key: str,
     digit_crops: Optional[list],
     digit_preds: Optional[list],
     model_reading_str: Optional[str],
     final_reading_str: str,
 ) -> None:
-    """Сохраняем кропы только изменённых цифр."""
+    """Кропы только изменённых цифр: digits_cnn/new/<цифра>/<фото>__digit_<N>.jpg."""
     if not digit_crops or not digit_preds:
         return
     if len(digit_crops) != len(final_reading_str):
@@ -697,13 +708,23 @@ def save_cnn_markup(
         if not final_char.isdigit():
             continue
 
-        out_dir = Path(training_dir) / "cnn" / final_char
+        out_dir = Path(root) / "digits_cnn" / "new" / final_char
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = str(out_dir / f"{uuid.uuid4().hex}.jpg")
+        out_path = out_dir / f"{photo_key}__digit_{pos + 1}.jpg"
         if not write_image(out_path, crop):
             log.warning(f"CNN разметка: не удалось сохранить {out_path}")
             continue
         log.info(f"CNN разметка: pos={pos} model={model_char!r} → correct={final_char!r}")
+
+def save_meter_markup(root: Path, photo_key: str, original: Optional[Path]) -> None:
+    """«Нет счётчика», а оператор ввёл показание — детектор промахнулся:
+    исходное фото в meter_yolo/new/ на ручную разметку (решение 3а)."""
+    if original is None or not Path(original).is_file():
+        return
+    out = Path(root) / "meter_yolo" / "new"
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(original, out / f"{photo_key}{Path(original).suffix.lower()}")
+    log.info(f"YOLO разметка: {photo_key} → meter_yolo/new")
 
 # ─── Виджет показаний (5 полей) ───────────────────────────────────────────────
 class ReadingWidget(ttk.Frame):
@@ -856,7 +877,7 @@ class MainWindow(tk.Tk):
         self._build_ui()
 
     def _open_settings(self, first_run=False) -> bool:
-        dlg = SettingsDialog(self, self.settings)
+        dlg = SettingsDialog(self, self.settings, new_month=self.ask_new_month)
         if dlg.result:
             self.settings = dlg.result
             save_settings(self.settings)
@@ -923,19 +944,38 @@ class MainWindow(tk.Tk):
             )
 
     # ─── Месяц: создать, обновить таблицу, итог (этап 4) ───────────────────────
-    def _ask_table(self) -> Optional[str]:
+    def _ask_table(self, parent=None) -> Optional[str]:
         return filedialog.askopenfilename(
-            parent=self, title="Таблица компании",
+            parent=parent or self, title="Таблица компании",
             filetypes=[("Таблицы", "*.xls *.xlsx *.csv"), ("Все файлы", "*.*")]) or None
 
-    def create_month(self, folder: str, table: Optional[str] = None) -> bool:
+    def ask_new_month(self, parent=None, who: Optional[str] = None) -> Optional[str]:
+        """Новый месяц без PowerShell (2026-10-07): таблица компании, потом —
+        как «Сохранить как»: где и под каким именем создать папку месяца (по
+        умолчанию «Октябрь_2026» рядом с текущим месяцем). Возвращает папку
+        созданного месяца или None."""
+        parent = parent or self
+        table = self._ask_table(parent)
+        if not table:
+            return None
+        here = Path(self.settings.month_dir).parent if self.settings.month_dir else Path.home()
+        folder = filedialog.asksaveasfilename(
+            parent=parent, title="Где создать папку нового месяца", initialdir=str(here),
+            initialfile=default_month_name(), confirmoverwrite=False)
+        if not folder:
+            return None
+        return folder if self.create_month(folder, table, parent=parent, who=who) else None
+
+    def create_month(self, folder: str, table: Optional[str] = None, parent=None,
+                     who: Optional[str] = None) -> bool:
         """Новый месяц в папке folder из таблицы компании (то же, что
         `gmr.py month <папка> --table <таблица>`). True — месяц создан."""
+        parent = parent or self
         if month_app.is_month(month_app.MonthFolder(Path(folder))):
             messagebox.showerror("Новый месяц", f"В папке {folder} месяц уже есть.\n"
-                                 "Новая таблица компании — меню «Месяц» → «Обновить таблицу…».", parent=self)
+                                 "Новая таблица компании — меню «Месяц» → «Обновить таблицу…».", parent=parent)
             return False
-        table = table or self._ask_table()
+        table = table or self._ask_table(parent)
         if not table:
             return False
         old_log = Path(log_path_for(table))
@@ -943,15 +983,15 @@ class MainWindow(tk.Tk):
             "Старый лог",
             f"Рядом с таблицей лежит лог старой версии программы:\n{old_log.name}\n\n"
             "Перенести его в базу месяца? Тогда фото из этого лога будут считаться уже разобранными.\n"
-            "Обычно — «Нет»: месяц начинается с чистого листа.", default="no", parent=self)
+            "Обычно — «Нет»: месяц начинается с чистого листа.", default="no", parent=parent)
         try:
-            rep = month_app.load_table(folder, table, self.config, who=self.settings.operator_name,
+            rep = month_app.load_table(folder, table, self.config, who=who or self.settings.operator_name,
                                        import_old_log=import_log)
             exported = month_app.export_month(folder, self.config).text()
         except (ValueError, OSError, ExportLocked) as e:
-            messagebox.showerror("Новый месяц", str(e), parent=self)
+            messagebox.showerror("Новый месяц", str(e), parent=parent)
             return False
-        show_text(self, "Месяц создан", rep.text() + "\n\n" + exported)
+        show_text(parent, "Месяц создан", rep.text() + "\n\n" + exported)
         return True
 
     def _switch_month(self, folder: str):
@@ -959,7 +999,7 @@ class MainWindow(tk.Tk):
         не открылся, окно остаётся в прежнем месяце."""
         self._close_screen()
         old = self.settings
-        self.settings = AppSettings(old.operator_name, folder, old.training_dir)
+        self.settings = AppSettings(old.operator_name, folder)
         opened = False
         try:
             opened = self._load_data()
@@ -973,11 +1013,8 @@ class MainWindow(tk.Tk):
 
     def new_month(self):
         """Меню «Месяц» → «Новый месяц…»: таблица компании и папка нового месяца."""
-        table = self._ask_table()
-        if not table:
-            return
-        folder = filedialog.askdirectory(parent=self, title="Папка нового месяца (пустая или новая)")
-        if folder and self.create_month(folder, table):
+        folder = self.ask_new_month()
+        if folder:
             self._switch_month(folder)
 
     def update_table(self):
@@ -2117,7 +2154,7 @@ class EditScreen(ttk.Frame):
         })
         self.app.accept_reading(row, self.photo_path)    # показание и строка лога — одной записью
 
-        self._save_markup_silent(serial, reading_s, mr)
+        self._save_markup_silent(serial, reading_s, mr, row)
 
         try:
             new_path = move_photo(self.photo_path, dst_dir, new_name)
@@ -2147,27 +2184,30 @@ class EditScreen(ttk.Frame):
             parent=self.app,
         )
 
-    def _save_markup_silent(self, final_serial: str, final_reading_str: str, mr: dict):
-        td = self.app.settings.training_dir
-        if not td:
+    def _save_markup_silent(self, final_serial: str, final_reading_str: str, mr: dict, row: dict):
+        """Исправления оператора — в папки new/ датасетов. Фото эталона не
+        сохраняются: эталон и обучение не пересекаются (models.datasets.to_etalon)."""
+        h = row.get("photo_hash") or ""
+        if h and to_etalon(h):
             return
+        key = h or Path(self.photo_path).stem
         try:
-            save_crnn_markup(
-                td,
-                self.photo_path,
-                mr.get("serial_crop"),
-                final_serial,
-                mr.get("serial_text"),
-            )
-            save_cnn_markup(
-                td,
-                mr.get("digit_crops"),
-                mr.get("digit_preds"),
-                mr.get("reading_str"),
-                final_reading_str,
-            )
+            save_crnn_markup(DATASETS_ROOT, key, mr.get("serial_crop"), final_serial, mr.get("serial_text"))
+            save_cnn_markup(DATASETS_ROOT, key, mr.get("digit_crops"), mr.get("digit_preds"),
+                            mr.get("reading_str"), final_reading_str)
+            if self.reason == "no_meter":
+                save_meter_markup(DATASETS_ROOT, key, self._original_photo(row))
         except Exception as e:
             log.warning(f"Ошибка сохранения разметки: {e}")
+
+    def _original_photo(self, row: dict) -> Optional[Path]:
+        """Исходное фото в <месяц>/фото/<контролёр>/ (файл в question/ — с подписью)."""
+        src = find_auto_row_for_output_file(
+            self.app.log_rows, row.get("original_filename", ""),
+            controller_name(self.photo_path, self.app.results_dir))
+        name = (src or row).get("original_filename", "")
+        p = Path(self.app.session.folder.photos) / (row.get("source_folder") or "") / name
+        return p if name and p.is_file() else None
 
     def _duplicate(self):
         if not messagebox.askyesno("Дубль", "Пометить как дубль?", parent=self.app):
@@ -2352,7 +2392,7 @@ class EditScreen(ttk.Frame):
             "Оператор":         self.app.settings.operator_name,
         })
         # номер на фото верный — годится в разметку для дообучения CRNN
-        self._save_markup_silent(photo_serial, reading_s, mr)
+        self._save_markup_silent(photo_serial, reading_s, mr, row)
         try:
             new_path = move_photo(self.photo_path, dst_dir, Path(dst).name)
             redraw_annotation(new_path, photo_serial, reading_s)

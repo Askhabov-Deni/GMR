@@ -60,26 +60,40 @@ def test_controller_dir_of_photo(tmp_path):
 def test_save_crnn_markup(tmp_path):
     crop = np.full((20, 60, 3), 50, np.uint8)
     # серийник не исправляли — ничего не сохраняется
-    program2.save_crnn_markup(str(tmp_path), "p.jpg", crop, "1234567", "1234567")
-    program2.save_crnn_markup(str(tmp_path), "p.jpg", None, "1234567", "1284567")
-    assert not (tmp_path / "crnn").exists()
-    # исправили — кроп + .txt с правильным текстом; повтор — уникальное имя
-    program2.save_crnn_markup(str(tmp_path), "p.jpg", crop, "1234567", "1284567")
-    program2.save_crnn_markup(str(tmp_path), "p.jpg", crop, "1234567", "1284567")
-    imgs = sorted((tmp_path / "crnn" / "images").glob("*.jpeg"))
-    assert len(imgs) == 2 and imgs[0].name == "1234567.jpeg"
-    assert all(i.with_suffix(".txt").read_text(encoding="utf-8") == "1234567" for i in imgs)
+    program2.save_crnn_markup(tmp_path, "h1", crop, "1234567", "1234567")
+    program2.save_crnn_markup(tmp_path, "h1", None, "1234567", "1284567")
+    assert not (tmp_path / "serials_crnn").exists()
+    # исправили — кроп в new/images и номер в new/labels; имя — номер и фото
+    program2.save_crnn_markup(tmp_path, "h1", crop, "1234567", "1284567")
+    program2.save_crnn_markup(tmp_path, "h2", crop, "1234567", None)
+    new = tmp_path / "serials_crnn" / "new"
+    assert sorted(p.name for p in (new / "images").iterdir()) == ["1234567__h1.jpg", "1234567__h2.jpg"]
+    assert (new / "labels" / "1234567__h1.txt").read_text(encoding="utf-8") == "1234567"
 
 
 def test_save_cnn_markup_only_changed_digits(tmp_path):
     crops = [np.full((30, 15, 3), v, np.uint8) for v in range(5)]
     crops[1] = None                                            # заглушка — пропускается
-    program2.save_cnn_markup(str(tmp_path), crops, [{}] * 5, "12?45", "12745")
-    saved = {p.parent.name for p in (tmp_path / "cnn").rglob("*.jpg")}
-    assert saved == {"7"}                                      # изменилась только позиция 2
+    program2.save_cnn_markup(tmp_path, "h1", crops, [{}] * 5, "12?45", "12745")
+    saved = [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.jpg")]
+    assert saved == ["digits_cnn/new/7/h1__digit_3.jpg"]      # изменилась только позиция 3
     # длины не совпадают — ничего
-    program2.save_cnn_markup(str(tmp_path / "x"), crops, [{}] * 5, "12345", "1234")
+    program2.save_cnn_markup(tmp_path / "x", "h1", crops, [{}] * 5, "12345", "1234")
     assert not (tmp_path / "x").exists()
+
+
+def test_save_meter_markup(tmp_path):
+    orig = img(tmp_path / "фото" / "Аюб" / "IMG-1.JPG")
+    program2.save_meter_markup(tmp_path / "ds", "h1", orig)
+    program2.save_meter_markup(tmp_path / "ds", "h2", None)
+    program2.save_meter_markup(tmp_path / "ds", "h3", tmp_path / "нет.jpg")
+    assert [p.name for p in (tmp_path / "ds" / "meter_yolo" / "new").iterdir()] == ["h1.jpg"]
+
+
+def test_default_month_name():
+    from datetime import datetime
+    assert program2.default_month_name(datetime(2026, 10, 7)) == "Октябрь_2026"
+    assert program2.default_month_name(datetime(2027, 1, 1)) == "Январь_2027"
 
 
 def test_error_folder_in_queue_last(tmp_path):
@@ -92,13 +106,13 @@ def test_error_folder_in_queue_last(tmp_path):
 
 
 def test_old_settings_ask_for_month_folder(tmp_path, monkeypatch):
-    # settings.json до этапа 2.3: папка контролёра и таблица — имя и папка разметки остаются
+    # settings.json до этапа 2.3 (папка контролёра, таблица) и с «папкой для разметки»
+    # (до 2026-10-07): имя остаётся, лишние ключи не мешают
     f = tmp_path / "settings.json"
     f.write_text('{"operator_name": "Оператор", "photos_dir": "output/Аюб", '
                  '"table_path": "t.csv", "training_dir": "train"}', encoding="utf-8")
     monkeypatch.setattr(program2, "SETTINGS_FILE", f)
-    s = program2.load_settings()
-    assert (s.operator_name, s.month_dir, s.training_dir) == ("Оператор", "", "train")
+    assert program2.load_settings() == program2.AppSettings("Оператор", "")
 
 
 # ─── Окна: экран обработки ───────────────────────────────────────────────────
@@ -135,8 +149,7 @@ def app(tmp_path, monkeypatch):
     img(q / "serial_not_found" / "IMG-20260915-WA0001.jpg", 10)
     img(q / "serial_not_found" / "p2.jpg", 20)
     img(q / "no_meter" / "p3.jpg", 30)
-    w = _window(monkeypatch, program2.AppSettings(
-        operator_name="Оператор", month_dir=str(f.root), training_dir=str(tmp_path / "train")))
+    w = _window(monkeypatch, program2.AppSettings(operator_name="Оператор", month_dir=str(f.root)))
     w.photos, w.month = photos, f
     yield w
     try:
@@ -288,11 +301,15 @@ def test_accept_saves_silent_markup_when_model_was_wrong(app):
     scr._model_result = {"serial_text": "1284567", "serial_crop": np.full((20, 60, 3), 5, np.uint8),
                          "reading_str": "01?00", "digit_crops": [np.full((30, 15, 3), 1, np.uint8)] * 5,
                          "digit_preds": [{}] * 5}
-    _fill(scr, "A1", "01200")
+    img(app.month.photos / "Аюб" / "IMG-20260915-WA0001.jpg")  # исходное фото есть, но счётчик найден —
+    _fill(scr, "A1", "01200")                                 # в meter_yolo/new не кладётся
     scr._accept()
-    train = app.month.root.parent / "train"
-    assert (train / "crnn" / "images" / "1234567.jpeg").exists()
-    assert {p.parent.name for p in (train / "cnn").rglob("*.jpg")} == {"2"}
+    ds = program2.DATASETS_ROOT
+    assert not (ds / "meter_yolo").exists()
+    h = "h-IMG-20260915-WA0001.jpg"                            # отпечаток из авто-строки
+    assert (ds / "serials_crnn" / "new" / "images" / f"1234567__{h}.jpg").exists()
+    assert [p.relative_to(ds).as_posix() for p in ds.rglob("*.jpg") if "digits_cnn" in p.parts] == [
+        f"digits_cnn/new/2/{h}__digit_3.jpg"]
 
 
 @needs_display
@@ -472,13 +489,14 @@ def test_not_a_month_folder_asks_settings_again(tmp_path, monkeypatch):
     f = make_month(tmp_path, [("1234567", "A1", "1000", "")])
     asked = []
 
-    def settings_dialog(parent, settings):
+    def settings_dialog(parent, settings, **kw):
         asked.append(settings.month_dir)
-        return SimpleNamespace(result=program2.AppSettings("Оператор", str(f.root), ""))
+        assert kw["new_month"] == parent.ask_new_month         # в настройках есть «Новый месяц…»
+        return SimpleNamespace(result=program2.AppSettings("Оператор", str(f.root)))
 
     monkeypatch.setattr(program2, "SettingsDialog", settings_dialog)
     # «Создать в этой папке новый месяц?» — Нет: окно снова спрашивает папку
-    w = _window(monkeypatch, program2.AppSettings("Оператор", str(tmp_path / "нет"), ""), answers=[False])
+    w = _window(monkeypatch, program2.AppSettings("Оператор", str(tmp_path / "нет")), answers=[False])
     try:
         assert asked == [str(tmp_path / "нет")]
         assert "Месяц не создан" in w.asked[0][1] and "Создать в этой папке" in w.asked[0][1]
@@ -490,8 +508,8 @@ def test_not_a_month_folder_asks_settings_again(tmp_path, monkeypatch):
 @needs_display
 def test_change_user_cancelled_keeps_settings(tmp_path, monkeypatch):
     f = make_month(tmp_path, [("1234567", "A1", "1000", "")])
-    monkeypatch.setattr(program2, "SettingsDialog", lambda parent, settings: SimpleNamespace(result=None))
-    w = _window(monkeypatch, program2.AppSettings("Оператор", str(f.root), ""))
+    monkeypatch.setattr(program2, "SettingsDialog", lambda parent, settings, **kw: SimpleNamespace(result=None))
+    w = _window(monkeypatch, program2.AppSettings("Оператор", str(f.root)))
     monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: SimpleNamespace(action="change"))
     w.destroy()
     w = new_window(program2.MainWindow)            # «Сменить пользователя» → «Отмена»
@@ -634,10 +652,11 @@ def _table_csv(path, rows):
     return path
 
 
-def _dialogs(monkeypatch, files=(), dirs=()):
-    files, dirs = list(files), list(dirs)
+def _dialogs(monkeypatch, files=(), dirs=(), saves=()):
+    files, dirs, saves = list(files), list(dirs), list(saves)
     monkeypatch.setattr(program2.filedialog, "askopenfilename", lambda **k: str(files.pop(0)) if files else "")
     monkeypatch.setattr(program2.filedialog, "askdirectory", lambda **k: str(dirs.pop(0)) if dirs else "")
+    monkeypatch.setattr(program2.filedialog, "asksaveasfilename", lambda **k: str(saves.pop(0)) if saves else "")
     shown = []
     monkeypatch.setattr(program2, "show_text", lambda parent, title, text: shown.append((title, text)))
     return shown
@@ -648,7 +667,7 @@ def test_first_run_creates_month_from_window(tmp_path, monkeypatch):
     table = _table_csv(tmp_path / "компания" / "Май.csv", [("1234567", "A1", "1000", "")])
     shown = _dialogs(monkeypatch, files=[table])
     folder = tmp_path / "Май_2026"
-    w = _window(monkeypatch, program2.AppSettings("Оператор", str(folder), ""), answers=[True])
+    w = _window(monkeypatch, program2.AppSettings("Оператор", str(folder)), answers=[True])
     try:
         assert w.session.folder.root == folder and (folder / "gmr.sqlite").is_file()
         assert shown[0][0] == "Месяц создан" and "МЕСЯЦ СОЗДАН" in shown[0][1]
@@ -660,7 +679,7 @@ def test_first_run_creates_month_from_window(tmp_path, monkeypatch):
 @needs_display
 def test_new_month_from_menu_switches_window(app, tmp_path, monkeypatch):
     table = _table_csv(tmp_path / "компания" / "Июнь.csv", [("7777777", "B1", "10", "")])
-    shown = _dialogs(monkeypatch, files=[table], dirs=[tmp_path / "Июнь_2026"])
+    shown = _dialogs(monkeypatch, files=[table], saves=[tmp_path / "Июнь_2026"])
     saved = []
     monkeypatch.setattr(program2, "save_settings", lambda s: saved.append(s.month_dir))
     app.new_month()
@@ -673,7 +692,7 @@ def test_new_month_from_menu_switches_window(app, tmp_path, monkeypatch):
 @needs_display
 def test_new_month_refuses_existing_month(app, tmp_path, monkeypatch):
     table = _table_csv(tmp_path / "компания" / "Июнь.csv", [("7777777", "B1", "10", "")])
-    shown = _dialogs(monkeypatch, files=[table], dirs=[app.month.root])
+    shown = _dialogs(monkeypatch, files=[table], saves=[app.month.root])
     app.new_month()
     assert shown == []
     assert any(t == "showerror" and "месяц уже есть" in a[1] for t, a in app.shown)
@@ -687,7 +706,7 @@ def test_new_month_asks_about_old_log(app, tmp_path, monkeypatch, answer, rows):
     from src.gmr.storage import LOG_COLUMNS as cols, save_log
     save_log(str(tmp_path / "компания" / "Июнь_log.csv"),
              [{c: "" for c in cols} | {"original_filename": "old.jpg", "outcome": "PLUS"}])
-    _dialogs(monkeypatch, files=[table], dirs=[tmp_path / "Июнь_2026"])
+    _dialogs(monkeypatch, files=[table], saves=[tmp_path / "Июнь_2026"])
     app.answers.append(answer)
     app.new_month()
     assert "старой версии программы" in app.asked[0][1]
@@ -783,3 +802,71 @@ def test_error_in_button_shown_to_operator(app):
     app.report_callback_exception(ValueError, ValueError("сломалось"), None)
     assert any(t == "showerror" and "ValueError: сломалось" in a[1] and "Подробности" in a[1]
                for t, a in app.shown)
+
+
+# ─── 2026-10-07: настройки без «папки для разметки», новый месяц из окна ────
+
+@needs_display
+def test_markup_of_etalon_photo_not_saved(app, monkeypatch):
+    monkeypatch.setattr(program2, "to_etalon", lambda h: h == "h-IMG-20260915-WA0001.jpg")
+    scr = _open_first(app)
+    scr._model_result = {"serial_text": "1284567", "serial_crop": np.full((20, 60, 3), 5, np.uint8),
+                         "reading_str": "01?00", "digit_crops": [np.full((30, 15, 3), 1, np.uint8)] * 5,
+                         "digit_preds": [{}] * 5}
+    _fill(scr, "A1", "01200")
+    scr._accept()
+    assert not program2.DATASETS_ROOT.exists()                 # фото эталона — не в обучение
+
+
+@needs_display
+def test_no_meter_accept_copies_original_for_labeling(app):
+    orig = img(app.month.photos / "Аюб" / "p3.jpg", 77)          # исходное фото контролёра
+    app.open_edit_screen(str(app.photos / "question" / "no_meter" / "p3.jpg"), "no_meter")
+    scr = app._current_screen
+    _fill(scr, "A2", "00600")
+    scr._accept()
+    new = program2.DATASETS_ROOT / "meter_yolo" / "new"
+    assert [p.read_bytes() for p in new.iterdir()] == [orig.read_bytes()]
+
+
+@needs_display
+def test_settings_dialog_name_and_month(app, tmp_path):
+    calls = []
+
+    def new_month(parent, who):
+        calls.append(who)
+        return str(tmp_path / "Ноябрь_2026")
+
+    def fill():
+        dlg = next(w for w in app.winfo_children() if isinstance(w, program2.SettingsDialog))
+        dlg._vars["name"].set("Мадина")
+        dlg._save()                                            # папки месяца нет — не закрывается
+        assert dlg.winfo_exists() and dlg.result is None
+        dlg._create()
+        dlg._vars["month"].set(f"  {dlg._vars['month'].get()}  ")   # лишние пробелы не мешают
+        dlg._save()
+    app.after(100, fill)
+    dlg = program2.SettingsDialog(app, program2.AppSettings("", ""), new_month=new_month)
+    assert calls == ["Мадина"]
+    assert dlg.result == program2.AppSettings("Мадина", str(tmp_path / "Ноябрь_2026"))
+    assert any(t == "showwarning" and "Новый месяц" in a[1] for t, a in app.shown)
+
+
+@needs_display
+def test_ask_new_month_like_save_as(app, tmp_path, monkeypatch):
+    table = _table_csv(tmp_path / "компания" / "Ноябрь.csv", [("7777777", "B1", "10", "")])
+    asked = []
+    files, saves = [table, "", table], [str(tmp_path / "Ноябрь_2026"), ""]
+    monkeypatch.setattr(program2.filedialog, "askopenfilename", lambda **k: str(files.pop(0)))
+    monkeypatch.setattr(program2.filedialog, "asksaveasfilename",
+                        lambda **k: asked.append(k) or saves.pop(0))
+    monkeypatch.setattr(program2, "show_text", lambda *a: None)
+    assert app.ask_new_month(who="Мадина") == str(tmp_path / "Ноябрь_2026")
+    assert asked[0]["initialfile"] == program2.default_month_name()
+    assert asked[0]["initialdir"] == str(app.month.root.parent)    # рядом с текущим месяцем
+    assert (tmp_path / "Ноябрь_2026" / "gmr.sqlite").is_file()
+    assert app.ask_new_month() is None                         # таблицу не выбрали
+    assert app.ask_new_month() is None and len(asked) == 2     # папку не выбрали
+    files.append(table)
+    saves.append(str(app.month.root))                          # там уже месяц — не создаётся
+    assert app.ask_new_month() is None
