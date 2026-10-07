@@ -16,6 +16,8 @@ tools/inspect_model.py — посмотреть, что делает с изоб
   --conf X          поменять порог (детекторы — порог детекции, распознаватели —
                     порог «уверенно»). По умолчанию — тот же, что в reader.py.
   --weights ФАЙЛ    другой файл весов для этой модели — сравнить с текущей.
+  --serial-pad X    (meter, serial) запас вокруг рамки серийника — доля ширины с каждой
+                    стороны, например 0.05: обрезан ли крайний символ (этап 5b).
 
 По умолчанию всё как в reader.py: те же веса, пороги и выпрямление кропов
 (модели грузятся через src/gmr/ml/loader.py). Папка обходится с подпапками.
@@ -349,7 +351,11 @@ def main(argv: Optional[list[str]] = None, loaders_factory=default_loaders) -> l
                    help="на входе целые фото или готовые кропы (по умолчанию photo, для digit — crop)")
     p.add_argument("--conf", type=float, default=None, help="свой порог вместо прод-порога")
     p.add_argument("--weights", default=None, help="другой файл весов для этой модели")
+    p.add_argument("--serial-pad", type=float, default=None,
+                   help="(meter, serial) запас вокруг рамки серийника, доля ширины с каждой стороны")
     args = p.parse_args(argv)
+    if args.serial_pad is not None and args.mode not in ("meter", "serial"):
+        p.error("--serial-pad — только для режимов meter и serial")
 
     if args.mode == "photo" and (args.conf is not None or args.weights is not None):
         p.error("режим photo всегда с прод-настройками; --conf/--weights — для одной модели")
@@ -364,6 +370,9 @@ def main(argv: Optional[list[str]] = None, loaders_factory=default_loaders) -> l
         ROOT / "inspect_out" / f"{args.mode}_{datetime.now():%Y-%m-%d_%H-%M-%S}")
 
     cfg = build_config(args.mode, args.conf, args.weights)
+    if args.serial_pad is not None:
+        cfg = dataclasses.replace(cfg, serial_crop_pad=args.serial_pad)
+        print(f"Запас вокруг рамки серийника: {args.serial_pad}")
     if args.mode in _MODE_MODEL:
         _, conf_field, weights_field = _MODE_MODEL[args.mode]
         print(f"Модель: {getattr(cfg, weights_field)}")

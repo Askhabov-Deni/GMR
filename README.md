@@ -145,6 +145,7 @@ python gmr.py inspect photo <фото или папка>        # что вид�
 python gmr.py weights --write                       # обновить таблицу весов в docs/models.md
 python gmr.py datasets                              # датасеты моделей: папки database\datasets\ и их проверка (docs/GUIDE.md, 5.0)
 python gmr.py prelabel <папка с фото>               # предразметка YOLO текущей моделью
+python gmr.py etalon add <месяц>; python gmr.py etalon check   # эталон трудных фото: сравнить модели (docs/GUIDE.md, 5.4)
 python gmr.py check                                 # перед коммитом: данные, код, тесты
 ```
 

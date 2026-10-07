@@ -51,6 +51,11 @@ class PipelineConfig:
     digit_conf_thresh:        float = 0.6
     expected_digits:          int   = 5
     delta_threshold:          float = 10_000.0
+    # Запас вокруг рамки серийника перед чтением номера (этап 5b, задача 2
+    # BACKLOG): доля ширины рамки с каждой стороны, например 0.05. Гипотеза —
+    # рамка обрезает крайний символ номера. 0 — как было; другое значение —
+    # только решением владельца после `gmr.py etalon check --serial-pad`.
+    serial_crop_pad:          float = 0.0
 
     # Прочее
     move_photos:              bool  = False  # True=перемещать, False=копировать

@@ -33,9 +33,12 @@ def default_device() -> "torch.device":
 
 
 def load_meter_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = str) -> YoloMeterDetector:
+    # запас вокруг рамки серийника (этап 5b): при 0 YOLOInferer создаётся как раньше
+    pad = {"pad": {"serial_number": config.serial_crop_pad}} if config.serial_crop_pad else {}
     return YoloMeterDetector(YOLOInferer(
         resolve_path(config.meter_detect_model),
         conf_thresh=config.meter_conf_thresh,
+        **pad,
     ))
 
 

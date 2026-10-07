@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 class YOLOInferer:
-    def __init__(self, model, output_dir=None, conf_thresh=0.8, straighten=True):
+    def __init__(self, model, output_dir=None, conf_thresh=0.8, straighten=True, pad=None):
         """
         model        — путь к .pt или уже загруженный YOLO объект
         output_dir   — папка для сохранения кропов (опционально)
@@ -14,12 +14,16 @@ class YOLOInferer:
         straighten   — выравнивать ли кропы по углу (глобальный дефолт).
                        Для детектора цифр рекомендуется False — выпрямление
                        маленьких кропов цифр часто даёт артефакты/переворот.
+        pad          — {класс: доля} — расширить рамку класса по ширине на
+                       эту долю с каждой стороны перед вырезанием (этап 5b,
+                       PipelineConfig.serial_crop_pad). None — как было.
         """
         self.model = YOLO(model) if isinstance(model, str) else model
         self.class_names = self.model.names
         self.output_dir = output_dir
         self.conf_thresh = conf_thresh
         self.straighten = straighten
+        self.pad = dict(pad or {})
 
         if output_dir:
             for name in self.class_names.values():
@@ -136,6 +140,10 @@ class YOLOInferer:
 
             for data in top:
                 x1, y1, x2, y2 = data['box']
+                pad = self.pad.get(class_name, 0.0)
+                if pad > 0:
+                    dx = int(round((x2 - x1) * pad))
+                    x1, x2 = max(0, x1 - dx), min(img.shape[1], x2 + dx)
                 crop = img[y1:y2, x1:x2]
 
                 if do_straighten:
