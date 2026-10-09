@@ -4,7 +4,7 @@ tools/weights_manifest.py — какие файлы весов сейчас в �
   python -m tools.weights_manifest            показать таблицу
   python -m tools.weights_manifest --write    записать её в docs/models.md
 
-Для каждой из 4 моделей из PipelineConfig: путь, размер, дата изменения,
+Для каждой модели из PipelineConfig: путь, размер, дата изменения,
 SHA-256 (первые 16 символов). SHA-256 — «отпечаток» файла: если он совпал,
 это ровно тот же файл весов, байт в байт. Так можно проверить, что копия
 в резерве — та же модель, и узнать, какая модель прочитала показания.
@@ -27,6 +27,7 @@ FIELDS = [
     ("digit_detect_model", "детектор цифр (YOLO)"),
     ("digit_ocr_model",    "распознавание цифры (CNN)"),
     ("serial_ocr_model",   "распознавание серийника (CRNN)"),
+    ("account_ocr_model",  "лицевой счёт по надписи маркером (CRNN)"),
 ]
 
 
@@ -43,6 +44,8 @@ def manifest(config: Optional[PipelineConfig] = None, root: Path = ROOT) -> list
     rows = []
     for field, role in FIELDS:
         rel = getattr(config, field)
+        if not rel:             # необязательная модель не подключена (account_ocr_model = "")
+            continue
         path = Path(rel) if Path(rel).is_absolute() else root / rel
         row = {"field": field, "role": role, "path": rel.replace("\\", "/")}
         if path.is_file():

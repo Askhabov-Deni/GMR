@@ -10,6 +10,7 @@ src/gmr/domain/ml.py (Фаза 3).
   YoloDigitDetector   → YOLOInferer.process_array(crop, save_crops=False, max_per_class=5)
   CrnnSerialRecognizer→ CRNNInferer.predict_with_details(crop)
   CnnDigitRecognizer  → CNNInferer.predict(crop)
+  CrnnAccountRecognizer → AccountInferer.predict(crop, accounts)
 
 Выпрямление кропов (straighten) — настройка самого YOLOInferer при создании
 (включено для детектора счётчика, выключено для детектора цифр, см.
@@ -20,7 +21,7 @@ src/gmr/ml/loader.py). Адаптеры его не переопределяют
 """
 from typing import Any, Optional
 
-from src.gmr.domain.ml import Detection, DigitPrediction, SerialPrediction
+from src.gmr.domain.ml import AccountPrediction, Detection, DigitPrediction, SerialPrediction
 
 
 class YoloMeterDetector:
@@ -71,3 +72,17 @@ class CnnDigitRecognizer:
     def recognize(self, digit_crop: Any) -> DigitPrediction:
         res = self.inferer.predict(digit_crop)
         return DigitPrediction(digit=str(res["digit"]), confidence=res["confidence"])
+
+
+class CrnnAccountRecognizer:
+    """AccountRecognizer поверх AccountInferer (models/account/infer_account.py)."""
+
+    def __init__(self, inferer: Any):
+        self.inferer = inferer
+
+    def recognize(self, account_crop: Any, accounts: Optional[dict] = None) -> AccountPrediction:
+        res = self.inferer.predict(account_crop, accounts)
+        return AccountPrediction(
+            text=res["text"], text_conf=res["text_conf"], account=res["group"],
+            confidence=res["confidence"], top=res.get("top", []),
+        )

@@ -1,5 +1,7 @@
 from .config import PipelineConfig
 from .ml import (
+    AccountPrediction,
+    AccountRecognizer,
     DigitDetector,
     DigitPrediction,
     DigitRecognizer,
@@ -51,4 +53,6 @@ __all__ = [
     "DigitRecognizer",
     "SerialPrediction",
     "DigitPrediction",
+    "AccountRecognizer",
+    "AccountPrediction",
 ]

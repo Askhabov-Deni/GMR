@@ -6,6 +6,7 @@ src/gmr/ml — адаптеры реальных моделей к контра�
 """
 from .adapters import (
     CnnDigitRecognizer,
+    CrnnAccountRecognizer,
     CrnnSerialRecognizer,
     YoloDigitDetector,
     YoloMeterDetector,
@@ -13,6 +14,7 @@ from .adapters import (
 
 __all__ = [
     "CnnDigitRecognizer",
+    "CrnnAccountRecognizer",
     "CrnnSerialRecognizer",
     "YoloDigitDetector",
     "YoloMeterDetector",

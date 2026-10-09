@@ -26,6 +26,12 @@ class PipelineConfig:
     digit_detect_model:       str   = "meter_ocr/runs/yolo/digits_detect_v4/weights/best.pt"
     digit_ocr_model:          str   = "meter_ocr/runs/cnn/runs/v3_platinum/best.pth"
     serial_ocr_model:         str   = "serial_id_ocr/runs/crnn/2026-06-05_01-09/best.pt"
+    # Лицевой счёт по надписи маркером (models/account, правила —
+    # src/gmr/domain/account_match.py). "" — модели нет, всё как раньше.
+    # Путь к best.pt включает правила: надпись против серийника → SUSPICIOUS,
+    # счёт по надписи, когда серийник не помог. Это изменение поведения —
+    # включать решением владельца после проверки (docs/GUIDE.md, 5.6).
+    account_ocr_model:        str   = ""
 
     # Папка месяца (этап 2.2b): фото из <месяц>/фото, результат в
     # <месяц>/результат, абоненты, показания и лог — в базе <месяц>/gmr.sqlite,
@@ -56,6 +62,13 @@ class PipelineConfig:
     # рамка обрезает крайний символ номера. 0 — как было; другое значение —
     # только решением владельца после `gmr.py etalon check --serial-pad`.
     serial_crop_pad:          float = 0.0
+    # Надпись маркером: имя её класса у детектора счётчика (если у модели
+    # другое — загрузка скажет, какие есть), порог уверенности счёта (доля
+    # среди всех счетов таблицы, models/ctc_lexicon.py) и сколько последних
+    # цифр счёта пишут на счётчике (00065 у счёта 1300000065).
+    account_class:            str   = "account"
+    account_conf_thresh:      float = 0.9
+    account_marker_digits:    int   = 5
 
     # Прочее
     move_photos:              bool  = False  # True=перемещать, False=копировать

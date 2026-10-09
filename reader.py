@@ -11,9 +11,11 @@ docs/contract_reader_program2.md.
   process_photo(photo_path, df, config) -> PhotoResult
     │
     ├── шаг 0: фото уже разобрано / прочитано?  → REPEAT без запуска моделей
-    ├── MeterDetector    (YOLO)         → кроп gas_meter + кроп serial_numbers
+    ├── MeterDetector    (YOLO)         → кроп gas_meter + кроп serial_numbers (+ надпись маркером)
+    ├── AccountRecognizer (CRNN, если подключена) → лицевой счёт по надписи маркером
     ├── SerialRecognizer (CRNN)         → текст серийного номера
-    ├── lookup_in_table(serial, df)     → строка таблицы (лицевой ID, последние показания)
+    ├── lookup_in_table(serial, df)     → строка таблицы (лицевой ID, последние показания);
+    │                                     серийник + надпись — src/gmr/domain/account_match.py
     ├── DigitDetector    (YOLO)         → bbox-ы цифр на кропе счётчика
     ├── DigitRecognizer  (CNN)          → класс каждой цифры → собираем число
     └── decide_outcome(...)             → категория + действие (запись / папка)
@@ -66,7 +68,10 @@ from src.gmr.domain import (
     DigitRecognizer,
     MeterDetector,
     SerialRecognizer,
+    AccountPrediction,
+    AccountRecognizer,
 )
+from src.gmr.domain.account_match import AccountMarkerPolicy, account_groups as build_account_groups
 from src.gmr.application import (
     RecognitionModels,
     find_detection,
@@ -93,6 +98,7 @@ _delta_policy        = DeltaThresholdPolicy()
 _duplicate_policy    = DuplicatePolicy()
 _processed_photo_policy = ProcessedPhotoPolicy()
 _run_selection       = RunSelectionPolicy()
+_account_policy      = AccountMarkerPolicy()
 
 
 # ─── Цвета боксов ────────────────────────────────────────────────────────────
@@ -133,7 +139,8 @@ def _make_log_row(
         "model_serial_conf": f"{result.serial_conf:.4f}" if result.serial_conf is not None else "",
         "model_reading_str": result.reading_str or "",
         # notes: причина исхода + какие цифры подставлены (вариант А, 2026-09-30)
-        "notes":             " | ".join(n for n in (result.error_detail, result.digit_notes) if n),
+        "notes":             " | ".join(n for n in (result.error_detail, result.account_notes,
+                                                    result.digit_notes) if n),
         "photo_hash":        photo_hash,
         "source_folder":     source_folder,
     }
@@ -273,6 +280,26 @@ def _digit_bboxes_to_orig(
     return result
 
 
+# ─── Надпись маркером (лицевой счёт) ─────────────────────────────────────────
+
+def account_groups_of(df: pd.DataFrame, config: PipelineConfig) -> dict:
+    """Словарь модели надписи: {счёт: варианты записи} по всей таблице."""
+    return build_account_groups(df[config.col_account_id], config.account_marker_digits)
+
+
+def _account_rows(df: pd.DataFrame, config: PipelineConfig, account: str) -> pd.DataFrame:
+    return df[df[config.col_account_id].astype(str).str.strip() == str(account)]
+
+
+def _read_marker(recognizer: Optional[AccountRecognizer], crops: list, groups: Optional[dict],
+                 config: PipelineConfig) -> Optional[AccountPrediction]:
+    """Что написано маркером и какой это счёт; None — нет модели или надписи."""
+    if recognizer is None:
+        return None
+    det = find_detection(crops, config.account_class)
+    return None if det is None else recognizer.recognize(det["crop"], groups)
+
+
 # ─── Основная функция обработки одного фото ──────────────────────────────────
 
 def process_photo(
@@ -285,6 +312,8 @@ def process_photo(
     serial_recognizer: SerialRecognizer,
     photo_hash: Optional[str] = None,
     reread: bool = False,
+    account_recognizer: Optional[AccountRecognizer] = None,
+    account_groups: Optional[dict] = None,
 ) -> PhotoResult:
     """
     Обрабатывает одну фотографию. Возвращает PhotoResult.
@@ -297,12 +326,17 @@ def process_photo(
 
     Модели — в виде контрактов src/gmr/domain/ml.py (Фаза 3); реальные
     модели создаёт src.gmr.ml.loader.load_models.
+
+    account_recognizer — модель надписи маркером (None — её нет, всё как до
+    неё); account_groups — словарь счетов таблицы для неё
+    (account_groups_of(df, config): прогон строит его один раз).
     """
     models = RecognitionModels(
         meter_detector=meter_detector,
         digit_detector=digit_detector,
         digit_recognizer=digit_recognizer,
         serial_recognizer=serial_recognizer,
+        account_recognizer=account_recognizer,
     )
     result = PhotoResult(photo_path=photo_path, outcome=Outcome.NO_METER)
     ext = Path(photo_path).suffix
@@ -342,94 +376,100 @@ def process_photo(
         result.error_detail = "class gas_meter not detected"
         return result
 
-    if serial_entry is None:
-        result.outcome = Outcome.NO_SERIAL
-        result.error_detail = "class serial_number not detected"
-        return result
-
     meter_crop = meter_entry["crop"]
-    serial_crop = serial_entry["crop"]
     meter_bbox  = meter_entry["bbox"]   # (x1,y1,x2,y2) в оригинале
 
-    # ── Шаг 2: читаем серийный номер ─────────────────────────────────────────
-    serial_res  = serial_recognizer.recognize(serial_crop)
-    serial_text = serial_res.text
-    serial_conf = serial_res.confidence
-
-    result.serial_text = serial_text
-    result.serial_conf = serial_conf
-
-    if serial_conf < config.serial_conf_thresh:
-        result.outcome = Outcome.SERIAL_LOW_CONF
-        result.error_detail = f"serial conf={serial_conf:.3f} < {config.serial_conf_thresh}"
-        # Читаем цифры для информативной аннотации
-        _r, _rs, _, _dres, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
-        result.reading_str = _rs
-        result.reading     = _r
-        result.digit_notes = describe_substitutions(_dres)
-        if _bboxes is not None:
-            result.digit_bboxes_in_orig = _digit_bboxes_to_orig(
-                _bboxes, meter_bbox, meter_crop.shape
-            )
-        return result
-
-    # ── Шаг 3: ищем в таблице ────────────────────────────────────────────────
-    def _find_serial_in_df(serial: str) -> pd.DataFrame:
-        norm = normalize_serial(serial)
-        return df[df[config.col_serial].apply(
-            lambda x: normalize_serial(str(x)) == norm
-        )]
-
-    serial_candidates = [
-        serial_text,
-        "0"  + serial_text,
-        "00" + serial_text,
-    ]
-
-    matches     = pd.DataFrame()
-    serial_used = serial_text
-    for candidate in serial_candidates:
-        matches = _find_serial_in_df(candidate)
-        if not matches.empty:
-            serial_used = candidate
-            break
-
-    if not matches.empty and serial_used != serial_text:
-        logging.getLogger("reader").info(
-            f"  ℹ️  serial fallback: '{serial_text}' → '{serial_used}' (добавлены ведущие нули)"
-        )
-
-    if matches.empty:
-        result.outcome = Outcome.SERIAL_NOT_FOUND
-        result.error_detail = (
-            f"serial '{serial_text}' not in table "
-            f"(tried: {', '.join(repr(c) for c in serial_candidates)})"
-        )
-        _r, _rs, _, _dres, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
-        result.reading_str = _rs
-        result.reading     = _r
-        result.digit_notes = describe_substitutions(_dres)
-        if _bboxes is not None:
-            result.digit_bboxes_in_orig = _digit_bboxes_to_orig(
-                _bboxes, meter_bbox, meter_crop.shape
-            )
-        return result
-
-    result.serial_text = serial_used
-
-    # Номер в таблице у нескольких лицевых счетов — у одной записи в базе номер
-    # с ошибкой; чей счётчик, решает оператор (решение владельца 2026-10-01).
-    accounts = list(dict.fromkeys(str(a).strip() for a in matches[config.col_account_id]))
-    if len(accounts) > 1:
-        result.outcome = Outcome.SERIAL_AMBIGUOUS
-        result.error_detail = f"номер {serial_used} у нескольких абонентов: {', '.join(accounts)}"
+    def _read_digits_for_annotation() -> None:
+        """Показание для аннотации и оператору, когда исход — не запись."""
         _r, _rs, _, _dres, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
         result.reading_str = _rs
         result.reading     = _r
         result.digit_notes = describe_substitutions(_dres)
         if _bboxes is not None:
             result.digit_bboxes_in_orig = _digit_bboxes_to_orig(_bboxes, meter_bbox, meter_crop.shape)
-        return result
+
+    # ── Шаг 1b: надпись маркером (лицевой счёт) — только если есть модель ───
+    if account_recognizer is not None and account_groups is None:
+        account_groups = account_groups_of(df, config)
+    marker = _read_marker(account_recognizer, crops, account_groups, config)
+
+    # ── Шаги 2–3: серийник → строка таблицы ─────────────────────────────────
+    # failure — почему серийник не дал ровно один счёт (исход и пояснение)
+    failure: Optional[tuple[Outcome, str]] = None
+    ambiguous: list[str] = []
+    matches = pd.DataFrame()
+
+    if serial_entry is None:
+        failure = (Outcome.NO_SERIAL, "class serial_number not detected")
+    else:
+        serial_res  = serial_recognizer.recognize(serial_entry["crop"])
+        serial_text = serial_res.text
+        serial_conf = serial_res.confidence
+
+        result.serial_text = serial_text
+        result.serial_conf = serial_conf
+
+        if serial_conf < config.serial_conf_thresh:
+            failure = (Outcome.SERIAL_LOW_CONF,
+                       f"serial conf={serial_conf:.3f} < {config.serial_conf_thresh}")
+        else:
+            def _find_serial_in_df(serial: str) -> pd.DataFrame:
+                norm = normalize_serial(serial)
+                return df[df[config.col_serial].apply(
+                    lambda x: normalize_serial(str(x)) == norm
+                )]
+
+            serial_candidates = [
+                serial_text,
+                "0"  + serial_text,
+                "00" + serial_text,
+            ]
+
+            serial_used = serial_text
+            for candidate in serial_candidates:
+                matches = _find_serial_in_df(candidate)
+                if not matches.empty:
+                    serial_used = candidate
+                    break
+
+            if not matches.empty and serial_used != serial_text:
+                logging.getLogger("reader").info(
+                    f"  ℹ️  serial fallback: '{serial_text}' → '{serial_used}' (добавлены ведущие нули)"
+                )
+
+            if matches.empty:
+                failure = (Outcome.SERIAL_NOT_FOUND, (
+                    f"serial '{serial_text}' not in table "
+                    f"(tried: {', '.join(repr(c) for c in serial_candidates)})"
+                ))
+            else:
+                result.serial_text = serial_used
+                # Номер в таблице у нескольких лицевых счетов — у одной записи в базе номер
+                # с ошибкой; чей счётчик, решает оператор (решение владельца 2026-10-01).
+                accounts = list(dict.fromkeys(str(a).strip() for a in matches[config.col_account_id]))
+                if len(accounts) > 1:
+                    failure = (Outcome.SERIAL_AMBIGUOUS,
+                               f"номер {serial_used} у нескольких абонентов: {', '.join(accounts)}")
+                    ambiguous = accounts
+
+    if failure is not None:
+        # Серийник счёт не дал — может быть, его даёт надпись маркером
+        # (src/gmr/domain/account_match.py, правило 2). Без модели надписи — как раньше.
+        rows_m = (_account_rows(df, config, marker.account)
+                  if _account_policy.confident(marker, config.account_conf_thresh) else df.iloc[0:0])
+        decision = _account_policy.rescue(
+            failure[0], marker, config.account_conf_thresh, result.serial_text,
+            [str(v) for v in rows_m[config.col_serial]], ambiguous,
+        )
+        result.account_notes = decision.note
+        if decision.account is None or rows_m.empty:
+            result.outcome, result.error_detail = failure
+            if failure[0] != Outcome.NO_SERIAL:
+                # Читаем цифры для информативной аннотации
+                _read_digits_for_annotation()
+            return result
+        matches = rows_m
+        result.serial_text = normalize_serial(str(rows_m.iloc[0][config.col_serial]))
 
     row_idx    = matches.index[0]
     account_id = str(df.at[row_idx, config.col_account_id])
@@ -446,6 +486,21 @@ def process_photo(
     except ValueError:
         last_reading = None
     result.last_reading = last_reading
+
+    # ── Шаг 3b: серийник нашёл счёт сам — сверить с надписью маркером ───────
+    # Надпись уверенно указывает на другой счёт → показание не пишем, решает
+    # оператор (account_match.py, правило 1). Счёт фото не присваивается: чей
+    # это счётчик, неизвестно, и показание счёта по серийнику с другого фото
+    # не должно молча закрыть это фото (close_waiting ищет по account_id).
+    if failure is None:
+        conflict = _account_policy.conflict(account_id, marker, config.account_conf_thresh)
+        if conflict is not None:
+            result.outcome = Outcome.SUSPICIOUS
+            result.error_detail = conflict
+            result.account_id = None
+            result.last_reading = None
+            _read_digits_for_annotation()
+            return result
 
     # ── Шаг 4: проверяем дубль ───────────────────────────────────────────────
     # Дубль определяем по логу, а не по col_new_reading.
@@ -916,6 +971,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
     index = _PhotoIndex(store.log_rows)
     serial_in_table = _serial_lookup(df, config)
     models = None                                       # загружаются, только если есть что читать
+    account_groups_cache = None                         # словарь счетов для модели надписи (один на прогон)
 
     def load():
         log.info("Загружаем модели...")
@@ -938,6 +994,9 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
             )
         if config.draw_boxes:
             log.info("⚙️  draw_boxes=True: на фото будут нарисованы боксы детекций")
+        if loaded.account_recognizer is not None:
+            log.info(f"⚙️  надпись маркером: {config.account_ocr_model} (класс «{config.account_class}», "
+                     f"порог {config.account_conf_thresh})")
         return loaded
 
     # ── Папки контролёров ────────────────────────────────────────────────────
@@ -1017,6 +1076,8 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                 break
             if models is None:                       # до строки «Фото 1 из N»: окно покажет «Загружаем модели…»
                 models = load()
+                if models.account_recognizer is not None:
+                    account_groups_cache = account_groups_of(df, config)
             done += 1
             log.info(f"Фото {done} из {expected}: {photo_path.name}" + ("  (читается заново)" if rows else ""))
             if rows:
@@ -1034,6 +1095,8 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                     models.meter_detector, models.digit_detector,
                     models.digit_recognizer, models.serial_recognizer,
                     photo_hash=photo_hash, reread=bool(rows),
+                    account_recognizer=models.account_recognizer,
+                    account_groups=account_groups_cache,
                 )
             except Exception as e:
                 # Ошибка на одном фото не останавливает прогон: фото → question/error,

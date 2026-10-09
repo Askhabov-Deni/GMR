@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from src.gmr.domain.config import PipelineConfig
 from src.gmr.domain.ml import (
+    AccountRecognizer,
     Detection,
     DigitDetector,
     DigitRecognizer,
@@ -36,11 +37,13 @@ _forgiveness_policy = DigitForgivenessPolicy()
 
 @dataclass
 class RecognitionModels:
-    """Четыре модели пайплайна, уже обёрнутые в контракты."""
+    """Модели пайплайна, уже обёрнутые в контракты. account_recognizer —
+    надпись маркером, необязательная (None — её нет, PipelineConfig.account_ocr_model)."""
     meter_detector: MeterDetector
     digit_detector: DigitDetector
     digit_recognizer: DigitRecognizer
     serial_recognizer: SerialRecognizer
+    account_recognizer: Optional[AccountRecognizer] = None
 
 
 @dataclass

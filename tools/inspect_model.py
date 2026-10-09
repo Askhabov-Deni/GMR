@@ -6,6 +6,9 @@ tools/inspect_model.py — посмотреть, что делает с изоб
   python -m tools.inspect_model digits <фото|папка>   рамки цифр на кропе счётчика + кропы цифр
   python -m tools.inspect_model serial <фото|папка>   текст серийника + уверенность по символам
   python -m tools.inspect_model digit  <кроп|папка>   цифра + уверенность
+  python -m tools.inspect_model account <фото|папка> --weights <best.pt> [--table <таблица>]
+                                                    надпись маркером: что написано и какой это
+                                                    лицевой счёт таблицы (с --table)
   python -m tools.inspect_model photo  <фото|папка>   всё вместе — как видит фото program2.py
 
 Общие флаги:
@@ -18,6 +21,7 @@ tools/inspect_model.py — посмотреть, что делает с изоб
   --weights ФАЙЛ    другой файл весов для этой модели — сравнить с текущей.
   --serial-pad X    (meter, serial) запас вокруг рамки серийника — доля ширины с каждой
                     стороны, например 0.05: обрезан ли крайний символ (этап 5b).
+  --table ФАЙЛ      (account) таблица компании: выбрать лицевой счёт из её счетов, как в работе.
 
 По умолчанию всё как в reader.py: те же веса, пороги и выпрямление кропов
 (модели грузятся через src/gmr/ml/loader.py). Папка обходится с подпапками.
@@ -40,7 +44,7 @@ from src.gmr.render.image_io import read_image as _read_image, write_image as _w
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
-MODES = ("meter", "digits", "serial", "digit", "photo")
+MODES = ("meter", "digits", "serial", "digit", "photo", "account")
 
 _GREEN, _BLUE, _ORANGE, _RED = (0, 200, 0), (200, 0, 0), (0, 140, 255), (0, 0, 255)
 _CLASS_COLOR = {"gas_meter": _GREEN, "serial_number": _BLUE}
@@ -113,6 +117,7 @@ class Models:
     config: PipelineConfig
     loaders: dict[str, Callable[[], object]]
     _cache: dict = dataclasses.field(default_factory=dict)
+    account_groups: Optional[dict] = None     # словарь счетов для режима account (--table)
 
     def get(self, name: str):
         if name not in self._cache:
@@ -269,9 +274,37 @@ def inspect_photo(models: Models, path: Path, stem: str, out: Path, from_crop: b
     return [row]
 
 
+def inspect_account(models: Models, path: Path, stem: str, out: Path, from_crop: bool) -> list[dict]:
+    cfg = models.config
+    if from_crop:
+        crop = read_image(path)
+        if crop is None:
+            return [{"file": str(path), "note": "не удалось открыть"}]
+    else:
+        det = find_detection(models.get("meter").detect(str(path)), cfg.account_class)
+        if det is None:
+            return [{"file": str(path), "note": f"детектор не нашёл {cfg.account_class}"}]
+        crop = det["crop"]
+        write_image(out / f"{stem}__crop.jpg", crop)
+    pred = models.get("account").recognize(crop, models.account_groups)
+    row = {"file": str(path), "text": pred.text, "text_conf": round(float(pred.text_conf), 4),
+           "result_file": f"{stem}.jpg"}
+    if models.account_groups is not None:
+        ok = pred.confidence >= cfg.account_conf_thresh
+        row.update(account=pred.account, conf=round(float(pred.confidence), 4),
+                   threshold=cfg.account_conf_thresh, ok=ok,
+                   top=" ".join(f"{a}({c:.2f})" for a, c in pred.top))
+        caption = f"'{pred.text}' -> {pred.account} {pred.confidence:.2f} {'OK' if ok else 'LOW'}"
+        color = _GREEN if ok else _RED
+    else:
+        caption, color = f"'{pred.text}' {pred.text_conf:.2f}", (255, 255, 255)
+    write_image(out / f"{stem}.jpg", with_caption(crop, caption, color))
+    return [row]
+
+
 INSPECTORS = {
     "meter": inspect_meter, "digits": inspect_digits, "serial": inspect_serial,
-    "digit": inspect_digit, "photo": inspect_photo,
+    "digit": inspect_digit, "photo": inspect_photo, "account": inspect_account,
 }
 
 # режим → (какую модель смотрим, поле порога, поле весов)
@@ -280,6 +313,7 @@ _MODE_MODEL = {
     "digits": ("digits", "digit_detect_conf_thresh", "digit_detect_model"),
     "serial": ("serial", "serial_conf_thresh",       "serial_ocr_model"),
     "digit":  ("digit",  "digit_conf_thresh",        "digit_ocr_model"),
+    "account": ("account", "account_conf_thresh",    "account_ocr_model"),
 }
 
 
@@ -336,6 +370,7 @@ def default_loaders(cfg: PipelineConfig) -> dict[str, Callable[[], object]]:
         "digits": lambda: loader.load_digit_detector(cfg, resolve),
         "serial": lambda: loader.load_serial_recognizer(cfg, resolve_path=resolve),
         "digit":  lambda: loader.load_digit_recognizer(cfg, resolve_path=resolve),
+        "account": lambda: loader.load_account_recognizer(cfg, resolve_path=resolve),
     }
 
 
@@ -353,9 +388,13 @@ def main(argv: Optional[list[str]] = None, loaders_factory=default_loaders) -> l
     p.add_argument("--weights", default=None, help="другой файл весов для этой модели")
     p.add_argument("--serial-pad", type=float, default=None,
                    help="(meter, serial) запас вокруг рамки серийника, доля ширины с каждой стороны")
+    p.add_argument("--table", default=None,
+                   help="(account) таблица компании: выбрать лицевой счёт из её счетов")
     args = p.parse_args(argv)
     if args.serial_pad is not None and args.mode not in ("meter", "serial"):
         p.error("--serial-pad — только для режимов meter и serial")
+    if args.table is not None and args.mode != "account":
+        p.error("--table — только для режима account")
 
     if args.mode == "photo" and (args.conf is not None or args.weights is not None):
         p.error("режим photo всегда с прод-настройками; --conf/--weights — для одной модели")
@@ -378,7 +417,13 @@ def main(argv: Optional[list[str]] = None, loaders_factory=default_loaders) -> l
         print(f"Модель: {getattr(cfg, weights_field)}")
         print(f"Порог {conf_field}: {getattr(cfg, conf_field)}"
               + ("  (свой)" if args.conf is not None else "  (как в reader.py)"))
+    if args.mode == "account" and not cfg.account_ocr_model:
+        p.error("модель надписи не подключена (PipelineConfig.account_ocr_model): укажите --weights <best.pt>")
     models = Models(cfg, loaders_factory(cfg))
+    if args.table:
+        from models.account.evaluate_account import table_groups
+        models.account_groups = table_groups(Path(args.table), cfg.account_marker_digits)
+        print(f"Словарь: {len(models.account_groups)} счетов из {args.table}")
     return run(args.mode, target, out, models, from_crop=(source == "crop"))
 
 

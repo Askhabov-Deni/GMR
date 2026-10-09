@@ -1,6 +1,7 @@
 # Модели GMR — что в работе
 
-Четыре модели, которыми `reader.py` и `program2.py` читают фото. Пути —
+Модели, которыми `reader.py` и `program2.py` читают фото (пятая —
+надпись маркером — необязательная, `docs/MODELS_REVIEW.md`). Пути —
 из `PipelineConfig` (`src/gmr/domain/config.py`), относительно папки проекта.
 Файлы весов (`*.pt`, `*.pth`) в git не хранятся (`.gitignore`) — только
 здесь записано, какие именно файлы в работе и где их копия.
@@ -39,6 +40,7 @@
 | Детектор цифр | `meter_ocr/runs/yolo/digits_detect_v4` | YOLOv8n, 480px, 50 эпох | лучшая эпоха 41: mAP50 0.995, mAP50-95 0.796, precision 0.994, recall 0.994 (`results.csv`) |
 | Распознавание цифры | `meter_ocr/runs/cnn/runs/v3_platinum` | DigitCNN (`models/cnn/model_cnn.py`), 10 классов | лучшая val_acc 0.973 (эпоха 24), test_acc 0.974 (`history.json`) |
 | Распознавание серийника | `serial_id_ocr/runs/crnn/2026-06-05_01-09` | CRNN + CTC (`models/crnn/model_crnn.py`) | best val_acc 0.927, test accuracy 0.914 (весь номер целиком), CER 0.023; длины в тесте: 5–8 и 10 символов (`history.json`, `eval/metrics.json`) |
+| Лицевой счёт по надписи маркером | — (ещё не обучена; `account_ocr_model = ""` — выключена) | CRNN + CTC (`models/account/model_account.py`) + выбор счёта по таблице (`models/ctc_lexicon.py`) | — (`docs/GUIDE.md`, 5.6) |
 
 Прочие прогоны в репозитории (`meter_ocr/runs/cnn/runs/v1`, `v2_gold`,
 `meter_ocr/runs/crnn/2026-06-04_14-43` — CRNN для показаний, эксперимент,
@@ -53,6 +55,9 @@
   (деление по кропам), поэтому `test_acc 0.974` завышен. С этапа 5 деление
   по фото; числа новых обучений со старыми не сравнивать.
 - У YOLO-прогонов `seed: 0` в `args.yaml` — это seed обучения, не split.
+
+Разбор всех моделей (что сделано хорошо, ошибки, что улучшить) —
+`docs/MODELS_REVIEW.md`.
 
 ## Как посмотреть, что модель делает
 

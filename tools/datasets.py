@@ -194,10 +194,44 @@ def check_crnn(root: Path, rep: Report) -> None:
     rep.add(_new_line(root, "исправил оператор"))
 
 
+def check_account(root: Path, rep: Report) -> None:
+    from models.account import config_account as C
+    from models.account.dataset_account import parse_label, split
+    images_dir, labels_dir = root / "images", root / "labels"
+    images = images_in(images_dir)
+    labels = sorted(p for p in _files(labels_dir) if p.suffix == ".txt")
+    stems = {p.stem for p in images}
+    good, lengths, bad = [], Counter(), []
+    for p in images:
+        lab = labels_dir / (p.stem + ".txt")
+        if not lab.is_file():
+            continue
+        text = parse_label(lab.read_text(encoding="utf-8"))
+        if text is None:
+            bad.append(lab.name)
+        else:
+            good.append({"file": p, "label": text})
+            lengths[len(text)] += 1
+    rep.add(f"  кропов: {len(images)}, с годной меткой: {len(good)}, разных номеров: "
+            f"{len({g['label'] for g in good})}")
+    if lengths:
+        rep.add("  длина надписи: " + ", ".join(f"{n} цифр — {c}" for n, c in sorted(lengths.items())))
+    rep.problem("кропы без разметки (метки из имён — models/account/labels_from_names.py)",
+                [p.name for p in images if not (labels_dir / (p.stem + ".txt")).is_file()])
+    rep.problem("разметка без кропа", [p.name for p in labels if p.stem not in stems])
+    rep.problem(f"метка не годится (не цифры или длина не {C.MIN_LABEL_LENGTH}–{C.MAX_LABEL_LENGTH})", bad)
+    rep.problem("одинаковые кропы", [" = ".join(p.name for p in g) for g in _duplicates(images)])
+    if good:
+        tr, va, te = split(good, C.TRAIN_RATIO, C.VAL_RATIO, C.SEED)
+        rep.add(f"  деление по номеру: обучение {len(tr)}, проверка {len(va)}, тест {len(te)}")
+    rep.add(_new_line(root, "исправил оператор"))
+
+
 CHECKS = {"meter_yolo": check_yolo, "digits_yolo": check_yolo, "digits_cnn": check_cnn,
-          "serials_crnn": check_crnn}
+          "serials_crnn": check_crnn, "accounts_crnn": check_account}
 TITLES = {"meter_yolo": "детектор счётчика (YOLO)", "digits_yolo": "детектор цифр (YOLO)",
-          "digits_cnn": "цифры (CNN)", "serials_crnn": "серийники (CRNN)", "etalon": "эталон"}
+          "digits_cnn": "цифры (CNN)", "serials_crnn": "серийники (CRNN)",
+          "accounts_crnn": "лицевой счёт маркером (CRNN)", "etalon": "эталон"}
 
 
 def run(root: Path, list_problems: bool = False) -> str:

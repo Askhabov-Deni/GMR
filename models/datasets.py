@@ -13,6 +13,8 @@ models/datasets.py — датасеты моделей и «виртуально
                    new/0/ … new/9/               цифры, исправленные оператором
     serials_crnn/  images/ labels/               серийники (CRNN), labels/<имя>.txt — номер
                    new/                          серийники, исправленные оператором
+    accounts_crnn/ images/ labels/               надписи маркером — лицевой счёт (models/account),
+                   new/                          labels/<имя>.txt — что написано (00065)
     etalon/                                      эталон для сравнения моделей (в обучение не идёт)
 
 Датасет — одна папка без train/val: «туда всегда можно что-то докинуть».
@@ -50,6 +52,7 @@ LAYOUT: dict[str, list[str]] = {
     "digits_yolo":  ["images", "labels"],
     "digits_cnn":   DIGITS + ["new"],
     "serials_crnn": ["images", "labels", "new"],
+    "accounts_crnn": ["images", "labels", "new"],
     "etalon":       [],
 }
 # classes.txt, который известен заранее (детектор цифр — один класс, как в
