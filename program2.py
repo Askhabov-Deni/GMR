@@ -221,6 +221,7 @@ class PresetDialog(tk.Toplevel):
             "drum_rule": tk.BooleanVar(value=preset.drum_rule),
             "first_from_last": tk.BooleanVar(value=preset.first_from_last),
             "serial_by_table": tk.BooleanVar(value=preset.serial_by_table),
+            "turn_photo": tk.BooleanVar(value=preset.turn_photo),
         }
         f = ttk.Frame(self, padding=16)
         f.pack(fill=tk.BOTH, expand=True)
@@ -243,7 +244,8 @@ class PresetDialog(tk.Toplevel):
         ttk.Label(f, text="Дополнительно:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
         for key, label in (("drum_rule", "правило барабана: цифра между двумя — меньшая"),
                            ("first_from_last", "старшая цифра по прошлому показанию"),
-                           ("serial_by_table", "серийник по таблице (ближайший номер таблицы)")):
+                           ("serial_by_table", "серийник по таблице (ближайший номер таблицы)"),
+                           ("turn_photo", "на фото ничего не найдено — повернуть (90°, 180°, 270°)")):
             ttk.Checkbutton(f, text=label, variable=self._vars[key]).pack(anchor="w", padx=12)
         ttk.Label(f, text="Как было до настроек: «5», две последние — «0», запас 0%, без надписи.\n"
                           "Действует со следующей обработки.", foreground="#666").pack(anchor="w", pady=(12, 0))
@@ -261,7 +263,7 @@ class PresetDialog(tk.Toplevel):
             forgive_with=v["forgive_with"].get(), serial_pad=float(v["serial_pad"].get()),
             account_marker=bool(v["account_marker"].get()) and self._marker_model,
             drum_rule=bool(v["drum_rule"].get()), first_from_last=bool(v["first_from_last"].get()),
-            serial_by_table=bool(v["serial_by_table"].get()))
+            serial_by_table=bool(v["serial_by_table"].get()), turn_photo=bool(v["turn_photo"].get()))
         self.destroy()
 
 

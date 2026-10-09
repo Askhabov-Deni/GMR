@@ -28,6 +28,15 @@ def read_image(path) -> Optional[np.ndarray]:
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
+# поворот по часовой стрелке, градусы → код OpenCV (этап 7b: фото, где детектор ничего не нашёл)
+TURNS = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+
+
+def turn_image(img: np.ndarray, degrees: int) -> np.ndarray:
+    """Картинка, повёрнутая на 90 / 180 / 270° по часовой стрелке (0 — как есть)."""
+    return cv2.rotate(img, TURNS[degrees]) if degrees else img
+
+
 def write_image(path, img: np.ndarray) -> bool:
     """Как cv2.imwrite(path, img): True при успехе. Формат — по расширению (.jpg по умолчанию)."""
     try:

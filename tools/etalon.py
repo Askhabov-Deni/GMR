@@ -5,6 +5,7 @@ tools/etalon.py — эталон: трудные фото с правильны�
   python gmr.py etalon add <папка месяца | лог.csv> [--photos <папка с фото>]
   python gmr.py etalon check [--month <месяц>] [--missing-digit …] [--forgive-last N] [--forgive-with …]
                              [--serial-pad 0.05] [--drum-rule] [--first-from-last] [--serial-by-table]
+                             [--turn-photo]
                              [--meter-weights …] [--digit-detect-weights …]
                              [--digit-weights …] [--serial-weights …]
   python gmr.py etalon                 сколько фото в эталоне, по причинам
@@ -406,7 +407,7 @@ def _config(args) -> tuple[PipelineConfig, list[str]]:
         cfg = dataclasses.replace(cfg, serial_crop_pad=args.serial_pad)
         notes.append(f"запас вокруг рамки серийника = {args.serial_pad}")
     for arg, field in (("drum_rule", "drum_rule"), ("first_from_last", "first_digit_from_last"),
-                       ("serial_by_table", "serial_by_table")):
+                       ("serial_by_table", "serial_by_table"), ("turn_photo", "turn_if_nothing")):
         if getattr(args, arg):
             cfg = dataclasses.replace(cfg, **{field: True})
             notes.append(f"{field} = да")
@@ -448,6 +449,8 @@ def main(argv=None) -> int:
                    help="неуверенную старшую цифру брать из прошлого показания")
     c.add_argument("--serial-by-table", action="store_true",
                    help="неуверенный серийник — ближайший номер таблицы месяца (нужна --month)")
+    c.add_argument("--turn-photo", action="store_true",
+                   help="на фото ничего не найдено — повернуть на 90/180/270°")
     for name in ("meter", "digit-detect", "digit", "serial"):
         c.add_argument(f"--{name}-weights", default=None, help="другой файл весов")
     args = p.parse_args(argv)

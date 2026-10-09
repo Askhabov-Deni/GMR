@@ -378,6 +378,18 @@ class PhotoRecognition:
     serial: Optional[Detection] = None
     serial_prediction: Optional[SerialPrediction] = None
     digits: Optional[DigitReading] = None
+    turn: int = 0              # фото повёрнуто на столько градусов (detect_meter)
+
+
+def detect_meter(meter_detector: MeterDetector, photo_path: str,
+                 config: PipelineConfig) -> tuple[Optional[list[Detection]], int]:
+    """Детекции на фото и на сколько градусов его пришлось повернуть: детектор
+    не нашёл вообще ничего, а включено turn_if_nothing (этап 7b) — пробуется
+    фото, повёрнутое на 90, 180, 270° (MeterDetector.detect_turned, если есть)."""
+    found = meter_detector.detect(photo_path)
+    if found or not config.turn_if_nothing or not hasattr(meter_detector, "detect_turned"):
+        return found, 0
+    return meter_detector.detect_turned(photo_path)
 
 
 def recognize_photo(
@@ -388,8 +400,8 @@ def recognize_photo(
     Серийник и цифры читаются независимо: отсутствие одного не мешает другому.
     last_reading — прошлое показание (для first_digit_from_last; эталон).
     """
-    detections = models.meter_detector.detect(photo_path)
-    result = PhotoRecognition(detections=detections)
+    detections, turn = detect_meter(models.meter_detector, photo_path, config)
+    result = PhotoRecognition(detections=detections, turn=turn)
     if not detections:
         return result
 

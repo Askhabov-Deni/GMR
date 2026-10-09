@@ -42,6 +42,7 @@ class RecognitionPreset:
     drum_rule: bool = False
     first_from_last: bool = False
     serial_by_table: bool = False
+    turn_photo: bool = False          # этап 7b (PipelineConfig.turn_if_nothing)
 
     @classmethod
     def from_json(cls, text: Optional[str]) -> "RecognitionPreset":
@@ -66,6 +67,7 @@ class RecognitionPreset:
             drum_rule=data.get("drum_rule") is True,
             first_from_last=data.get("first_from_last") is True,
             serial_by_table=data.get("serial_by_table") is True,
+            turn_photo=data.get("turn_photo") is True,
         )
 
     def to_json(self) -> str:
@@ -84,6 +86,7 @@ class RecognitionPreset:
             drum_rule=self.drum_rule,
             first_digit_from_last=self.first_from_last,
             serial_by_table=self.serial_by_table,
+            turn_if_nothing=self.turn_photo,
         )
 
     def describe(self) -> str:
@@ -98,5 +101,6 @@ class RecognitionPreset:
             "дополнительно — " + (", ".join(name for on, name in (
                 (self.drum_rule, "правило барабана"),
                 (self.first_from_last, "старшая цифра по прошлому показанию"),
-                (self.serial_by_table, "серийник по таблице")) if on) or "нет"),
+                (self.serial_by_table, "серийник по таблице"),
+                (self.turn_photo, "фото без находок — повернуть")) if on) or "нет"),
         ])

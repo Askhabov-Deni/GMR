@@ -74,6 +74,7 @@ from src.gmr.domain import (
 from src.gmr.domain.account_match import AccountMarkerPolicy, account_groups as build_account_groups
 from src.gmr.application import (
     RecognitionModels,
+    detect_meter,
     find_detection,
     read_meter_digits_for_config,
     describe_substitutions,
@@ -87,7 +88,7 @@ from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
 from src.gmr.storage import photo_fingerprint
 from src.gmr.storage.backup import KEEP, backup_sqlite, remove_old
 from src.gmr.domain.serial_match import build_serial_groups, normalize_serial
-from src.gmr.render import draw_annotation, read_image, write_image
+from src.gmr.render import draw_annotation, read_image, turn_image, write_image
 
 # Модели вызываются только через контракты src/gmr/domain/ml.py:
 # загрузка — src/gmr/ml/loader.py, чтение цифр — src/gmr/application/.
@@ -139,11 +140,18 @@ def _make_log_row(
         "model_serial_conf": f"{result.serial_conf:.4f}" if result.serial_conf is not None else "",
         "model_reading_str": result.reading_str or "",
         # notes: причина исхода + какие цифры подставлены (вариант А, 2026-09-30)
-        "notes":             " | ".join(n for n in (result.error_detail, result.serial_notes,
+        "notes":             " | ".join(n for n in (result.error_detail, _turn_note(result), result.serial_notes,
                                                     result.account_notes, result.digit_notes) if n),
         "photo_hash":        photo_hash,
         "source_folder":     source_folder,
     }
+
+
+def _turn_note(result: PhotoResult) -> Optional[str]:
+    """Пометка в notes: фото пришлось повернуть (этап 7b)."""
+    if not result.photo_turn:
+        return None
+    return f"фото повёрнуто на {result.photo_turn}°: на исходном детектор ничего не нашёл"
 
 
 def _draw_boxes(img: np.ndarray, result: PhotoResult) -> None:
@@ -188,6 +196,9 @@ def _save_annotated(
 
     img = read_image(src)          # пути с кириллицей — см. src/gmr/render/image_io.py
     if img is not None:
+        # фото пришлось повернуть (этап 7b) — в результат кладётся повёрнутое:
+        # счётчик стоит прямо, рамки и подпись — на своих местах
+        img = turn_image(img, result.photo_turn)
         if draw_boxes:
             _draw_boxes(img, result)
         draw_annotation(img, result)
@@ -372,7 +383,8 @@ def process_photo(
         return result
 
     # ── Шаг 1: детекция трёх классов ─────────────────────────────────────────
-    crops = meter_detector.detect(photo_path)
+    # (ничего не найдено и включено turn_if_nothing — фото поворачивается, этап 7b)
+    crops, result.photo_turn = detect_meter(meter_detector, photo_path, config)
     if not crops:
         result.outcome = Outcome.NO_METER
         result.error_detail = "YOLO returned no crops"
@@ -879,7 +891,7 @@ def run_pipeline(config: PipelineConfig) -> None:
 
 _PRESET_FIELDS = ("missing_digit_mode", "ignore_last_digits", "forgiven_digit_mode",
                   "serial_crop_pad", "account_ocr_model", "drum_rule", "first_digit_from_last",
-                  "serial_by_table")
+                  "serial_by_table", "turn_if_nothing")
 
 
 def _apply_month_preset(config: PipelineConfig, month: MonthFolder, log: logging.Logger) -> None:

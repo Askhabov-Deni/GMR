@@ -79,6 +79,9 @@ class MeterDetector(Protocol):
         """Детекции на фото; пусто/None — ничего не найдено."""
         ...
 
+    # необязательно (этап 7b): detect_turned(photo_path) -> (детекции, градусы) —
+    # то же фото, повёрнутое на 90/180/270° (application.detect_meter)
+
 
 @runtime_checkable
 class SerialRecognizer(Protocol):

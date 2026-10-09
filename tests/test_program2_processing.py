@@ -914,16 +914,17 @@ def test_preset_dialog(app):
         dlg._vars["account_marker"].set(True)               # модели нет — галочка не сработает
         dlg._vars["drum_rule"].set(True)
         dlg._vars["serial_by_table"].set(True)
+        dlg._vars["turn_photo"].set(True)
         dlg._save()
     app.after(100, fill)
     dlg = program2.PresetDialog(app, RecognitionPreset(forgive_with="model"))
     assert dlg.result == RecognitionPreset("operator", 1, "model", 0.05, False,
-                                           drum_rule=True, serial_by_table=True)
+                                           drum_rule=True, serial_by_table=True, turn_photo=True)
     app.after(100, lambda: next(w for w in app.winfo_children()
                                 if isinstance(w, program2.PresetDialog))._save())
-    with_model = program2.PresetDialog(app, RecognitionPreset(account_marker=True, first_from_last=True),
-                                       marker_model=True)
-    assert with_model.result == RecognitionPreset(account_marker=True, first_from_last=True)
+    with_model = program2.PresetDialog(app, RecognitionPreset(account_marker=True, first_from_last=True,
+                                                              turn_photo=True), marker_model=True)
+    assert with_model.result == RecognitionPreset(account_marker=True, first_from_last=True, turn_photo=True)
     app.after(100, lambda: next(w for w in app.winfo_children()
                                 if isinstance(w, program2.PresetDialog)).destroy())     # «Отмена»
     assert program2.PresetDialog(app, RecognitionPreset()).result is None
