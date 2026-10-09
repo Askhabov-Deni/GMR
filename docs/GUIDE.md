@@ -289,17 +289,26 @@ python gmr.py inspect digit <папка с кропами цифр> --weights me
 #    и перенести хорошие: new\<месяц>\images\ → images\, new\<месяц>\labels\ → labels\
 python gmr.py datasets
 
-# 2) дообучение (результат — serial_id_ocr\runs\crnn\<дата-время>\)
-python models\crnn\train_crnn.py --finetune serial_id_ocr\runs\crnn\2026-06-05_01-09\best.pt --lr 1e-4
+# 2) обучение заново (результат — serial_id_ocr\runs\crnn\<дата-время>\): кроп — с пропорциями,
+#    край номера не срезается (этап 6c)
+python models\crnn\train_crnn.py
+#    дообучить прежнюю модель её же способом (растяжение, как до 6c):
+python models\crnn\train_crnn.py --finetune serial_id_ocr\runs\crnn\2026-06-05_01-09\best.pt --input stretch --lr 1e-4
 
 # 3) отчёт: точность всего номера, точность по позициям, ошибки
 python models\crnn\evaluate_crnn.py --run_dir serial_id_ocr\runs\crnn\<дата-время> `
     --images_dir database\datasets\serials_crnn\images --labels_dir database\datasets\serials_crnn\labels
 
-# 4) сравнение на реальных фото
+# 4) сравнение на реальных фото и на эталоне (5.4)
 python gmr.py inspect serial <папка с фото>
 python gmr.py inspect serial <папка с фото> --weights serial_id_ocr\runs\crnn\<дата-время>\best.pt
+python gmr.py etalon check --serial-weights serial_id_ocr\runs\crnn\<дата-время>\best.pt
 ```
+
+С этапа 6c `best.pt` помнит, как кроп приводился к размеру при обучении
+(`input_mode`), и программа читает им так же. Старые веса (без этой
+пометки) читаются по-старому — растяжением, так что работа программы не
+меняется, пока вы не поставите новую модель.
 
 Смотрите `plot_position_acc.png`: если ошибки на первой и последней
 позиции, сначала проверьте кроп (`docs/BACKLOG.md`, задача 2), а не
@@ -328,6 +337,14 @@ python models\yolo_all_detect\train_yolo.py --data database\datasets\meter_yolo 
 
 Без видеокарты добавьте `--device cpu` (детектор цифр так и обучался).
 
+С этапа 6c зеркальные копии фото при обучении выключены (`--fliplr 0`):
+классы различаются и по тексту, а зеркального текста на фото не бывает.
+Рамки детектора счётчика могут стать точнее при `--imgsz 960` (та же
+v8s, обучение и чтение дольше) — сравнить на эталоне. Классы детектора
+счётчика должны называться `gas_meter` и `serial_number` (порядок любой):
+с другими именами программа при загрузке остановится и скажет, какие
+классы у модели есть (раньше все фото молча стали бы «Нет счётчика»).
+
 ### 5.4. Эталон: сравнить модели «было → стало» (этап 5b)
 
 Эталон — трудные фото с правильным ответом оператора: модель не
@@ -355,6 +372,13 @@ python gmr.py etalon check --serial-pad 0.05
 неверный номер или показание с уверенностью — так показание записалось бы
 не тому абоненту или с ошибкой). Вывод — только числа, его можно
 прислать. Результат по каждому фото — `database\datasets\etalon\checks\`.
+
+Ниже — таблица порогов (этап 6c): при пороге 0.3 … 0.9 сколько фото
+модель приняла бы сама и сколько из них неверно — отдельно для цифр (все
+5 уверенно, без подстановок) и для серийника. Лучший порог — самый
+низкий, при котором «неверно» = 0. Пороги в работе —
+`digit_conf_thresh` и `serial_conf_thresh` в `src\gmr\domain\config.py`
+(менять — решение владельца).
 
 Правило замены (решение владельца 2026-10-04): новая модель ставится,
 только если на эталоне она не хуже старой ни в одной строке таблицы
@@ -498,7 +522,9 @@ python gmr.py etalon check --month D:\GMR\Октябрь_2026 --serial-by-table 
 `models/cnn/model_cnn.py`** и вкладывает в неё веса
 (`DigitCNN.from_pretrained`). Если поменять слои в `model_cnn.py`,
 **старые веса `v3_platinum` перестанут загружаться**, и прод сломается.
-С CRNN то же самое (`models/crnn/model_crnn.py`).
+С CRNN то же самое (`models/crnn/model_crnn.py`). Как кроп серийника
+приводится к размеру, чекпоинт CRNN с этапа 6c помнит сам (`input_mode`);
+размер входа по-прежнему в `models/crnn/config_crnn.py`.
 
 Поэтому правильный порядок такой:
 1. **Новая архитектура — в новом файле**, например

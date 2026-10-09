@@ -62,8 +62,9 @@ def collect_predictions(
     device: torch.device,
     batch_size: int,
     num_workers: int,
+    input_mode: str = "stretch",
 ) -> list[tuple[str, str, str]]:
-    dataset = MeterDataset(metadata, val_transform())
+    dataset = MeterDataset(metadata, val_transform(input_mode))
     loader  = DataLoader(
         dataset, batch_size=batch_size, shuffle=False,
         collate_fn=collate, num_workers=num_workers, pin_memory=False,
@@ -349,7 +350,8 @@ def main() -> None:
     model = CRNN().to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
-    print(f"✅ Модель загружена (val_acc={ckpt.get('val_acc', '?')})")
+    input_mode = ckpt.get("input_mode", "stretch")     # чекпоинты до этапа 6c — растяжение
+    print(f"✅ Модель загружена (val_acc={ckpt.get('val_acc', '?')}, вход: {input_mode})")
 
     # Данные
     meta = load_dataset(args.images_dir, args.labels_dir)
@@ -357,7 +359,8 @@ def main() -> None:
 
     # Предсказания
     print("\n🔍 Собираю предсказания на test...")
-    test_results           = collect_predictions(model, test_meta, device, args.batch_size, args.num_workers)
+    test_results           = collect_predictions(model, test_meta, device, args.batch_size, args.num_workers,
+                                                     input_mode)
     test_preds             = [r[0] for r in test_results]
     test_gts               = [r[1] for r in test_results]
     test_acc               = exact_match(test_preds, test_gts)

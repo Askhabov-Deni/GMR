@@ -306,12 +306,14 @@ def test_train_yolo_main(tmp_path, fake_ultralytics, capsys):
     assert w == "yolov8s.pt" and kw["name"] == "meter_v2" and kw["exist_ok"] is True
     assert Path(kw["project"]) == (tmp_path / "runs").resolve() and kw["epochs"] == 3
     assert kw["seed"] == 67 and kw["device"] == "cpu" and kw["data"].endswith("data.yaml")
+    assert kw["fliplr"] == 0.0 and kw["imgsz"] == 640           # зеркала выключены (этап 6c)
     assert not (data / "labels.cache").exists()                    # в папке датасета ничего не осталось
     assert train_yolo.main(argv) == 1                              # такой прогон уже есть
     assert "уже есть" in capsys.readouterr().out
     (data / "labels.cache").write_text("старый", encoding="utf-8")  # был до обучения — не трогаем
-    assert train_yolo.main(argv[:-5] + ["meter_v3"]) == 0
+    assert train_yolo.main(argv[:-5] + ["meter_v3", "--fliplr", "0.5", "--imgsz", "960"]) == 0
     assert (data / "labels.cache").read_text(encoding="utf-8") == "cache"
+    assert (fake_ultralytics[-1][1]["fliplr"], fake_ultralytics[-1][1]["imgsz"]) == (0.5, 960)
 
 
 def test_train_yolo_main_dataset_error(tmp_path, fake_ultralytics, capsys):

@@ -1,9 +1,12 @@
+import random
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as T
+import torchvision.transforms.functional as TF
 from PIL import Image, ImageOps
 
 try:
@@ -104,6 +107,49 @@ def split(metadata: list, train: float = 0.7, val: float = 0.15, seed: int = 42)
 
 
 # ── Transforms ───────────────────────────────────────────────────────
+# Как кроп приводится к IMG_W×IMG_H (этап 6c, docs/MODELS_REVIEW.md, раздел 3).
+# Режим пишется в чекпоинт (input_mode): модель читается так же, как училась.
+#   stretch     — растянуть (как учились модели до 6c; чекпоинт без input_mode);
+#   keep_aspect — с сохранением пропорций, остаток — фоном (новое обучение).
+STRETCH, KEEP_ASPECT = "stretch", "keep_aspect"
+INPUT_MODES = (KEEP_ASPECT, STRETCH)
+
+
+class FitToBox:
+    """Кроп → IMG_W×IMG_H без растяжения: высота → IMG_H (длинный номер —
+    по ширине), справа и сверху/снизу — фон (медианный цвет кропа).
+
+    augment=True (обучение): поле вокруг кропа, поворот с расширением
+    холста и перспектива с фоном — край номера не срезается (раньше
+    RandomCrop срезал до 16 пикселей при той же метке)."""
+
+    def __init__(self, w: int, h: int, augment: bool = False):
+        self.w, self.h, self.augment = w, h, augment
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        bg = tuple(int(v) for v in np.median(np.asarray(img).reshape(-1, 3), axis=0))
+        if self.augment:
+            img = self._augment(img, bg)
+        w, h = img.size
+        scale = min(self.h / h, self.w / w)
+        nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
+        out = Image.new("RGB", (self.w, self.h), bg)
+        out.paste(img.resize((nw, nh), Image.BILINEAR), (0, (self.h - nh) // 2))
+        return out
+
+    @staticmethod
+    def _augment(img: Image.Image, bg: tuple) -> Image.Image:
+        w, h = img.size
+        left, right = random.randint(0, w // 12), random.randint(0, w // 12)
+        top, bottom = random.randint(0, h // 6), random.randint(0, h // 6)
+        canvas = Image.new("RGB", (w + left + right, h + top + bottom), bg)
+        canvas.paste(img, (left, top))
+        img = canvas.rotate(random.uniform(-5, 5), resample=Image.BILINEAR, expand=True, fillcolor=bg)
+        if random.random() < 0.4:
+            start, end = T.RandomPerspective.get_params(img.size[0], img.size[1], 0.2)
+            img = TF.perspective(img, start, end, fill=list(bg))      # сжимает внутрь, края целы
+        return img
+
 
 def _add_noise(img: torch.Tensor) -> torch.Tensor:
     return (img + 0.03 * torch.randn_like(img)).clamp(-1, 1)
@@ -112,8 +158,19 @@ def _autocontrast(img: Image.Image) -> Image.Image:
     return ImageOps.autocontrast(img)
 
 
-def train_transform() -> T.Compose:
-    return T.Compose([
+def train_transform(mode: str) -> T.Compose:
+    if mode == KEEP_ASPECT:
+        return T.Compose([
+            FitToBox(IMG_W, IMG_H, augment=True),
+            T.ColorJitter(brightness=0.4, contrast=0.4),
+            T.RandomEqualize(p=0.3),
+            T.Lambda(_autocontrast),        # как при чтении (val_transform): всегда
+            T.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
+            T.ToTensor(),
+            T.Normalize(_MEAN, _STD),
+            T.Lambda(_add_noise),
+        ])
+    return T.Compose([                      # STRETCH — как до этапа 6c
         T.Resize((IMG_H + 8, IMG_W + 16)),
         T.RandomCrop((IMG_H, IMG_W)),
         T.RandomRotation(degrees=5),
@@ -128,9 +185,9 @@ def train_transform() -> T.Compose:
     ])
 
 
-def val_transform() -> T.Compose:
+def val_transform(mode: str = STRETCH) -> T.Compose:
     return T.Compose([
-        T.Resize((IMG_H, IMG_W)),
+        FitToBox(IMG_W, IMG_H) if mode == KEEP_ASPECT else T.Resize((IMG_H, IMG_W)),
         T.Lambda(_autocontrast),
         T.ToTensor(),
         T.Normalize(_MEAN, _STD),

@@ -83,13 +83,36 @@ def load_account_recognizer(
     )
 
 
+# классы детектора счётчика, которые программа ищет по имени
+# (src/gmr/application/recognition.py, reader.py)
+METER_CLASSES = ("gas_meter", "serial_number")
+
+
+def _class_names(detector) -> Optional[list]:
+    names = getattr(getattr(detector, "inferer", None), "class_names", None)
+    if names is None:
+        return None
+    return list(names.values()) if isinstance(names, dict) else list(names)
+
+
+def check_meter_classes(meter_detector) -> None:
+    """Детектор переобучили с другими именами классов — все фото молча стали
+    бы NO_METER / NO_SERIAL; лучше сразу сказать (этап 6c)."""
+    names = _class_names(meter_detector)
+    missing = [c for c in METER_CLASSES if names is not None and c not in names]
+    if missing:
+        raise ValueError(
+            f"У детектора счётчика нет класса {', '.join(f'«{c}»' for c in missing)}; "
+            f"его классы: {', '.join(map(str, names))}. Классы в classes.txt датасета должны "
+            f"называться {', '.join(METER_CLASSES)} (порядок любой).")
+
+
 def check_account_class(meter_detector, config: PipelineConfig) -> None:
     """Модель надписи без класса надписи у детектора счётчика бесполезна
     молча — лучше сразу сказать, какие классы у детектора есть."""
-    names = getattr(getattr(meter_detector, "inferer", None), "class_names", None)
+    names = _class_names(meter_detector)
     if names is None:
         return
-    names = list(names.values()) if isinstance(names, dict) else list(names)
     if config.account_class not in names:
         raise ValueError(
             f"У детектора счётчика нет класса «{config.account_class}» (PipelineConfig.account_class); "
@@ -107,6 +130,7 @@ def load_models(
     """
     device = device or default_device()
     meter_detector = load_meter_detector(config, resolve_path)
+    check_meter_classes(meter_detector)
     account_recognizer = load_account_recognizer(config, device, resolve_path)
     if account_recognizer is not None:
         check_account_class(meter_detector, config)

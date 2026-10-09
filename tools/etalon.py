@@ -245,6 +245,12 @@ class PhotoCheck:
     reading_wrong_sure: bool  # показание прочитано (все цифры уверенно), но неверно — записалось бы
     model_serial: str = ""
     model_reading: str = ""
+    # для таблицы порогов (этап 6c): уверенность модели и верен ли её ответ
+    # без порога; None — модель ответа не дала
+    serial_conf: Optional[float] = None
+    serial_right: Optional[bool] = None
+    digits_conf: Optional[float] = None     # самая неуверенная из цифр
+    digits_right: Optional[bool] = None     # все цифры модели (без подстановок) верны
 
     @property
     def all_ok(self) -> bool:
@@ -263,6 +269,7 @@ def check_photo(models, path: Path, answer: dict, config: PipelineConfig,
     rec = recognize_photo(models, str(path), config, last_reading=answer.get("last_reading") or None)
     sp = rec.serial_prediction
     text, sure = (sp.text, sp.confidence >= config.serial_conf_thresh) if sp else ("", False)
+    serial_right = serial_matches(text, answer["serial"]) if sp else None
     if (config.serial_by_table and serial_groups and rec.serial is not None
             and not (sure and _in_table(text, serial_groups))
             and hasattr(models.serial_recognizer, "match_table")):
@@ -272,9 +279,43 @@ def check_photo(models, path: Path, answer: dict, config: PipelineConfig,
     number = rec.digits.number if rec.digits is not None else None
     s_ok = serial_matches(text, answer["serial"])
     r_ok = reading_matches(number, answer["reading"], config)
+    d_conf, d_right = _digits_answer(rec.digits, answer["reading"], config)
     return PhotoCheck(answer["photo_hash"], answer["reason"], rec.meter is not None, rec.serial is not None,
                       s_ok and sure, sure and not s_ok, r_ok, number is not None and not r_ok,
-                      text, "" if number is None else str(number))
+                      text, "" if number is None else str(number),
+                      sp.confidence if sp else None, serial_right, d_conf, d_right)
+
+
+def _digits_answer(digits, truth: str, config: PipelineConfig) -> tuple[Optional[float], Optional[bool]]:
+    """Цифры, как их видит модель (без подстановок): самая низкая
+    уверенность и верны ли все. Нет цифры на какой-то позиции — (None, None)."""
+    rs = getattr(digits, "digit_results", None) or []
+    if len(rs) != config.expected_digits or any(r.get("confidence") is None for r in rs):
+        return None, None
+    return (min(r["confidence"] for r in rs),
+            "".join(str(r["digit"]) for r in rs) == str(truth).zfill(config.expected_digits))
+
+
+THRESHOLDS = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+
+
+def threshold_table(results: list[PhotoCheck], config: PipelineConfig) -> list[str]:
+    """Пороги по кривой «принято / неверно среди принятых» (этап 6c,
+    docs/MODELS_REVIEW.md, раздел 4): лучший порог — самый низкий, при
+    котором неверных среди принятых нет."""
+    def cell(pairs: list, t: float) -> str:
+        taken = [right for conf, right in pairs if conf >= t - 1e-9]
+        return f"{len(taken)} из {len(pairs)}, неверно {sum(not r for r in taken)}" if pairs else "—"
+    digits = [(r.digits_conf, r.digits_right) for r in results if r.digits_conf is not None]
+    serial = [(r.serial_conf, r.serial_right) for r in results if r.serial_conf is not None]
+    table = [["порог", "цифры (все 5 уверенно)", "серийник"]]
+    table += [[f"{t:.1f}", cell(digits, t), cell(serial, t)] for t in THRESHOLDS]
+    widths = [max(len(row[i]) for row in table) for i in range(3)]
+    return (["", f"Пороги уверенности (сейчас: цифры {config.digit_conf_thresh}, "
+                 f"серийник {config.serial_conf_thresh}):"]
+            + ["  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip() for row in table]
+            + ["«принято» — фото, где модель дала ответ с уверенностью не ниже порога; лучший",
+               "порог — самый низкий, при котором «неверно» = 0 (цифры — без подстановок и прощения)."])
 
 
 def summary(results: list[PhotoCheck], title: str) -> str:
@@ -329,7 +370,7 @@ def check(config: PipelineConfig, etalon: Path = ETALON_DIR, models=None, title:
         w = csv.DictWriter(fh, fieldnames=fields)
         w.writeheader()
         w.writerows(dataclasses.asdict(r) for r in results)
-    text = summary(results, title)
+    text = "\n".join([summary(results, title), *threshold_table(results, config)])
     if missing:
         text += f"\n\n⚠ нет файла фото в эталоне: {missing}"
     return text + f"\n\nПо каждому фото: {out}", out

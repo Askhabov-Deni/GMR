@@ -23,6 +23,11 @@
     python models/yolo_all_detect/train_yolo.py --data database/datasets/digits_yolo \\
         --model yolov8n.pt --project meter_ocr/runs/yolo --name digits_v5 --imgsz 480 --epochs 50
   Дообучить текущую модель — --model <путь к best.pt>.
+
+Зеркальные копии фото при обучении выключены (--fliplr 0, этап 6c): классы
+различаются и по тексту, а зеркального текста на фото не бывает. Как раньше
+у детектора счётчика — --fliplr 0.5. Рамки точнее при --imgsz 960 (та же
+v8s; дольше обучение и чтение) — сравнивать на эталоне.
 """
 import argparse
 import sys
@@ -105,6 +110,8 @@ def main(argv=None) -> int:
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--patience", type=int, default=50)
     p.add_argument("--device", default=None, help="cpu или 0 (видеокарта); по умолчанию — что есть")
+    p.add_argument("--fliplr", type=float, default=0.0,
+                   help="доля зеркальных копий при обучении (по умолчанию 0: текст не зеркалится)")
     args = p.parse_args(argv)
 
     run_dir = Path(args.project).resolve() / args.name
@@ -126,7 +133,7 @@ def main(argv=None) -> int:
         YOLO(args.model).train(
             data=str(yaml), project=str(run_dir.parent), name=run_dir.name, exist_ok=True,
             epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, patience=args.patience,
-            seed=args.seed, device=args.device,
+            seed=args.seed, device=args.device, fliplr=args.fliplr,
         )
     finally:
         if not had_cache:

@@ -75,14 +75,17 @@ class CRNN(nn.Module):
             model = CRNN.from_pretrained("best.pt", device="cuda")
         """
         model = cls().to(device)
+        model.input_mode = "stretch"        # как приводить кроп к размеру (dataset_crnn.INPUT_MODES)
         # weights_only=True — как в DigitCNN.from_pretrained (находка 3).
         # torch >= 2.6 и так грузит так по умолчанию; флаг делает это явным
         # и не зависящим от версии torch.
         ckpt  = torch.load(checkpoint_path, map_location=device, weights_only=True)
         if isinstance(ckpt, dict) and "model_state" in ckpt:
             model.load_state_dict(ckpt["model_state"])
-            val_acc = ckpt.get("val_acc", "?")
-            print(f"[CRNN] Загружен из {checkpoint_path} (val_acc={val_acc:.4f})")
+            model.input_mode = ckpt.get("input_mode", "stretch")   # старые чекпоинты — растяжение
+            val_acc = ckpt.get("val_acc")
+            print(f"[CRNN] Загружен из {checkpoint_path} (val_acc="
+                  f"{'?' if val_acc is None else f'{val_acc:.4f}'}, вход: {model.input_mode})")
         else:
             model.load_state_dict(ckpt)
             print(f"[CRNN] Загружен из {checkpoint_path}")

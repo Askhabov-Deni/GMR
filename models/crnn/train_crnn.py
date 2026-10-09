@@ -15,6 +15,11 @@
     python train_crnn.py --images_dir data/images --labels_dir data/labels \\
         --finetune runs/2026-06-04_14-25/best.pt --lr 1e-4
 
+Кроп приводится к размеру с сохранением пропорций, край номера при
+обучении не срезается (этап 6c, --input keep_aspect, по умолчанию). Как
+раньше (растяжение) — --input stretch. Режим пишется в best.pt, и модель
+читается так же, как училась; resume продолжает в режиме чекпоинта.
+
 РЕЗУЛЬТАТЫ в <save_dir>/<дата-время>/ (по умолчанию serial_id_ocr/runs/crnn):
   run_info.json    — датасет (отпечаток), коммит кода, пакеты, деление (этап 5)
   split/*.txt      — какие файлы попали в train / val / test
@@ -42,12 +47,14 @@ from torch.utils.data import DataLoader
 
 try:
     from .config_crnn import IMG_W, IMG_H
-    from .dataset_crnn import load_dataset, split, MeterDataset, train_transform, val_transform, collate
+    from .dataset_crnn import (INPUT_MODES, KEEP_ASPECT, load_dataset, split, MeterDataset,
+                               train_transform, val_transform, collate)
     from .metrics_crnn import exact_match, cer
     from .model_crnn import CRNN, ctc_loss, predict
 except ImportError:  # запуск как отдельный скрипт (python models/crnn/train_crnn.py)
     from config_crnn import IMG_W, IMG_H
-    from dataset_crnn import load_dataset, split, MeterDataset, train_transform, val_transform, collate
+    from dataset_crnn import (INPUT_MODES, KEEP_ASPECT, load_dataset, split, MeterDataset,
+                              train_transform, val_transform, collate)
     from metrics_crnn import exact_match, cer
     from model_crnn import CRNN, ctc_loss, predict
 try:
@@ -73,7 +80,16 @@ def parse() -> argparse.Namespace:
     p.add_argument("--es_patience",  type=int,   default=15)
     p.add_argument("--es_min_delta", type=float, default=0.0)
     p.add_argument("--num_workers",  type=int,   default=0)
+    p.add_argument("--input",        choices=INPUT_MODES, default=KEEP_ASPECT,
+                   help="keep_aspect — с пропорциями, без среза края (этап 6c); stretch — как раньше")
     return p.parse_args()
+
+
+def input_mode_for(args: argparse.Namespace) -> str:
+    """Режим входа: resume — как в чекпоинте (до 6c — stretch), иначе --input."""
+    if args.resume:
+        return torch.load(args.resume, map_location="cpu", weights_only=True).get("input_mode", "stretch")
+    return args.input
 
 
 # ── Train / eval ──────────────────────────────────────────────────────
@@ -223,19 +239,21 @@ def main() -> None:
     print(f"📊 train={len(train_meta)} | val={len(val_meta)} | test={len(test_meta)}")
     require_parts({"train": train_meta, "val": val_meta, "test": test_meta}, ("train", "val", "test"))
     save_split(save_dir, args, meta, train_meta, val_meta, test_meta)
+    mode = input_mode_for(args)
+    print(f"🖼️  Вход: {mode}")
 
     train_dl = DataLoader(
-        MeterDataset(train_meta, train_transform()),
+        MeterDataset(train_meta, train_transform(mode)),
         batch_size=args.batch_size, shuffle=True,
         collate_fn=collate, num_workers=args.num_workers, pin_memory=False,
     )
     val_dl = DataLoader(
-        MeterDataset(val_meta, val_transform()),
+        MeterDataset(val_meta, val_transform(mode)),
         batch_size=args.batch_size, shuffle=False,
         collate_fn=collate, num_workers=args.num_workers, pin_memory=False,
     )
     test_dl = DataLoader(
-        MeterDataset(test_meta, val_transform()),
+        MeterDataset(test_meta, val_transform(mode)),
         batch_size=args.batch_size, shuffle=False,
         collate_fn=collate, num_workers=args.num_workers, pin_memory=False,
     )
@@ -306,6 +324,7 @@ def main() -> None:
                 "optimizer_state": opt.state_dict(),
                 "val_acc":         val_acc,
                 "val_cer":         val_cer_val,
+                "input_mode":      mode,
             }, best_ckpt_path)
             print(f"  💾 best.pt обновлён (acc={val_acc:.4f}, cer={val_cer_val:.4f})")
 

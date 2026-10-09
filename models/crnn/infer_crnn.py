@@ -20,7 +20,6 @@ except ImportError:  # запуск как отдельный скрипт (pyth
 class CRNNInferer:
     def __init__(self, model_or_path: str | CRNN, device: torch.device | None = None):
         self.device    = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.transform = val_transform()
 
         if isinstance(model_or_path, str):
             self.model = CRNN.from_pretrained(model_or_path, device=str(self.device))
@@ -28,6 +27,8 @@ class CRNNInferer:
             self.model = model_or_path.to(self.device)
 
         self.model.eval()
+        # кроп приводится к размеру так же, как при обучении этой модели (этап 6c)
+        self.transform = val_transform(getattr(self.model, "input_mode", "stretch"))
 
     @torch.no_grad()
     def log_probs(self, image_input: str | object) -> torch.Tensor:
