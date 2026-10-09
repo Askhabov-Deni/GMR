@@ -80,7 +80,7 @@ from src.gmr.application import (
 )
 from src.gmr.ml.loader import default_device, load_models
 from src.gmr.application.cycle import close_waiting, free_name, move_files, result_file
-from src.gmr.application.month import ExportLocked, NotAMonth, export_month, is_month
+from src.gmr.application.month import ExportLocked, NotAMonth, export_month, is_month, month_preset
 from src.gmr.console import safe_console
 from src.gmr.domain.photo_date import reading_date
 from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
@@ -825,6 +825,7 @@ def run_pipeline(config: PipelineConfig) -> None:
     log.addHandler(handler)
     try:
         log.info(f"Журнал прогона: {journal}")
+        _apply_month_preset(config, month, log)
         _backup_month(month, log)
         store = _MonthRun(config, log, month)
         try:
@@ -839,6 +840,23 @@ def run_pipeline(config: PipelineConfig) -> None:
         log.removeHandler(handler)
         handler.close()
         remove_old(run_logs, KEEP)
+
+
+_PRESET_FIELDS = ("missing_digit_mode", "ignore_last_digits", "forgiven_digit_mode",
+                  "serial_crop_pad", "account_ocr_model")
+
+
+def _apply_month_preset(config: PipelineConfig, month: MonthFolder, log: logging.Logger) -> None:
+    """Настройки распознавания месяца (src/gmr/domain/preset.py) — в config.
+    Месяц без них — всё как в PipelineConfig."""
+    preset = month_preset(month.root)
+    if preset is None:
+        log.info("Настройки распознавания: по умолчанию (как до настроек месяца)")
+        return
+    applied = preset.apply(config)
+    for name in _PRESET_FIELDS:
+        setattr(config, name, getattr(applied, name))
+    log.info(f"Настройки распознавания месяца: {preset.describe()}")
 
 
 def _backup_month(month: MonthFolder, log: logging.Logger) -> None:

@@ -160,8 +160,9 @@ def test_serial_and_reading_match():
     assert etalon.serial_matches("123456", "0123456") and etalon.serial_matches("123456", "00123456")
     assert etalon.serial_matches(" 123456", "123456")
     assert not etalon.serial_matches("12345", "123456") and not etalon.serial_matches("", "")
-    cfg = PipelineConfig()                                      # ignore_last_digits = 2
-    assert etalon.reading_matches(1234, "1299", cfg) and etalon.reading_matches(1234, "01234", cfg)
+    cfg = PipelineConfig()
+    assert etalon.reading_matches(1234, "01234", cfg)
+    assert not etalon.reading_matches(1230, "1234", cfg)        # «0» вместо настоящей цифры — неверно
     assert not etalon.reading_matches(2234, "1234", cfg) and not etalon.reading_matches(None, "1234", cfg)
 
 

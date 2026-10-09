@@ -32,6 +32,7 @@ from typing import Optional
 
 from src.gmr.domain.config import PipelineConfig
 from src.gmr.domain.models import QUESTION_REASONS
+from src.gmr.domain.preset import RecognitionPreset
 from src.gmr.storage.backup import backup_sqlite
 from src.gmr.storage.log_store import LOG_COLUMNS, load_log, log_path_for
 from src.gmr.storage.month import Abonent, MonthDB, MonthFolder, Reading, now_text
@@ -45,6 +46,9 @@ _LIST_LIMIT = 20          # сколько строк списка показы�
 SERIAL_FIX_ACTION = "номер исправлен оператором"
 # «ignored» — месяц создан без текущих показаний из таблицы компании (2а, 2026-10-09)
 META_TABLE_READINGS = "table_readings"
+# настройки распознавания месяца — RecognitionPreset в JSON (2026-10-11, решение 2а)
+META_RECOGNITION = "recognition"
+PRESET_ACTION = "настройки распознавания"
 
 
 class ExportLocked(Exception):
@@ -156,6 +160,27 @@ class LoadReport:
         return "\n".join(out)
 
 
+def month_preset(month_dir) -> Optional[RecognitionPreset]:
+    """Настройки распознавания месяца; None — не заданы (месяц до пресетов:
+    всё как в PipelineConfig)."""
+    folder = MonthFolder(Path(month_dir))
+    if not is_month(folder):
+        return None
+    with MonthDB(folder.db) as db:
+        text = db.meta(META_RECOGNITION)
+    return RecognitionPreset.from_json(text) if text else None
+
+
+def set_month_preset(month_dir, preset: RecognitionPreset, who: Optional[str] = None) -> None:
+    """Сохранить настройки распознавания месяца (действуют со следующей
+    обработки); в журнал изменений — что стало."""
+    with MonthDB(MonthFolder(Path(month_dir)).db) as db, db.transaction():
+        old = db.meta(META_RECOGNITION)
+        if old != preset.to_json():
+            db.set_meta(META_RECOGNITION, preset.to_json())
+            db.add_change(who or _who(), PRESET_ACTION, note=preset.describe())
+
+
 def month_label(created_at: Optional[str], today: Optional[datetime] = None) -> str:
     """«2026-10» — месяц папки месяца (по дате её создания): так подписана
     разметка в папках new/ датасетов (решение владельца 2026-10-09, 1а)."""
@@ -175,7 +200,7 @@ def table_readings_count(table_path: str, config: Optional[PipelineConfig] = Non
 
 def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig] = None,
                who: Optional[str] = None, import_old_log: bool = True,
-               clear_readings: bool = False) -> LoadReport:
+               clear_readings: bool = False, preset: Optional[RecognitionPreset] = None) -> LoadReport:
     """Создаёт месяц из таблицы компании или загружает её обновлённую версию.
     Ошибка ValueError — если таблица не читается или в ней нет нужных столбцов;
     тогда база не меняется. import_old_log=False — не переносить лог старого
@@ -183,7 +208,9 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
     оператора спрашивает об этом (этап 4). clear_readings=True — только при
     создании: текущие показания из таблицы не берутся, месяц начинается без
     них; выбор запоминается (META_TABLE_READINGS) и при обновлении таблицы
-    (решение владельца 2026-10-09, 2а). Оригинал таблицы не меняется."""
+    (решение владельца 2026-10-09, 2а). Оригинал таблицы не меняется.
+    preset — настройки распознавания нового месяца (при обновлении таблицы не
+    меняются: для этого set_month_preset)."""
     cfg = config or PipelineConfig()
     who = who or _who()
     folder = MonthFolder(Path(month_dir))
@@ -284,6 +311,8 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
                 db.set_meta("created_at", stamp)
                 if clear_readings:
                     db.set_meta(META_TABLE_READINGS, "ignored")
+                if preset is not None:
+                    db.set_meta(META_RECOGNITION, preset.to_json())
                 old_log = Path(log_path_for(table_path))
                 if import_old_log and old_log.is_file():
                     rows = load_log(str(old_log))
@@ -489,6 +518,7 @@ def month_summary(month_dir: str) -> str:
         serial_fixes = {c["account"] for c in db.changes() if c["action"] == SERIAL_FIX_ACTION}
         meta = (db.meta("created_at"), db.meta("table"), db.meta("table_loaded_at"))
         no_table_readings = db.meta(META_TABLE_READINGS) == "ignored"
+        preset_text = db.meta(META_RECOGNITION)
     with_reading = [a for a in in_table if a in readings]
     by_source = {src: sum(1 for a in with_reading if readings[a].source == src) for src, _ in _SOURCE_NAMES}
     without = [ab for a, ab in in_table.items() if a not in readings]
@@ -499,6 +529,8 @@ def month_summary(month_dir: str) -> str:
         f"Месяц: {folder.root}",
         f"  создан: {meta[0]}, таблица: {meta[1]} (загружена {meta[2]})"
         + (", показания из таблицы не взяты" if no_table_readings else ""),
+        "  распознавание: " + (RecognitionPreset.from_json(preset_text).describe() if preset_text
+                               else "по умолчанию (как до настроек месяца)"),
         f"  абонентов в таблице: {len(in_table)}",
         f"  с показанием: {len(with_reading)} — "
         + ", ".join(f"{name} {by_source[src]}" for src, name in _SOURCE_NAMES),

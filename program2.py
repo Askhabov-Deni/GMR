@@ -66,6 +66,7 @@ from src.gmr.domain.serial_match import alphabet_for, one_char_matches
 from src.gmr.application import digit_crops_by_position, recognize_photo
 from src.gmr.ml.loader import default_device, load_models
 from src.gmr.domain.datasets import to_etalon
+from src.gmr.domain.preset import FORGIVE_MODES, MISSING_MODES, SERIAL_PADS, RecognitionPreset
 
 _LOG_FILE = _BASE / "program2.log"
 
@@ -197,6 +198,62 @@ class SettingsDialog(tk.Toplevel):
 
     def _cancel(self):
         self.destroy()
+
+class PresetDialog(tk.Toplevel):
+    """Настройки распознавания месяца (2026-10-11, решение 2а): при создании
+    месяца — заполнены как в прошлом, потом — «Месяц» → «Настройки
+    распознавания…». result — RecognitionPreset или None («Отмена»)."""
+    def __init__(self, parent, preset: RecognitionPreset, title: str = "Настройки распознавания",
+                 ok_text: str = "Сохранить", marker_model: bool = False):
+        super().__init__(parent)
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.result: Optional[RecognitionPreset] = None
+        self._marker_model = marker_model
+        self._vars = {
+            "missing_digit": tk.StringVar(value=preset.missing_digit),
+            "forgive_last": tk.IntVar(value=preset.forgive_last),
+            "forgive_with": tk.StringVar(value=preset.forgive_with),
+            "serial_pad": tk.DoubleVar(value=preset.serial_pad),
+            "account_marker": tk.BooleanVar(value=preset.account_marker and marker_model),
+        }
+        f = ttk.Frame(self, padding=16)
+        f.pack(fill=tk.BOTH, expand=True)
+
+        def group(text, key, options):
+            ttk.Label(f, text=text, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
+            for value, label in options:
+                ttk.Radiobutton(f, text=label, value=value, variable=self._vars[key]).pack(anchor="w", padx=12)
+
+        group("Детектор не нашёл одну цифру:", "missing_digit", MISSING_MODES.items())
+        group("Неуверенные последние цифры:", "forgive_last",
+              [(0, "не прощать — к оператору"), (1, "прощать последнюю"), (2, "прощать две последние")])
+        group("Прощённую цифру заменять:", "forgive_with", FORGIVE_MODES.items())
+        group("Запас вокруг рамки серийника:", "serial_pad", [(p, f"{int(p * 100)}%") for p in SERIAL_PADS])
+        ttk.Label(f, text="Лицевой счёт:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
+        ttk.Checkbutton(f, text="искать по надписи маркером" + ("" if marker_model else
+                                                                " (модель надписи ещё не подключена)"),
+                        variable=self._vars["account_marker"],
+                        state=tk.NORMAL if marker_model else tk.DISABLED).pack(anchor="w", padx=12)
+        ttk.Label(f, text="Как было до настроек: «5», две последние — «0», запас 0%, без надписи.\n"
+                          "Действует со следующей обработки.", foreground="#666").pack(anchor="w", pady=(12, 0))
+        btns = ttk.Frame(f)
+        btns.pack(pady=(12, 0))
+        ttk.Button(btns, text=ok_text, command=self._save).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=6)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.wait_window()
+
+    def _save(self):
+        v = self._vars
+        self.result = RecognitionPreset(
+            missing_digit=v["missing_digit"].get(), forgive_last=int(v["forgive_last"].get()),
+            forgive_with=v["forgive_with"].get(), serial_pad=float(v["serial_pad"].get()),
+            account_marker=bool(v["account_marker"].get()) and self._marker_model)
+        self.destroy()
+
 
 class LoginDialog(tk.Toplevel):
     """Подтверждение входа при каждом запуске."""
@@ -907,6 +964,7 @@ class MainWindow(tk.Tk):
                 log.info(f"Копия базы месяца: {dest}")
         except (OSError, sqlite3.Error) as e:
             log.warning(f"Не удалось сделать копию базы месяца: {e}")
+        self._apply_preset()
         self.reload()
         return True
 
@@ -996,15 +1054,48 @@ class MainWindow(tk.Tk):
             "«Да» — месяц начинается без показаний, программа прочитает все фото.\n"
             "«Нет» — эти показания считаются уже записанными.\n\n"
             "Оригинал таблицы не меняется.", parent=parent)
+        preset = self.ask_preset(parent, self._previous_preset(), "Настройки распознавания нового месяца",
+                                 ok_text="Дальше")
+        if preset is None:
+            return False
         try:
             rep = month_app.load_table(folder, table, self.config, who=who or self.settings.operator_name,
-                                       import_old_log=import_log, clear_readings=clear)
+                                       import_old_log=import_log, clear_readings=clear, preset=preset)
             exported = month_app.export_month(folder, self.config).text()
         except (ValueError, OSError, ExportLocked) as e:
             messagebox.showerror("Новый месяц", str(e), parent=parent)
             return False
         show_text(parent, "Месяц создан", rep.text() + "\n\n" + exported)
         return True
+
+    # ─── Настройки распознавания месяца (2026-10-11, решение 2а) ──────────────
+    @staticmethod
+    def ask_preset(parent, preset: RecognitionPreset, title: str, ok_text: str = "Сохранить"):
+        return PresetDialog(parent, preset, title, ok_text=ok_text,
+                            marker_model=bool(PipelineConfig().account_ocr_model)).result
+
+    def _previous_preset(self) -> RecognitionPreset:
+        """Для нового месяца — как в открытом месяце, иначе — как было."""
+        if self.session is not None:
+            return month_app.month_preset(str(self.session.folder.root)) or RecognitionPreset()
+        return RecognitionPreset()
+
+    def _apply_preset(self):
+        """Настройки месяца — в self.config: окно читает фото так же, как прогон."""
+        preset = month_app.month_preset(str(self.session.folder.root))
+        self.config = preset.apply(PipelineConfig()) if preset is not None else PipelineConfig()
+        if self.models is not None:
+            self.models.config = self.config
+
+    def edit_preset(self):
+        """Меню «Месяц» → «Настройки распознавания…»."""
+        root = str(self.session.folder.root)
+        current = month_app.month_preset(root) or RecognitionPreset()
+        new = self.ask_preset(self, current, "Настройки распознавания")
+        if new is None or new == current:
+            return
+        month_app.set_month_preset(root, new, who=self.settings.operator_name)
+        self._apply_preset()
 
     def _switch_month(self, folder: str):
         """Окно — на другой папке месяца (настройки сохраняются). Если месяц
@@ -1085,6 +1176,7 @@ class MainWindow(tk.Tk):
         m.add_command(label="Открыть другой месяц…", command=self.choose_month)
         m.add_separator()
         m.add_command(label="Прочитать заново фото с ошибками…", command=self.reread_errors)
+        m.add_command(label="Настройки распознавания…", command=self.edit_preset)
         menubar.add_cascade(label="Месяц", menu=m)
         self.configure(menu=menubar)        # self.config — это PipelineConfig, поэтому configure
         self._month_menu = m

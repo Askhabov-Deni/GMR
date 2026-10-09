@@ -78,6 +78,30 @@ def find_detection(detections: Optional[list[Detection]], class_name: str) -> Op
     return None
 
 
+def _gap_bbox(boxes: list, idx: int, crop_shape) -> Optional[tuple]:
+    """Рамка пропущенной цифры (пресет «прочитать моделью на этом месте»):
+    ширина — медиана найденных, высота — как у соседей, центр — посередине
+    между соседями (у крайней позиции — на средний шаг от соседа)."""
+    found = [b for b in boxes if b is not None]
+    width = sorted(b[2] - b[0] for b in found)[len(found) // 2]
+    centers = [(b[0] + b[2]) / 2 for b in found]
+    step = (centers[-1] - centers[0]) / (len(found) - 1) if len(found) > 1 else width
+    left = boxes[idx - 1] if idx > 0 else None
+    right = boxes[idx + 1] if idx + 1 < len(boxes) else None
+    if left is not None and right is not None:
+        cx, near = ((left[0] + left[2]) / 2 + (right[0] + right[2]) / 2) / 2, [left, right]
+    elif left is not None:
+        cx, near = (left[0] + left[2]) / 2 + step, [left]
+    else:
+        cx, near = (right[0] + right[2]) / 2 - step, [right]
+    x1 = max(0, int(round(cx - width / 2)))
+    x2 = min(int(crop_shape[1]), int(round(cx + width / 2)))
+    y1, y2 = min(b[1] for b in near), max(b[3] for b in near)
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        return None
+    return (x1, int(y1), x2, int(y2))
+
+
 def read_meter_digits(
     digit_detector: DigitDetector,
     digit_recognizer: DigitRecognizer,
@@ -87,6 +111,8 @@ def read_meter_digits(
     ignore_last_digits: int = 0,
     missing_placeholder: str = "5",
     forgiven_placeholder: str = "0",
+    missing_mode: str = "placeholder",
+    forgiven_mode: str = "placeholder",
 ) -> DigitReading:
     """
     Прогоняет кроп счётчика через детектор цифр + классификатор цифр.
@@ -94,6 +120,9 @@ def read_meter_digits(
     missing_placeholder  — символ для восстановленной пропущенной позиции
     forgiven_placeholder — символ для прощённых хвостовых позиций
     ignore_last_digits   — сколько последних позиций прощаем при низком конфидансе
+    missing_mode  — "placeholder" (как было) | "model" (прочитать цифру на месте
+                    пропуска) | "operator" (позиция «?», DIGITS_ERROR)
+    forgiven_mode — "placeholder" (как было) | "model" (ответ модели как есть)
 
     При ровно expected_digits-1 найденных цифрах пытается восстановить
     пропущенную позицию (только если пропала не одна из двух первых).
@@ -131,6 +160,7 @@ def read_meter_digits(
 
     # ── Классифицируем цифры ──────────────────────────────────────────────────
     forgiven_positions = _forgiveness_policy.forgiven_positions(expected_digits, ignore_last_digits)
+    boxes = [dc["bbox"] if dc is not None else None for dc in digit_crops_sorted]
 
     digits        = []
     digit_results = []
@@ -138,18 +168,31 @@ def read_meter_digits(
     has_error     = False
 
     for pos, dc in enumerate(digit_crops_sorted):
+        recovered = False
         if dc is None:
-            # Заглушка восстановленной позиции
-            digits.append(missing_placeholder)
-            digit_results.append({
-                "position":   pos,
-                "digit":      missing_placeholder,
-                "confidence": None,
-                "ok":         True,
-                "note":       "inserted placeholder",
-            })
-            digit_bboxes.append(None)
-            continue
+            bbox = _gap_bbox(boxes, pos, meter_crop.shape) if missing_mode == "model" else None
+            if missing_mode == "operator" or (missing_mode == "model" and bbox is None):
+                # пропуск — оператору: позиция «?», показание не пишется
+                digits.append("?")
+                digit_results.append({"position": pos, "digit": "?", "confidence": None,
+                                      "ok": False, "note": "missing→operator"})
+                digit_bboxes.append(None)
+                has_error = True
+                continue
+            if bbox is None:
+                # Заглушка восстановленной позиции (как было)
+                digits.append(missing_placeholder)
+                digit_results.append({
+                    "position":   pos,
+                    "digit":      missing_placeholder,
+                    "confidence": None,
+                    "ok":         True,
+                    "note":       "inserted placeholder",
+                })
+                digit_bboxes.append(None)
+                continue
+            x1, y1, x2, y2 = bbox
+            dc, recovered = {"crop": meter_crop[y1:y2, x1:x2], "bbox": bbox}, True
 
         pred = digit_recognizer.recognize(dc["crop"])
         conf = pred.confidence
@@ -157,21 +200,25 @@ def read_meter_digits(
         ok = conf >= conf_thresh
 
         if not ok and _forgiveness_policy.is_forgiven(pos, conf, conf_thresh, forgiven_positions):
+            by_model = forgiven_mode == "model"
             digit_results.append({
                 "position":   pos,
                 "digit":      digit_char,
                 "confidence": round(float(conf), 4),
                 "ok":         False,
-                "note":       f"forgiven→{forgiven_placeholder}",
+                "note":       "forgiven→model" if by_model else f"forgiven→{forgiven_placeholder}",
             })
-            digits.append(forgiven_placeholder)
+            digits.append(digit_char if by_model else forgiven_placeholder)
         else:
-            digit_results.append({
+            r = {
                 "position":   pos,
                 "digit":      digit_char,
                 "confidence": round(float(conf), 4),
                 "ok":         ok,
-            })
+            }
+            if recovered:
+                r["note"] = "missing→model"
+            digit_results.append(r)
             if ok:
                 digits.append(digit_char)
             else:
@@ -185,10 +232,10 @@ def read_meter_digits(
     if has_error:
         bad = [
             f"pos{r['position']}(pred={r['digit']},conf={r['confidence']:.3f})"
+            if r.get("confidence") is not None else f"pos{r['position']}(цифра не найдена)"
             for r in digit_results
             if not r["ok"]
             and r.get("note", "").startswith("forgiven") is False
-            and r.get("confidence") is not None
         ]
         error_msg = f"low conf digits: {', '.join(bad)}  →  '{reading_str}'"
         return DigitReading(None, reading_str, error_msg, digit_results, digit_bboxes)
@@ -212,6 +259,12 @@ def describe_substitutions(digit_results: Optional[list]) -> Optional[str]:
         note = r.get("note", "")
         if note == "inserted placeholder":
             parts.append(f"pos{r['position']}='{r['digit']}' (цифра не найдена)")
+        elif note == "missing→model":
+            parts.append(f"pos{r['position']}='{r['digit']}' (цифра не найдена) — прочитано моделью "
+                         f"на её месте, conf={r['confidence']:.3f}")
+        elif note == "forgiven→model":
+            parts.append(f"pos{r['position']}='{r['digit']}' "
+                         f"(прочитано {r['digit']}, conf={r['confidence']:.3f}) — неуверенно, взято как есть")
         elif note.startswith("forgiven→"):
             placeholder = note[len("forgiven→"):]
             parts.append(f"pos{r['position']}='{placeholder}' "
@@ -231,6 +284,8 @@ def read_meter_digits_for_config(
         ignore_last_digits=config.ignore_last_digits,
         missing_placeholder=config.missing_digit_placeholder,
         forgiven_placeholder=config.forgiven_digit_placeholder,
+        missing_mode=config.missing_digit_mode,
+        forgiven_mode=config.forgiven_digit_mode,
     )
 
 

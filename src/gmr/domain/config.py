@@ -89,6 +89,15 @@ class PipelineConfig:
     #   подставляем '0' (минимальное влияние на итоговое число).
     forgiven_digit_placeholder: str = "0"
 
+    # Что делать вместо заглушек (пресет месяца, src/gmr/domain/preset.py):
+    # missing_digit_mode  — "placeholder" (missing_digit_placeholder, как было),
+    #   "model" (вырезать цифру на месте пропуска и прочитать моделью; неуверенно
+    #   — как любая неуверенная цифра), "operator" (DIGITS_ERROR);
+    # forgiven_digit_mode — "placeholder" (forgiven_digit_placeholder, как было),
+    #   "model" (взять ответ модели, хоть и неуверенный).
+    missing_digit_mode:         str = "placeholder"
+    forgiven_digit_mode:        str = "placeholder"
+
     # Режим мягкого чтения: игнорировать ошибки на последних N цифрах счётчика.
     # Последние цифры (десятые/сотые доли) часто не имеют веса на счётчике —
     # при низком конфидансе туда подставляется forgiven_digit_placeholder.

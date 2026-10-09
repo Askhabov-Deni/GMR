@@ -132,6 +132,9 @@ def _window(monkeypatch, settings, answers=None):
     monkeypatch.setattr(program2, "save_settings", lambda s: None)
     monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
     monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
+    # настройки распознавания нового месяца — как предложено (окно не открывается)
+    monkeypatch.setattr(program2.MainWindow, "ask_preset",
+                        staticmethod(lambda parent, preset, title, ok_text="Сохранить": preset))
     answers, shown, asked = list(answers or []), [], []
     monkeypatch.setattr(program2.messagebox, "askyesno",
                         lambda *a, **k: asked.append(a) or (answers.pop(0) if answers else True))
@@ -894,3 +897,82 @@ def test_new_month_asks_to_clear_table_readings(app, tmp_path, monkeypatch, clea
 def readings_of(path):
     from tests._month import readings
     return readings(MonthFolderOf(path))
+
+
+# ─── 2026-10-11: настройки распознавания месяца (решение 2а) ─────────────────
+
+from src.gmr.domain.preset import RecognitionPreset  # noqa: E402
+
+
+@needs_display
+def test_preset_dialog(app):
+    def fill():
+        dlg = next(w for w in app.winfo_children() if isinstance(w, program2.PresetDialog))
+        dlg._vars["missing_digit"].set("operator")
+        dlg._vars["forgive_last"].set(1)
+        dlg._vars["serial_pad"].set(0.05)
+        dlg._vars["account_marker"].set(True)               # модели нет — галочка не сработает
+        dlg._save()
+    app.after(100, fill)
+    dlg = program2.PresetDialog(app, RecognitionPreset(forgive_with="model"))
+    assert dlg.result == RecognitionPreset("operator", 1, "model", 0.05, False)
+    app.after(100, lambda: next(w for w in app.winfo_children()
+                                if isinstance(w, program2.PresetDialog))._save())
+    with_model = program2.PresetDialog(app, RecognitionPreset(account_marker=True), marker_model=True)
+    assert with_model.result == RecognitionPreset(account_marker=True)
+    app.after(100, lambda: next(w for w in app.winfo_children()
+                                if isinstance(w, program2.PresetDialog)).destroy())     # «Отмена»
+    assert program2.PresetDialog(app, RecognitionPreset()).result is None
+
+
+def test_ask_preset_marker_only_with_model(monkeypatch):
+    seen = []
+    monkeypatch.setattr(program2, "PresetDialog", lambda *a, **k: seen.append(k) or SimpleNamespace(result="r"))
+    assert program2.MainWindow.ask_preset(None, RecognitionPreset(), "t") == "r"
+    monkeypatch.setattr(program2, "PipelineConfig", lambda: SimpleNamespace(account_ocr_model="acc.pt"))
+    program2.MainWindow.ask_preset(None, RecognitionPreset(), "t", ok_text="Дальше")
+    assert [(k["marker_model"], k["ok_text"]) for k in seen] == [(False, "Сохранить"), (True, "Дальше")]
+
+
+@needs_display
+def test_new_month_gets_preset_of_open_month(app, tmp_path, monkeypatch):
+    month_app.set_month_preset(app.month.root, RecognitionPreset(forgive_last=0))
+    offered = []
+    monkeypatch.setattr(program2.MainWindow, "ask_preset", staticmethod(
+        lambda parent, preset, title, ok_text="Сохранить": offered.append((preset, ok_text))
+        or RecognitionPreset(missing_digit="model")))
+    table = _table_csv(tmp_path / "компания" / "Декабрь.csv", [("7777777", "B1", "10", "")])
+    _dialogs(monkeypatch, files=[table], saves=[tmp_path / "Декабрь_2026"])
+    app.new_month()
+    assert offered == [(RecognitionPreset(forgive_last=0), "Дальше")]   # как в прошлом месяце
+    assert month_app.month_preset(tmp_path / "Декабрь_2026") == RecognitionPreset(missing_digit="model")
+    assert app.config.missing_digit_mode == "model"           # окно читает фото с настройками месяца
+
+
+@needs_display
+def test_new_month_cancelled_on_preset(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(program2.MainWindow, "ask_preset",
+                        staticmethod(lambda parent, preset, title, ok_text="Сохранить": None))
+    table = _table_csv(tmp_path / "компания" / "Декабрь.csv", [("7777777", "B1", "10", "")])
+    _dialogs(monkeypatch, files=[table], saves=[tmp_path / "Декабрь_2026"])
+    app.new_month()
+    assert not (tmp_path / "Декабрь_2026" / "gmr.sqlite").exists() and app.session.folder.root == app.month.root
+
+
+@needs_display
+def test_edit_preset_from_menu(app, monkeypatch):
+    answers = [None, RecognitionPreset(), RecognitionPreset(forgive_last=1, forgive_with="model")]
+    offered = []
+    monkeypatch.setattr(program2.MainWindow, "ask_preset", staticmethod(
+        lambda parent, preset, title, ok_text="Сохранить": offered.append(preset) or answers.pop(0)))
+    app.edit_preset()                                          # «Отмена»
+    app.edit_preset()                                          # без изменений
+    assert month_app.month_preset(app.month.root) is None
+    app.edit_preset()
+    assert offered == [RecognitionPreset()] * 3
+    assert month_app.month_preset(app.month.root) == RecognitionPreset(forgive_last=1, forgive_with="model")
+    assert (app.config.ignore_last_digits, app.config.forgiven_digit_mode) == (1, "model")
+    assert [c["who"] for c in changes(app.month) if c["action"] == month_app.PRESET_ACTION] == ["Оператор"]
+    assert "Настройки распознавания…" in [app._month_menu.entrycget(i, "label")
+                                         for i in range(app._month_menu.index("end") + 1)
+                                         if app._month_menu.type(i) == "command"]

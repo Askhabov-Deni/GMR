@@ -3,7 +3,8 @@ tools/etalon.py — эталон: трудные фото с правильны�
 сравнивать модели «было → стало» (этап 5b, решения владельца 2026-10-04).
 
   python gmr.py etalon add <папка месяца | лог.csv> [--photos <папка с фото>]
-  python gmr.py etalon check [--serial-pad 0.05] [--meter-weights …] [--digit-detect-weights …]
+  python gmr.py etalon check [--month <месяц>] [--missing-digit …] [--forgive-last N] [--forgive-with …]
+                             [--serial-pad 0.05] [--meter-weights …] [--digit-detect-weights …]
                              [--digit-weights …] [--serial-weights …]
   python gmr.py etalon                 сколько фото в эталоне, по причинам
 
@@ -214,12 +215,12 @@ def serial_matches(text: str, truth: str) -> bool:
 
 
 def reading_matches(number: Optional[int], truth: str, config: PipelineConfig) -> bool:
-    """Показание верно: совпадают все цифры, кроме последних ignore_last_digits
-    (их программа прощает)."""
+    """Показание верно: совпадают все цифры (с 2026-10-11 — и прощённые
+    последние: «0» вместо настоящей цифры — тоже неверное показание; так
+    видно, что дают настройки месяца)."""
     if number is None:
         return False
-    n = config.expected_digits - config.ignore_last_digits
-    return str(number).zfill(config.expected_digits)[:n] == str(truth).zfill(config.expected_digits)[:n]
+    return str(number).zfill(config.expected_digits) == str(truth).zfill(config.expected_digits)
 
 
 @dataclass
@@ -274,7 +275,7 @@ def summary(results: list[PhotoCheck], title: str) -> str:
     lines = [title, ""] + ["  ".join(c.ljust(w) for c, w in zip(t, widths)).rstrip() for t in table]
     lines += ["",
               "серийник верно — номер прочитан верно и уверенно (программа нашла бы его в таблице);",
-              "показание верно — все цифры, кроме двух последних (их программа прощает);",
+              "показание верно — все цифры (и прощённые последние тоже);",
               "прочитано бы верно — и то и другое: фото не ушло бы оператору;",
               "уверенно, но неверно — опасные ошибки: неверный номер или показание с уверенностью."]
     return "\n".join(lines)
@@ -317,7 +318,18 @@ def status(etalon: Path = ETALON_DIR) -> str:
 
 
 def _config(args) -> tuple[PipelineConfig, list[str]]:
+    from src.gmr.application.month import month_preset
+    from src.gmr.domain.preset import RecognitionPreset
     cfg, notes = PipelineConfig(), []
+    if args.month:
+        preset = month_preset(args.month) or RecognitionPreset()
+        cfg = preset.apply(cfg)
+        notes.append(f"настройки месяца {Path(args.month).name}: {preset.describe()}")
+    for arg, field in (("missing_digit", "missing_digit_mode"), ("forgive_last", "ignore_last_digits"),
+                       ("forgive_with", "forgiven_digit_mode")):
+        if getattr(args, arg) is not None:
+            cfg = dataclasses.replace(cfg, **{field: getattr(args, arg)})
+            notes.append(f"{field} = {getattr(args, arg)}")
     for arg, field in (("meter_weights", "meter_detect_model"), ("digit_detect_weights", "digit_detect_model"),
                        ("digit_weights", "digit_ocr_model"), ("serial_weights", "serial_ocr_model")):
         if getattr(args, arg):
@@ -342,6 +354,13 @@ def main(argv=None) -> int:
     a.add_argument("--photos", help="папка с исходными фото (по умолчанию <месяц>/фото)")
     c = sub.add_parser("check", parents=[either], help="как текущие (или другие) модели читают эталон")
     c.add_argument("--serial-pad", type=float, default=None, help="запас вокруг рамки серийника, например 0.05")
+    c.add_argument("--month", default=None, help="настройки распознавания этого месяца (пресет)")
+    c.add_argument("--missing-digit", choices=["placeholder", "model", "operator"], default=None,
+                   help="пропущенная цифра: «5» / моделью на месте / к оператору")
+    c.add_argument("--forgive-last", type=int, choices=[0, 1, 2], default=None,
+                   help="сколько последних неуверенных цифр прощать")
+    c.add_argument("--forgive-with", choices=["placeholder", "model"], default=None,
+                   help="прощённую цифру заменять «0» или ответом модели")
     for name in ("meter", "digit-detect", "digit", "serial"):
         c.add_argument(f"--{name}-weights", default=None, help="другой файл весов")
     args = p.parse_args(argv)
