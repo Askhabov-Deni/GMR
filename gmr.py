@@ -16,6 +16,7 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py datasets [--list]                                     папки датасетов и их проверка
   python gmr.py prelabel <папка с фото>                               предразметка YOLO текущей моделью
   python gmr.py etalon add <месяц> | check [--serial-pad X]           эталон трудных фото: пополнить / проверить модели
+  python gmr.py angles <месяц | папка с фото>                         замер: насколько повёрнуты счётчики на фото
   python gmr.py <команда> --help                                      подробности
 
 Ничего нового команды не делают: process вызывает тот же run_pipeline с теми же
@@ -128,6 +129,11 @@ def _etalon(argv):
     return etalon.main(argv)
 
 
+def _angles(argv):
+    from tools import angles
+    return angles.main(argv)
+
+
 def _prelabel(argv):
     from models.yolo_all_detect import prelabel
     return prelabel.main(argv)
@@ -144,6 +150,7 @@ COMMANDS = {
     "shortcut": (_shortcut, "ярлык «Счётчики» на рабочем столе — окно оператора (tools/shortcut.py)"),
     "datasets": (_datasets, "папки датасетов моделей: создать недостающие и проверить (tools/datasets.py)"),
     "etalon":   (_etalon,   "эталон трудных фото: пополнить из месяца, проверить на нём модели (tools/etalon.py)"),
+    "angles":   (_angles,   "замер: насколько повёрнуты счётчики на фото (tools/angles.py)"),
     "prelabel": (_prelabel, "предразметка YOLO: рамки текущей модели на фото без разметки "
                             "(models/yolo_all_detect/prelabel.py)"),
 }

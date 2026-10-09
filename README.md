@@ -149,6 +149,7 @@ python gmr.py weights --write                       # обновить табл�
 python gmr.py datasets                              # датасеты моделей: папки database\datasets\ и их проверка (docs/GUIDE.md, 5.0)
 python gmr.py prelabel <папка с фото>               # предразметка YOLO текущей моделью
 python gmr.py etalon add <месяц>; python gmr.py etalon check   # эталон трудных фото: сравнить модели (docs/GUIDE.md, 5.4)
+python gmr.py angles <месяц>                        # замер: насколько повёрнуты счётчики на фото (docs/GUIDE.md, 5.8)
 python gmr.py check                                 # перед коммитом: данные, код, тесты
 ```
 

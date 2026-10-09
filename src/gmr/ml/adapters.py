@@ -33,6 +33,10 @@ class YoloMeterDetector:
     def detect(self, photo_path: str) -> Optional[list[Detection]]:
         return self.inferer.process_image(photo_path, save_crops=False)
 
+    def detect_array(self, img: Any) -> Optional[list[Detection]]:
+        """То же для картинки в памяти (замер наклона: фото, повёрнутое на 90°…)."""
+        return self.inferer.process_array(img, save_crops=False)
+
 
 class YoloDigitDetector:
     """DigitDetector поверх YOLOInferer(digit_detect_model, straighten=False)."""
