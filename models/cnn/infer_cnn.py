@@ -104,10 +104,13 @@ class CNNInferer:
             logits = self.model(tensor)
             probs = torch.softmax(logits, dim=1)
             confidence, pred_class = torch.max(probs, dim=1)
-            
+            top_p, top_c = torch.topk(probs, k=2, dim=1)
+
         return {
             "digit": int(pred_class.item()),
-            "confidence": float(confidence.item())
+            "confidence": float(confidence.item()),
+            # две лучшие цифры (этап 6b: правило барабана, старшая цифра)
+            "top": [(int(c), float(p)) for c, p in zip(top_c[0].tolist(), top_p[0].tolist())],
         }
 
     def process_directory(

@@ -25,7 +25,7 @@ def test_default_preset_is_old_behaviour():
     assert (applied.missing_digit_mode, applied.ignore_last_digits, applied.forgiven_digit_mode,
             applied.serial_crop_pad) == ("placeholder", cfg.ignore_last_digits, "placeholder", 0.0)
     assert p.describe() == ("пропущенная цифра — подставить «5»; неуверенные последние 2 → «0»; "
-                            "запас рамки серийника 0%; лицевой счёт по надписи — нет")
+                            "запас рамки серийника 0%; лицевой счёт по надписи — нет; дополнительно — нет")
 
 
 def test_preset_json_roundtrip_and_bad_values():
@@ -212,7 +212,7 @@ def test_etalon_check_with_month_preset_and_flags(tmp_path, monkeypatch, capsys)
     from src.gmr.ml import loader
     monkeypatch.setattr(loader, "load_models", lambda cfg: seen.append(cfg))
     import src.gmr.application as app
-    monkeypatch.setattr(app, "recognize_photo", lambda models, path, cfg: _rec("111111", number=1234))
+    monkeypatch.setattr(app, "recognize_photo", lambda models, path, cfg, **kw: _rec("111111", number=1234))
     assert gmr.main(["etalon", "check", "--etalon", str(et), "--month", str(f.root),
                      "--forgive-last", "0", "--forgive-with", "model"]) == 0
     cfg = seen[0]

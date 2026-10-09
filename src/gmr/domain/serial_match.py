@@ -6,7 +6,8 @@ src/gmr/domain/serial_match.py — поиск номеров из таблицы
 таблице есть номер «в одном символе» — либо модель ошиблась при чтении,
 либо в базе опечатка; в обоих случаях это тот же счётчик. Используется:
   - tools/analyze_log.py — оценка по логу;
-  - program2.py — подсказка оператору («похожие номера в базе»).
+  - program2.py — подсказка оператору («похожие номера в базе»);
+  - серийник по таблице (этап 6b) — словарь номеров build_serial_groups.
 
 Только строки, без pandas/torch.
 """
@@ -50,3 +51,16 @@ def one_char_matches(serial: str, table_serials: set[str], alphabet: str = "") -
     for v in (serial, "0" + serial, "00" + serial):
         pairs.update((v, t) for t in one_edit_neighbors(v, alphabet) & table_serials)
     return sorted(pairs)
+
+
+def build_serial_groups(serials) -> dict[str, tuple]:
+    """Словарь для серийника по таблице (этап 6b): {номер: варианты записи}.
+    Только номера из цифр; варианты — как ищет reader.py: номер, без одного
+    и без двух ведущих нулей (на фото их часто не видно)."""
+    groups: dict[str, tuple] = {}
+    for raw in serials:
+        s = normalize_serial(str(raw))
+        if s.isdigit() and s not in groups:
+            groups[s] = tuple(dict.fromkeys(
+                v for v in (s, s[1:] if s.startswith("0") else "", s[2:] if s.startswith("00") else "") if v))
+    return groups

@@ -98,6 +98,19 @@ class PipelineConfig:
     missing_digit_mode:         str = "placeholder"
     forgiven_digit_mode:        str = "placeholder"
 
+    # Этап 6b (пресет месяца, по умолчанию выключено):
+    # drum_rule — неуверенная цифра, у модели две лучшие соседние (d и d+1,
+    #   9 и 0) и вместе уверенные → барабан между ними, берётся d (между 9 и 0 — 9);
+    # first_digit_from_last — неуверенна только старшая цифра и цифра прошлого
+    #   показания на этой позиции среди двух лучших → она;
+    # serial_by_table — номер не найден в таблице или неуверенный → номер
+    #   таблицы, к которому кроп подходит лучше всего (models/ctc_lexicon.py),
+    #   если его доля не меньше serial_table_conf_thresh.
+    drum_rule:                  bool  = False
+    first_digit_from_last:      bool  = False
+    serial_by_table:            bool  = False
+    serial_table_conf_thresh:   float = 0.9
+
     # Режим мягкого чтения: игнорировать ошибки на последних N цифрах счётчика.
     # Последние цифры (десятые/сотые доли) часто не имеют веса на счётчике —
     # при низком конфидансе туда подставляется forgiven_digit_placeholder.

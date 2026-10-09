@@ -199,7 +199,7 @@ def test_check(tmp_path, monkeypatch):
             "c": _rec("333333", number=None), "d": _rec("444444", 0.4, number=9678),
             "e": _rec(None, meter=False)}
     import src.gmr.application as app
-    monkeypatch.setattr(app, "recognize_photo", lambda models, path, cfg: recs[Path(path).stem])
+    monkeypatch.setattr(app, "recognize_photo", lambda models, path, cfg, **kw: recs[Path(path).stem])
     text, out = etalon.check(PipelineConfig(), et, models=object(), title="Модели: как в работе")
     lines = text.splitlines()
     assert lines[0] == "Модели: как в работе"
@@ -241,7 +241,7 @@ def test_check_command_config(tmp_path, monkeypatch, capsys):
     from src.gmr.ml import loader
     monkeypatch.setattr(loader, "load_models", lambda cfg: seen.setdefault("cfg", cfg))
     import src.gmr.application as app
-    monkeypatch.setattr(app, "recognize_photo", lambda models, path, cfg: _rec("111111", number=1234))
+    monkeypatch.setattr(app, "recognize_photo", lambda models, path, cfg, **kw: _rec("111111", number=1234))
     assert gmr.main(["etalon", "--etalon", str(et), "check", "--serial-pad", "0.05",
                      "--serial-weights", "new.pt", "--digit-weights", "d.pth"]) == 0
     cfg = seen["cfg"]

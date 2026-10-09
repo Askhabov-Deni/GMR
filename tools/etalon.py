@@ -4,7 +4,8 @@ tools/etalon.py — эталон: трудные фото с правильны�
 
   python gmr.py etalon add <папка месяца | лог.csv> [--photos <папка с фото>]
   python gmr.py etalon check [--month <месяц>] [--missing-digit …] [--forgive-last N] [--forgive-with …]
-                             [--serial-pad 0.05] [--meter-weights …] [--digit-detect-weights …]
+                             [--serial-pad 0.05] [--drum-rule] [--first-from-last] [--serial-by-table]
+                             [--meter-weights …] [--digit-detect-weights …]
                              [--digit-weights …] [--serial-weights …]
   python gmr.py etalon                 сколько фото в эталоне, по причинам
 
@@ -20,7 +21,8 @@ tools/etalon.py — эталон: трудные фото с правильны�
 
 Папка эталона (database/datasets/etalon, в git не попадает):
   photos/<отпечаток>.<ext>   исходные фото; имя — отпечаток, без имён и номеров
-  answers.csv                отпечаток, файл, серийник, показание, причина, откуда, когда
+  answers.csv                отпечаток, файл, серийник, показание, причина, откуда, когда,
+                             прошлое показание (этап 6b; в старых строках дописывает add)
   checks/<дата-время>.csv    результат check по каждому фото
 В выводе команд только числа: его можно присылать.
 """
@@ -39,7 +41,7 @@ from models.datasets import DATASETS_DIR, IMAGE_EXTS, to_etalon
 from src.gmr.application.operator import CORRECTED_NOTE
 from src.gmr.domain import PipelineConfig
 from src.gmr.domain.models import QUESTION_REASONS
-from src.gmr.domain.serial_match import normalize_serial
+from src.gmr.domain.serial_match import build_serial_groups, normalize_serial
 
 ETALON_DIR = DATASETS_DIR / "etalon"
 # авто-исходы «модель не справилась»; ERROR — сбой программы, а не модели
@@ -47,7 +49,7 @@ FAILED = ("NO_METER", "NO_SERIAL", "SERIAL_LOW_CONF", "SERIAL_NOT_FOUND", "SERIA
           "DIGITS_ERROR", "SUSPICIOUS")
 CORRECTED = "CORRECTED"
 REASON_NAMES = {o: QUESTION_REASONS[o.lower()] for o in FAILED} | {CORRECTED: "Исправлено на «Проверке»"}
-ANSWER_COLUMNS = ["photo_hash", "file", "serial", "reading", "reason", "source", "added_at"]
+ANSWER_COLUMNS = ["photo_hash", "file", "serial", "reading", "reason", "source", "added_at", "last_reading"]
 
 
 @dataclass
@@ -58,13 +60,14 @@ class Answer:
     serial: str
     reading: str
     reason: str
+    last_reading: str = ""      # прошлое показание абонента (этап 6b: старшая цифра)
 
 
 def _reading(value) -> str:
     """Показание из лога → целое число строкой ("01234", "1234.0" → "1234")."""
     try:
         return str(int(float(str(value).strip().replace(",", "."))))
-    except ValueError:
+    except (TypeError, ValueError):
         return ""
 
 
@@ -94,7 +97,8 @@ def hard_answers(rows: list[dict]) -> list[Answer]:
         serial, reading = (ans.get("serial_id") or "").strip(), _reading(ans.get("reading", ""))
         if serial and reading:
             out.append(Answer(h, origin.get("original_filename", ""), origin.get("source_folder", ""),
-                              serial, reading, reason))
+                              serial, reading, reason,
+                              _reading(ans.get("last_reading") or origin.get("last_reading"))))
     return out
 
 
@@ -150,13 +154,15 @@ class AddReport:
     already: int = 0
     missing: int = 0
     training: int = 0
+    filled: int = 0          # старым строкам дописано прошлое показание
 
     def text(self) -> str:
         return "\n".join([
             f"Трудных фото с ответом оператора: {self.found}",
             f"  в эталон (каждое третье): {self.etalon} — добавлено {self.added}, уже были {self.already}",
             f"  в обучение (этап 5c, папки new/): {self.training}",
-        ] + ([f"  ⚠ фото не найдено на диске: {self.missing}"] if self.missing else []))
+        ] + ([f"  дописано прошлое показание: {self.filled}"] if self.filled else [])
+          + ([f"  ⚠ фото не найдено на диске: {self.missing}"] if self.missing else []))
 
 
 def add(source: Path, photos: Optional[Path] = None, etalon: Path = ETALON_DIR) -> AddReport:
@@ -167,7 +173,8 @@ def add(source: Path, photos: Optional[Path] = None, etalon: Path = ETALON_DIR) 
         from src.gmr.storage.month import MonthFolder
         photos = MonthFolder(source).photos
     answers = hard_answers(_log_rows(source))
-    have = {r["photo_hash"] for r in read_answers(etalon)}
+    old_rows = read_answers(etalon)
+    have = {r["photo_hash"]: r for r in old_rows}
     rep, index, new_rows = AddReport(found=len(answers)), {}, []
     for a in answers:
         src = None
@@ -182,6 +189,10 @@ def add(source: Path, photos: Optional[Path] = None, etalon: Path = ETALON_DIR) 
         rep.etalon += 1
         if a.photo_hash in have:
             rep.already += 1
+            old = have[a.photo_hash]
+            if not old.get("last_reading") and a.last_reading:     # эталон до этапа 6b
+                old["last_reading"] = a.last_reading
+                rep.filled += 1
             continue
         src = src or _find_photo(a, Path(photos), index)
         if src is None:
@@ -192,17 +203,16 @@ def add(source: Path, photos: Optional[Path] = None, etalon: Path = ETALON_DIR) 
         shutil.copy2(src, etalon / "photos" / name)
         new_rows.append({"photo_hash": a.photo_hash, "file": name, "serial": a.serial, "reading": a.reading,
                          "reason": a.reason, "source": source.name,
-                         "added_at": datetime.now().isoformat(timespec="seconds")})
+                         "added_at": datetime.now().isoformat(timespec="seconds"),
+                         "last_reading": a.last_reading})
         rep.added += 1
-    if new_rows:
-        path = etalon / "answers.csv"
-        new_file = not path.is_file()
+    if new_rows or rep.filled:
+        # файл переписывается целиком: так в старом эталоне появляется колонка last_reading
         etalon.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8-sig" if new_file else "utf-8", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=ANSWER_COLUMNS)
-            if new_file:
-                w.writeheader()
-            w.writerows(new_rows)
+        with open(etalon / "answers.csv", "w", encoding="utf-8-sig", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=ANSWER_COLUMNS, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(old_rows + new_rows)
     return rep
 
 
@@ -241,11 +251,24 @@ class PhotoCheck:
         return self.serial_ok and self.reading_ok
 
 
-def check_photo(models, path: Path, answer: dict, config: PipelineConfig) -> PhotoCheck:
+def _in_table(text: str, serial_groups: dict) -> bool:
+    return any(v == text for vs in serial_groups.values() for v in vs)
+
+
+def check_photo(models, path: Path, answer: dict, config: PipelineConfig,
+                serial_groups: Optional[dict] = None) -> PhotoCheck:
+    """serial_groups — номера таблицы месяца (build_serial_groups) для
+    серийника по таблице; нужен, если он включён (как в reader.py, шаг 3a)."""
     from src.gmr.application import recognize_photo
-    rec = recognize_photo(models, str(path), config)
+    rec = recognize_photo(models, str(path), config, last_reading=answer.get("last_reading") or None)
     sp = rec.serial_prediction
     text, sure = (sp.text, sp.confidence >= config.serial_conf_thresh) if sp else ("", False)
+    if (config.serial_by_table and serial_groups and rec.serial is not None
+            and not (sure and _in_table(text, serial_groups))
+            and hasattr(models.serial_recognizer, "match_table")):
+        m = models.serial_recognizer.match_table(rec.serial["crop"], serial_groups)
+        if m.serial is not None and m.confidence >= config.serial_table_conf_thresh:
+            text, sure = m.serial, True
     number = rec.digits.number if rec.digits is not None else None
     s_ok = serial_matches(text, answer["serial"])
     r_ok = reading_matches(number, answer["reading"], config)
@@ -281,11 +304,14 @@ def summary(results: list[PhotoCheck], title: str) -> str:
     return "\n".join(lines)
 
 
-def check(config: PipelineConfig, etalon: Path = ETALON_DIR, models=None, title: str = "") -> tuple[str, Path]:
+def check(config: PipelineConfig, etalon: Path = ETALON_DIR, models=None, title: str = "",
+          serial_groups: Optional[dict] = None) -> tuple[str, Path]:
     etalon = Path(etalon)
     answers = read_answers(etalon)
     if not answers:
         raise ValueError(f"эталон пуст: {etalon} — сначала `python gmr.py etalon add <папка месяца>`")
+    if config.serial_by_table and not serial_groups:
+        raise ValueError("серийник по таблице: укажите --month — номера берутся из таблицы месяца")
     if models is None:
         from src.gmr.ml.loader import load_models
         models = load_models(config)
@@ -295,7 +321,7 @@ def check(config: PipelineConfig, etalon: Path = ETALON_DIR, models=None, title:
         if not path.is_file():
             missing += 1
             continue
-        results.append(check_photo(models, path, a, config))
+        results.append(check_photo(models, path, a, config, serial_groups))
     out = etalon / "checks" / f"{datetime.now():%Y-%m-%d_%H%M%S}.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8-sig", newline="") as fh:
@@ -338,7 +364,22 @@ def _config(args) -> tuple[PipelineConfig, list[str]]:
     if args.serial_pad is not None:
         cfg = dataclasses.replace(cfg, serial_crop_pad=args.serial_pad)
         notes.append(f"запас вокруг рамки серийника = {args.serial_pad}")
+    for arg, field in (("drum_rule", "drum_rule"), ("first_from_last", "first_digit_from_last"),
+                       ("serial_by_table", "serial_by_table")):
+        if getattr(args, arg):
+            cfg = dataclasses.replace(cfg, **{field: True})
+            notes.append(f"{field} = да")
     return cfg, notes
+
+
+def table_serials(month) -> dict:
+    """Номера таблицы месяца для серийника по таблице: {номер: варианты}."""
+    from src.gmr.storage.month import MonthDB, MonthFolder
+    folder = MonthFolder(Path(month))
+    if not folder.db.is_file():
+        raise ValueError(f"{month} — не папка месяца")
+    with MonthDB(folder.db) as db:
+        return build_serial_groups(a.serial for a in db.abonents(only_in_table=True).values())
 
 
 def main(argv=None) -> int:
@@ -361,6 +402,11 @@ def main(argv=None) -> int:
                    help="сколько последних неуверенных цифр прощать")
     c.add_argument("--forgive-with", choices=["placeholder", "model"], default=None,
                    help="прощённую цифру заменять «0» или ответом модели")
+    c.add_argument("--drum-rule", action="store_true", help="правило барабана (цифра между двумя)")
+    c.add_argument("--first-from-last", action="store_true",
+                   help="неуверенную старшую цифру брать из прошлого показания")
+    c.add_argument("--serial-by-table", action="store_true",
+                   help="неуверенный серийник — ближайший номер таблицы месяца (нужна --month)")
     for name in ("meter", "digit-detect", "digit", "serial"):
         c.add_argument(f"--{name}-weights", default=None, help="другой файл весов")
     args = p.parse_args(argv)
@@ -370,7 +416,8 @@ def main(argv=None) -> int:
         elif args.cmd == "check":
             cfg, notes = _config(args)
             title = "Модели: " + ("; ".join(notes) if notes else "как в работе (PipelineConfig)")
-            print(check(cfg, Path(args.etalon), title=title)[0])
+            groups = table_serials(args.month) if cfg.serial_by_table and args.month else None
+            print(check(cfg, Path(args.etalon), title=title, serial_groups=groups)[0])
         else:
             print(status(Path(args.etalon)))
     except ValueError as e:

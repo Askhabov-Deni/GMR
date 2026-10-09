@@ -86,7 +86,7 @@ from src.gmr.domain.photo_date import reading_date
 from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
 from src.gmr.storage import photo_fingerprint
 from src.gmr.storage.backup import KEEP, backup_sqlite, remove_old
-from src.gmr.domain.serial_match import normalize_serial
+from src.gmr.domain.serial_match import build_serial_groups, normalize_serial
 from src.gmr.render import draw_annotation, read_image, write_image
 
 # Модели вызываются только через контракты src/gmr/domain/ml.py:
@@ -139,8 +139,8 @@ def _make_log_row(
         "model_serial_conf": f"{result.serial_conf:.4f}" if result.serial_conf is not None else "",
         "model_reading_str": result.reading_str or "",
         # notes: причина исхода + какие цифры подставлены (вариант А, 2026-09-30)
-        "notes":             " | ".join(n for n in (result.error_detail, result.account_notes,
-                                                    result.digit_notes) if n),
+        "notes":             " | ".join(n for n in (result.error_detail, result.serial_notes,
+                                                    result.account_notes, result.digit_notes) if n),
         "photo_hash":        photo_hash,
         "source_folder":     source_folder,
     }
@@ -280,6 +280,18 @@ def _digit_bboxes_to_orig(
     return result
 
 
+# ─── Серийник по таблице (этап 6b) ───────────────────────────────────────────
+
+def serial_groups_of(df: pd.DataFrame, config: PipelineConfig) -> dict:
+    """Словарь для серийника по таблице (этап 6b): {номер: варианты записи}."""
+    return build_serial_groups(df[config.col_serial])
+
+
+def _rows_with_serial(df: pd.DataFrame, config: PipelineConfig, serial: str) -> pd.DataFrame:
+    norm = normalize_serial(serial)
+    return df[df[config.col_serial].apply(lambda x: normalize_serial(str(x)) == norm)]
+
+
 # ─── Надпись маркером (лицевой счёт) ─────────────────────────────────────────
 
 def account_groups_of(df: pd.DataFrame, config: PipelineConfig) -> dict:
@@ -314,6 +326,7 @@ def process_photo(
     reread: bool = False,
     account_recognizer: Optional[AccountRecognizer] = None,
     account_groups: Optional[dict] = None,
+    serial_groups: Optional[dict] = None,
 ) -> PhotoResult:
     """
     Обрабатывает одну фотографию. Возвращает PhotoResult.
@@ -452,6 +465,27 @@ def process_photo(
                                f"номер {serial_used} у нескольких абонентов: {', '.join(accounts)}")
                     ambiguous = accounts
 
+    # ── Шаг 3a: серийник по таблице (этап 6b, пресет месяца; выключено) ─────
+    if (failure is not None and failure[0] in (Outcome.SERIAL_NOT_FOUND, Outcome.SERIAL_LOW_CONF)
+            and config.serial_by_table and hasattr(serial_recognizer, "match_table")):
+        if serial_groups is None:
+            serial_groups = serial_groups_of(df, config)
+        m = serial_recognizer.match_table(serial_entry["crop"], serial_groups)
+        if m.serial is not None and m.confidence >= config.serial_table_conf_thresh:
+            result.serial_notes = (f"серийник по таблице: прочитано {result.serial_text}, "
+                                   f"взят {m.serial} (доля {m.confidence:.2f})")
+            result.serial_text = m.serial
+            matches = _rows_with_serial(df, config, m.serial)
+            accounts = list(dict.fromkeys(str(a).strip() for a in matches[config.col_account_id]))
+            failure = None
+            if len(accounts) > 1:
+                failure = (Outcome.SERIAL_AMBIGUOUS,
+                           f"номер {m.serial} у нескольких абонентов: {', '.join(accounts)}")
+                ambiguous = accounts
+        elif m.serial is not None:
+            result.serial_notes = (f"серийник по таблице: не уверен — ближе всех {m.serial} "
+                                   f"(доля {m.confidence:.2f})")
+
     if failure is not None:
         # Серийник счёт не дал — может быть, его даёт надпись маркером
         # (src/gmr/domain/account_match.py, правило 2). Без модели надписи — как раньше.
@@ -531,8 +565,9 @@ def process_photo(
         return result
 
     # ── Шаг 5: читаем показания счётчика ─────────────────────────────────────
+    # (прошлое показание — для старшей цифры по прошлому показанию, этап 6b)
     reading, reading_str, err, digit_results, digit_bboxes = (
-        read_meter_digits_for_config(models, meter_crop, config).as_tuple()
+        read_meter_digits_for_config(models, meter_crop, config, last_reading=last_reading).as_tuple()
     )
 
     result.reading_str = reading_str
@@ -843,7 +878,8 @@ def run_pipeline(config: PipelineConfig) -> None:
 
 
 _PRESET_FIELDS = ("missing_digit_mode", "ignore_last_digits", "forgiven_digit_mode",
-                  "serial_crop_pad", "account_ocr_model")
+                  "serial_crop_pad", "account_ocr_model", "drum_rule", "first_digit_from_last",
+                  "serial_by_table")
 
 
 def _apply_month_preset(config: PipelineConfig, month: MonthFolder, log: logging.Logger) -> None:
@@ -990,6 +1026,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
     serial_in_table = _serial_lookup(df, config)
     models = None                                       # загружаются, только если есть что читать
     account_groups_cache = None                         # словарь счетов для модели надписи (один на прогон)
+    serial_groups_cache = None                          # словарь номеров для серийника по таблице (этап 6b)
 
     def load():
         log.info("Загружаем модели...")
@@ -1096,6 +1133,8 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                 models = load()
                 if models.account_recognizer is not None:
                     account_groups_cache = account_groups_of(df, config)
+                if config.serial_by_table:
+                    serial_groups_cache = serial_groups_of(df, config)
             done += 1
             log.info(f"Фото {done} из {expected}: {photo_path.name}" + ("  (читается заново)" if rows else ""))
             if rows:
@@ -1115,6 +1154,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                     photo_hash=photo_hash, reread=bool(rows),
                     account_recognizer=models.account_recognizer,
                     account_groups=account_groups_cache,
+                    serial_groups=serial_groups_cache,
                 )
             except Exception as e:
                 # Ошибка на одном фото не останавливает прогон: фото → question/error,

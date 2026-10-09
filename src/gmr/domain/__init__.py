@@ -7,6 +7,7 @@ from .ml import (
     DigitRecognizer,
     MeterDetector,
     SerialPrediction,
+    SerialTableMatch,
     SerialRecognizer,
 )
 from .models import Outcome, OUTCOME_FOLDER, PhotoResult, QUESTION_REASONS
@@ -52,6 +53,7 @@ __all__ = [
     "DigitDetector",
     "DigitRecognizer",
     "SerialPrediction",
+    "SerialTableMatch",
     "DigitPrediction",
     "AccountRecognizer",
     "AccountPrediction",

@@ -110,6 +110,21 @@ def test_analyze_log_counts_substitutions(base_config):
         _row("d", "PLUS", model_reading_str="11111"),
     ]
     d = al.digit_stats(rows, base_config)
-    assert d["substituted"] == {"photos": 3, "of": 4, "missing": 1, "forgiven": 3}
+    assert d["substituted"] == {"photos": 3, "of": 4, "missing": 1, "forgiven": 3, "drum": 0, "last": 0}
     text = al.build_report(rows, base_config)
     assert "подставленными цифрами (PLUS/MINUS/SUSPICIOUS): 3 из 4" in text
+    assert "барабана" not in text and "по прошлому показанию" not in text
+
+
+def test_analyze_log_counts_new_rules(base_config):
+    from src.gmr.application.recognition import describe_substitutions
+    note = describe_substitutions([
+        {"position": 0, "digit": "7", "confidence": 0.5, "ok": True, "note": "last→1",
+         "top": [("7", 0.5), ("1", 0.3)]},
+        {"position": 2, "digit": "4", "confidence": 0.5, "ok": True, "note": "drum→3",
+         "top": [("4", 0.5), ("3", 0.45)]},
+        {"position": 4, "digit": "8", "confidence": 0.3, "ok": False, "note": "forgiven→0"}])
+    rows = [_row("a", "PLUS", model_reading_str="12300", notes=note)]
+    assert al.digit_stats(rows, base_config)["substituted"] == {
+        "photos": 1, "of": 1, "missing": 0, "forgiven": 1, "drum": 1, "last": 1}
+    assert "по правилу барабана — 1, старших по прошлому показанию — 1" in al.build_report(rows, base_config)

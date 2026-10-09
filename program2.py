@@ -218,6 +218,9 @@ class PresetDialog(tk.Toplevel):
             "forgive_with": tk.StringVar(value=preset.forgive_with),
             "serial_pad": tk.DoubleVar(value=preset.serial_pad),
             "account_marker": tk.BooleanVar(value=preset.account_marker and marker_model),
+            "drum_rule": tk.BooleanVar(value=preset.drum_rule),
+            "first_from_last": tk.BooleanVar(value=preset.first_from_last),
+            "serial_by_table": tk.BooleanVar(value=preset.serial_by_table),
         }
         f = ttk.Frame(self, padding=16)
         f.pack(fill=tk.BOTH, expand=True)
@@ -237,6 +240,11 @@ class PresetDialog(tk.Toplevel):
                                                                 " (модель надписи ещё не подключена)"),
                         variable=self._vars["account_marker"],
                         state=tk.NORMAL if marker_model else tk.DISABLED).pack(anchor="w", padx=12)
+        ttk.Label(f, text="Дополнительно:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
+        for key, label in (("drum_rule", "правило барабана: цифра между двумя — меньшая"),
+                           ("first_from_last", "старшая цифра по прошлому показанию"),
+                           ("serial_by_table", "серийник по таблице (ближайший номер таблицы)")):
+            ttk.Checkbutton(f, text=label, variable=self._vars[key]).pack(anchor="w", padx=12)
         ttk.Label(f, text="Как было до настроек: «5», две последние — «0», запас 0%, без надписи.\n"
                           "Действует со следующей обработки.", foreground="#666").pack(anchor="w", pady=(12, 0))
         btns = ttk.Frame(f)
@@ -251,7 +259,9 @@ class PresetDialog(tk.Toplevel):
         self.result = RecognitionPreset(
             missing_digit=v["missing_digit"].get(), forgive_last=int(v["forgive_last"].get()),
             forgive_with=v["forgive_with"].get(), serial_pad=float(v["serial_pad"].get()),
-            account_marker=bool(v["account_marker"].get()) and self._marker_model)
+            account_marker=bool(v["account_marker"].get()) and self._marker_model,
+            drum_rule=bool(v["drum_rule"].get()), first_from_last=bool(v["first_from_last"].get()),
+            serial_by_table=bool(v["serial_by_table"].get()))
         self.destroy()
 
 

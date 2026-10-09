@@ -21,7 +21,7 @@ src/gmr/ml/loader.py). Адаптеры его не переопределяют
 """
 from typing import Any, Optional
 
-from src.gmr.domain.ml import AccountPrediction, Detection, DigitPrediction, SerialPrediction
+from src.gmr.domain.ml import AccountPrediction, Detection, DigitPrediction, SerialPrediction, SerialTableMatch
 
 
 class YoloMeterDetector:
@@ -62,6 +62,12 @@ class CrnnSerialRecognizer:
             details=res.get("details", []),
         )
 
+    def match_table(self, serial_crop: Any, serials: dict) -> SerialTableMatch:
+        """Серийник по таблице (этап 6b): номер таблицы, к которому картинка
+        подходит лучше всего, и его доля (models/ctc_lexicon.py)."""
+        res = self.inferer.predict_in_table(serial_crop, serials)
+        return SerialTableMatch(text=res["text"], serial=res["serial"], confidence=res["confidence"])
+
 
 class CnnDigitRecognizer:
     """DigitRecognizer поверх CNNInferer."""
@@ -71,7 +77,8 @@ class CnnDigitRecognizer:
 
     def recognize(self, digit_crop: Any) -> DigitPrediction:
         res = self.inferer.predict(digit_crop)
-        return DigitPrediction(digit=str(res["digit"]), confidence=res["confidence"])
+        return DigitPrediction(digit=str(res["digit"]), confidence=res["confidence"],
+                               top=[(str(d), float(p)) for d, p in res.get("top", [])])
 
 
 class CrnnAccountRecognizer:

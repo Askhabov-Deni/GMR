@@ -91,3 +91,5 @@ class PhotoResult:
     #   подсказка оператору — пишется в notes лога (src/gmr/domain/account_match.py).
     #   None — модели надписи нет или надпись ничего не изменила.
     account_notes:  Optional[str]   = None
+    # ↓ Серийник по таблице (этап 6b, пресет месяца): какой номер взят и почему
+    serial_notes:   Optional[str]   = None

@@ -10,11 +10,11 @@ from PIL import Image
 try:
     from .config_crnn import MAX_LABEL_LENGTH, MIN_CONFIDENCE, MIN_LABEL_LENGTH
     from .dataset_crnn import val_transform
-    from .model_crnn import CRNN, predict_with_confidence
+    from .model_crnn import BLANK, CRNN, predict_with_confidence
 except ImportError:  # запуск как отдельный скрипт (python models/crnn/infer_crnn.py)
     from config_crnn import MAX_LABEL_LENGTH, MIN_CONFIDENCE, MIN_LABEL_LENGTH
     from dataset_crnn import val_transform
-    from model_crnn import CRNN, predict_with_confidence
+    from model_crnn import BLANK, CRNN, predict_with_confidence
 
 
 class CRNNInferer:
@@ -28,6 +28,25 @@ class CRNNInferer:
             self.model = model_or_path.to(self.device)
 
         self.model.eval()
+
+    @torch.no_grad()
+    def log_probs(self, image_input: str | object) -> torch.Tensor:
+        """(T, C) log-вероятности символов по шагам для одной картинки."""
+        if isinstance(image_input, str):
+            img = Image.open(image_input).convert("RGB")
+        else:
+            img = Image.fromarray(cv2.cvtColor(image_input, cv2.COLOR_BGR2RGB))
+        return self.model(self.transform(img).unsqueeze(0).to(self.device))[:, 0, :].cpu()
+
+    def predict_in_table(self, image_input, serials) -> dict:
+        """Серийник по таблице (этап 6b): {"text", "serial", "confidence"}.
+        serials — {номер: (варианты записи, ...)}; словарь готовится один раз
+        на объект serials (таблица одна на весь прогон)."""
+        from ..ctc_lexicon import CompiledLexicon, match
+        if getattr(self, "_lexicon_for", None) is not serials:
+            self._lexicon_for, self._lexicon = serials, CompiledLexicon(serials, "0123456789")
+        m = match(self.log_probs(image_input), self._lexicon, BLANK)
+        return {"text": m.greedy, "serial": m.group, "confidence": m.confidence}
 
     def predict_with_details(self, image_input: str | object) -> dict:
         """Распознаёт изображение, возвращает текст и уверенность по каждому символу."""

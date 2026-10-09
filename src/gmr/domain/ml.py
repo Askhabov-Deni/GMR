@@ -41,6 +41,20 @@ class SerialPrediction:
 class DigitPrediction:
     digit: str          # "0".."9"
     confidence: float
+    # две лучшие цифры [(цифра, вероятность), ...] по убыванию — для правила
+    # барабана и старшей цифры по прошлому показанию (этап 6b); пусто — модель
+    # их не отдаёт, правила не срабатывают
+    top: list = field(default_factory=list)
+
+
+@dataclass
+class SerialTableMatch:
+    """Серийник по таблице (этап 6b, models/ctc_lexicon.py): text — что
+    прочитано без таблицы, serial — номер таблицы, к которому картинка
+    подходит лучше всего, confidence — его доля среди всех номеров (0..1)."""
+    text: str
+    serial: Optional[str]
+    confidence: float
 
 
 @dataclass
@@ -70,6 +84,9 @@ class MeterDetector(Protocol):
 class SerialRecognizer(Protocol):
     def recognize(self, serial_crop: Any) -> SerialPrediction:
         ...
+
+    # необязательно (этап 6b): match_table(serial_crop, serials) -> SerialTableMatch,
+    # serials — {номер: (варианты записи, ...)} на весь прогон (reader.serial_groups_of)
 
 
 @runtime_checkable

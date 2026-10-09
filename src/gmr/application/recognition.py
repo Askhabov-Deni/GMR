@@ -102,6 +102,29 @@ def _gap_bbox(boxes: list, idx: int, crop_shape) -> Optional[tuple]:
     return (x1, int(y1), x2, int(y2))
 
 
+def _drum_digit(top: list, conf_thresh: float) -> Optional[str]:
+    """Правило барабана: две лучшие цифры соседние (d и d+1, 9 и 0) и вместе
+    уверенные → барабан между ними, на счётчике ещё d (между 9 и 0 — 9)."""
+    if len(top) < 2:
+        return None
+    (a, pa), (b, pb) = top[0], top[1]
+    pair = {int(a), int(b)}
+    if pa + pb < conf_thresh:
+        return None
+    if pair == {0, 9}:
+        return "9"
+    return str(min(pair)) if max(pair) - min(pair) == 1 else None
+
+
+def _last_digits(last_reading, expected_digits: int) -> Optional[str]:
+    """Прошлое показание цифрами («1234.0» → «01234»); None — не прочитать."""
+    try:
+        s = str(int(float(str(last_reading).replace(",", ".")))).zfill(expected_digits)
+    except (TypeError, ValueError):
+        return None
+    return s if len(s) == expected_digits else None
+
+
 def read_meter_digits(
     digit_detector: DigitDetector,
     digit_recognizer: DigitRecognizer,
@@ -113,6 +136,8 @@ def read_meter_digits(
     forgiven_placeholder: str = "0",
     missing_mode: str = "placeholder",
     forgiven_mode: str = "placeholder",
+    drum_rule: bool = False,
+    last_reading=None,
 ) -> DigitReading:
     """
     Прогоняет кроп счётчика через детектор цифр + классификатор цифр.
@@ -123,6 +148,9 @@ def read_meter_digits(
     missing_mode  — "placeholder" (как было) | "model" (прочитать цифру на месте
                     пропуска) | "operator" (позиция «?», DIGITS_ERROR)
     forgiven_mode — "placeholder" (как было) | "model" (ответ модели как есть)
+    drum_rule     — правило барабана для неуверенных цифр (_drum_digit)
+    last_reading  — прошлое показание: если неуверенна только старшая цифра и
+                    его цифра среди двух лучших — берётся она (None — правило выключено)
 
     При ровно expected_digits-1 найденных цифрах пытается восстановить
     пропущенную позицию (только если пропала не одна из двух первых).
@@ -198,8 +226,20 @@ def read_meter_digits(
         conf = pred.confidence
         digit_char = pred.digit
         ok = conf >= conf_thresh
+        top = list(getattr(pred, "top", None) or [])
+        drum = _drum_digit(top, conf_thresh) if (drum_rule and not ok) else None
 
-        if not ok and _forgiveness_policy.is_forgiven(pos, conf, conf_thresh, forgiven_positions):
+        if drum is not None:
+            digit_results.append({
+                "position":   pos,
+                "digit":      digit_char,
+                "confidence": round(float(conf), 4),
+                "ok":         True,
+                "note":       f"drum→{drum}",
+                "top":        top[:2],
+            })
+            digits.append(drum)
+        elif not ok and _forgiveness_policy.is_forgiven(pos, conf, conf_thresh, forgiven_positions):
             by_model = forgiven_mode == "model"
             digit_results.append({
                 "position":   pos,
@@ -218,6 +258,8 @@ def read_meter_digits(
             }
             if recovered:
                 r["note"] = "missing→model"
+            if not ok and top:
+                r["top"] = top[:2]
             digit_results.append(r)
             if ok:
                 digits.append(digit_char)
@@ -226,6 +268,15 @@ def read_meter_digits(
                 has_error = True
 
         digit_bboxes.append(dc["bbox"])
+
+    # старшая цифра по прошлому показанию: неуверенна только она, и цифра
+    # прошлого показания на этой позиции — среди двух лучших
+    unsure = [r for r in digit_results if not r["ok"] and not r.get("note", "").startswith("forgiven")]
+    prev = _last_digits(last_reading, expected_digits) if last_reading is not None else None
+    if (has_error and prev and len(unsure) == 1 and unsure[0]["position"] == 0
+            and prev[0] in [d for d, _ in unsure[0].get("top", [])[:2]]):
+        unsure[0].update(ok=True, note=f"last→{prev[0]}")
+        digits[0], has_error = prev[0], False
 
     reading_str = "".join(digits)
 
@@ -262,6 +313,14 @@ def describe_substitutions(digit_results: Optional[list]) -> Optional[str]:
         elif note == "missing→model":
             parts.append(f"pos{r['position']}='{r['digit']}' (цифра не найдена) — прочитано моделью "
                          f"на её месте, conf={r['confidence']:.3f}")
+        elif note.startswith("drum→"):
+            (a, pa), (b, pb) = r["top"][:2]
+            parts.append(f"pos{r['position']}='{note[len('drum→'):]}' "
+                         f"(барабан между {a} и {b}, conf={pa:.3f}/{pb:.3f})")
+        elif note.startswith("last→"):
+            (a, pa), (b, pb) = r["top"][:2]
+            parts.append(f"pos{r['position']}='{note[len('last→'):]}' "
+                         f"(по прошлому показанию; модель: {a} {pa:.3f} / {b} {pb:.3f})")
         elif note == "forgiven→model":
             parts.append(f"pos{r['position']}='{r['digit']}' "
                          f"(прочитано {r['digit']}, conf={r['confidence']:.3f}) — неуверенно, взято как есть")
@@ -273,9 +332,11 @@ def describe_substitutions(digit_results: Optional[list]) -> Optional[str]:
 
 
 def read_meter_digits_for_config(
-    models: RecognitionModels, meter_crop: Any, config: PipelineConfig,
+    models: RecognitionModels, meter_crop: Any, config: PipelineConfig, last_reading=None,
 ) -> DigitReading:
-    """read_meter_digits с порогами и заглушками из PipelineConfig."""
+    """read_meter_digits с порогами и заглушками из PipelineConfig.
+    last_reading — прошлое показание счёта (если известен счёт; нужно для
+    first_digit_from_last)."""
     return read_meter_digits(
         models.digit_detector, models.digit_recognizer,
         meter_crop,
@@ -286,6 +347,8 @@ def read_meter_digits_for_config(
         forgiven_placeholder=config.forgiven_digit_placeholder,
         missing_mode=config.missing_digit_mode,
         forgiven_mode=config.forgiven_digit_mode,
+        drum_rule=config.drum_rule,
+        last_reading=last_reading if config.first_digit_from_last else None,
     )
 
 
@@ -318,11 +381,12 @@ class PhotoRecognition:
 
 
 def recognize_photo(
-    models: RecognitionModels, photo_path: str, config: PipelineConfig,
+    models: RecognitionModels, photo_path: str, config: PipelineConfig, last_reading=None,
 ) -> PhotoRecognition:
     """
     Детекция → серийник (если найден) → цифры (если найден счётчик).
     Серийник и цифры читаются независимо: отсутствие одного не мешает другому.
+    last_reading — прошлое показание (для first_digit_from_last; эталон).
     """
     detections = models.meter_detector.detect(photo_path)
     result = PhotoRecognition(detections=detections)
@@ -336,6 +400,7 @@ def recognize_photo(
         result.serial_prediction = models.serial_recognizer.recognize(result.serial["crop"])
 
     if result.meter is not None:
-        result.digits = read_meter_digits_for_config(models, result.meter["crop"], config)
+        result.digits = read_meter_digits_for_config(models, result.meter["crop"], config,
+                                                     last_reading=last_reading)
 
     return result

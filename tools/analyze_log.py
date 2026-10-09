@@ -116,7 +116,10 @@ def digit_stats(photos: list[dict], cfg: PipelineConfig) -> dict:
     return {
         "substituted": {"photos": len(marked), "of": len(read),
                         "missing": sum(n.count("(цифра не найдена)") for n in marked),
-                        "forgiven": sum(n.count("(прочитано ") for n in marked)},
+                        "forgiven": sum(n.count("(прочитано ") for n in marked),
+                        # этап 6b (настройки месяца)
+                        "drum": sum(n.count("(барабан между ") for n in marked),
+                        "last": sum(n.count("(по прошлому показанию") for n in marked)},
         "with_reading": len(readings),
         "with_unsure": sum("?" in s for s in readings),
         "only_first_unsure": sum(s.startswith("?") and "?" not in s[1:] for s in readings),
@@ -434,7 +437,9 @@ def build_report(rows: list[dict], cfg: PipelineConfig, table_serials: Optional[
       f"подставляется '{cfg.forgiven_digit_placeholder}' (ignore_last_digits={cfg.ignore_last_digits}), "
       f"а пропущенная детектором цифра заменяется на '{cfg.missing_digit_placeholder}'.")
     w(f"Показания с подставленными цифрами (PLUS/MINUS/SUSPICIOUS): {_pct(sub['photos'], sub['of'])}; "
-      f"пропущенных цифр — {sub['missing']}, прощённых хвостовых — {sub['forgiven']}")
+      f"пропущенных цифр — {sub['missing']}, прощённых хвостовых — {sub['forgiven']}"
+      + (f", по правилу барабана — {sub['drum']}" if sub["drum"] else "")
+      + (f", старших по прошлому показанию — {sub['last']}" if sub["last"] else ""))
     w("  (пометки в notes пишутся с 2026-09-30 — у строк, записанных раньше, их нет)")
 
     w("")
