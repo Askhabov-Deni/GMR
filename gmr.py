@@ -3,6 +3,7 @@ gmr.py — одна точка входа для всех команд прое�
 папки проекта:
 
   python gmr.py month <папка> --table <файл>  создать месяц из таблицы компании / загрузить обновлённую
+  python gmr.py month <папка> --table <файл> --clear-readings   то же, но без показаний из таблицы
   python gmr.py month <папка>                 сводка месяца
   python gmr.py export <папка>                выгрузить показания.xlsx и лог.csv ещё раз
   python gmr.py process <папка месяца>        прогон reader.py: новые фото из фото\\ → результат\\, база, выгрузка
@@ -61,13 +62,16 @@ def _month(argv):
     )
     p.add_argument("folder", help="папка месяца, например D:\\GMR\\Октябрь_2026")
     p.add_argument("--table", help="таблица компании: при первом запуске создаёт месяц, потом — обновляет")
+    p.add_argument("--clear-readings", action="store_true",
+                   help="при создании месяца не брать текущие показания из таблицы: месяц начинается "
+                        "без них (оригинал таблицы не меняется)")
     args = p.parse_args(argv)
     from src.gmr.application import month
     try:
         if not args.table:
             print(month.month_summary(args.folder))
             return 0
-        print(month.load_table(args.folder, args.table).text())
+        print(month.load_table(args.folder, args.table, clear_readings=args.clear_readings).text())
         print(month.export_month(args.folder).text())
     except (ValueError, OSError, month.ExportLocked) as e:
         print(f"ОШИБКА: {e}")

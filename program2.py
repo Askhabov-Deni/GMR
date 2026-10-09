@@ -17,10 +17,11 @@ MainWindow (Tk root)
 │                         Серийник в базе с ошибкой; подсказка «похожие номера в базе»
 └── VerifyScreen        — проверка одного фото: Верно / Исправить (→ база) / Пропустить
 ТИХАЯ РАЗМЕТКА (оператор не видит): если оператор исправил модель — в папки
-new/ датасетов проекта (database/datasets, этап 5c; фото эталона — нет):
-CRNN: кроп serial_number + правильный номер — serials_crnn/new/images, new/labels
-CNN:  кропы изменённых цифр — digits_cnn/new/<цифра>
-YOLO: «Нет счётчика», а оператор ввёл показание — исходное фото в meter_yolo/new
+new/<ГГГГ-ММ>/ датасетов проекта (database/datasets; месяц — в имени файла
+тоже; фото эталона — нет):
+CRNN: кроп serial_number + правильный номер — serials_crnn/new/<месяц>/images, labels
+CNN:  кропы изменённых цифр — digits_cnn/new/<месяц>/<цифра>
+YOLO: «Нет счётчика», а оператор ввёл показание — исходное фото в meter_yolo/new/<месяц>
 """
 import json
 import logging
@@ -654,24 +655,27 @@ def now_iso() -> str:
 
 # ─── Разметка (тихо) ─────────────────────────────────────────────────────────
 # Этап 5c (2026-10-07): в папки new/ датасетов проекта (DATASETS_ROOT), имена —
-# с отпечатком фото (обучение делит датасет по фото, models/datasets.py). Что в
-# new/ — владелец просматривает и переносит в датасет сам.
+# с отпечатком фото (обучение делит датасет по фото, models/datasets.py). С
+# 2026-10-09 (решение 1а) — в подпапке месяца new/<ГГГГ-ММ>/ и с месяцем в имени:
+# после переноса в датасет видно, откуда кроп. Что в new/ — владелец
+# просматривает и переносит в датасет сам.
 def save_crnn_markup(
     root: Path,
     photo_key: str,
+    month: str,
     serial_crop: Optional[np.ndarray],
     correct_text: str,
     model_text: Optional[str],
 ) -> None:
     """Кроп серийника и правильный номер — только если номер исправили:
-    serials_crnn/new/images/<номер>__<фото>.jpg и new/labels/… .txt."""
+    serials_crnn/new/<месяц>/images/<номер>__<фото>__<месяц>.jpg и labels/… .txt."""
     if serial_crop is None:
         return
     if model_text is not None and correct_text == model_text:
         return
     safe_text = "".join(c for c in correct_text if c.isalnum() or c in "-_") or "serial"
-    name = f"{safe_text}__{photo_key}"
-    new = Path(root) / "serials_crnn" / "new"
+    name = f"{safe_text}__{photo_key}__{month}"
+    new = Path(root) / "serials_crnn" / "new" / month
     (new / "images").mkdir(parents=True, exist_ok=True)
     (new / "labels").mkdir(parents=True, exist_ok=True)
     if not write_image(new / "images" / f"{name}.jpg", serial_crop):
@@ -683,12 +687,13 @@ def save_crnn_markup(
 def save_cnn_markup(
     root: Path,
     photo_key: str,
+    month: str,
     digit_crops: Optional[list],
     digit_preds: Optional[list],
     model_reading_str: Optional[str],
     final_reading_str: str,
 ) -> None:
-    """Кропы только изменённых цифр: digits_cnn/new/<цифра>/<фото>__digit_<N>.jpg."""
+    """Кропы только изменённых цифр: digits_cnn/new/<месяц>/<цифра>/<фото>__<месяц>__digit_<N>.jpg."""
     if not digit_crops or not digit_preds:
         return
     if len(digit_crops) != len(final_reading_str):
@@ -708,22 +713,22 @@ def save_cnn_markup(
         if not final_char.isdigit():
             continue
 
-        out_dir = Path(root) / "digits_cnn" / "new" / final_char
+        out_dir = Path(root) / "digits_cnn" / "new" / month / final_char
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{photo_key}__digit_{pos + 1}.jpg"
+        out_path = out_dir / f"{photo_key}__{month}__digit_{pos + 1}.jpg"
         if not write_image(out_path, crop):
             log.warning(f"CNN разметка: не удалось сохранить {out_path}")
             continue
         log.info(f"CNN разметка: pos={pos} model={model_char!r} → correct={final_char!r}")
 
-def save_meter_markup(root: Path, photo_key: str, original: Optional[Path]) -> None:
+def save_meter_markup(root: Path, photo_key: str, month: str, original: Optional[Path]) -> None:
     """«Нет счётчика», а оператор ввёл показание — детектор промахнулся:
-    исходное фото в meter_yolo/new/ на ручную разметку (решение 3а)."""
+    исходное фото в meter_yolo/new/<месяц>/ на ручную разметку (решение 3а)."""
     if original is None or not Path(original).is_file():
         return
-    out = Path(root) / "meter_yolo" / "new"
+    out = Path(root) / "meter_yolo" / "new" / month
     out.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(original, out / f"{photo_key}{Path(original).suffix.lower()}")
+    shutil.copy2(original, out / f"{photo_key}__{month}{Path(original).suffix.lower()}")
     log.info(f"YOLO разметка: {photo_key} → meter_yolo/new")
 
 # ─── Виджет показаний (5 полей) ───────────────────────────────────────────────
@@ -985,8 +990,19 @@ class MainWindow(tk.Tk):
             "Перенести его в базу месяца? Тогда фото из этого лога будут считаться уже разобранными.\n"
             "Обычно — «Нет»: месяц начинается с чистого листа.", default="no", parent=parent)
         try:
+            n = month_app.table_readings_count(table, self.config)
+        except (ValueError, OSError) as e:
+            messagebox.showerror("Новый месяц", str(e), parent=parent)
+            return False
+        clear = n > 0 and messagebox.askyesno(
+            "Показания в таблице",
+            f"В таблице уже есть показания у {n} абонентов.\n\nОчистить их?\n\n"
+            "«Да» — месяц начинается без показаний, программа прочитает все фото.\n"
+            "«Нет» — эти показания считаются уже записанными.\n\n"
+            "Оригинал таблицы не меняется.", parent=parent)
+        try:
             rep = month_app.load_table(folder, table, self.config, who=who or self.settings.operator_name,
-                                       import_old_log=import_log)
+                                       import_old_log=import_log, clear_readings=clear)
             exported = month_app.export_month(folder, self.config).text()
         except (ValueError, OSError, ExportLocked) as e:
             messagebox.showerror("Новый месяц", str(e), parent=parent)
@@ -2192,11 +2208,12 @@ class EditScreen(ttk.Frame):
             return
         key = h or Path(self.photo_path).stem
         try:
-            save_crnn_markup(DATASETS_ROOT, key, mr.get("serial_crop"), final_serial, mr.get("serial_text"))
-            save_cnn_markup(DATASETS_ROOT, key, mr.get("digit_crops"), mr.get("digit_preds"),
+            month = self.app.session.month_label()
+            save_crnn_markup(DATASETS_ROOT, key, month, mr.get("serial_crop"), final_serial, mr.get("serial_text"))
+            save_cnn_markup(DATASETS_ROOT, key, month, mr.get("digit_crops"), mr.get("digit_preds"),
                             mr.get("reading_str"), final_reading_str)
             if self.reason == "no_meter":
-                save_meter_markup(DATASETS_ROOT, key, self._original_photo(row))
+                save_meter_markup(DATASETS_ROOT, key, month, self._original_photo(row))
         except Exception as e:
             log.warning(f"Ошибка сохранения разметки: {e}")
 

@@ -15,7 +15,7 @@ from typing import Optional
 
 from src.gmr.application.cycle import close_waiting, move_files
 from src.gmr.application.month import (
-    SERIAL_FIX_ACTION, ExportReport, NotAMonth, export_month, is_month,
+    SERIAL_FIX_ACTION, ExportReport, NotAMonth, export_month, is_month, month_label,
 )
 from src.gmr.domain.config import PipelineConfig
 from src.gmr.domain.photo_date import reading_date
@@ -48,6 +48,10 @@ class OperatorSession:
 
     def backup(self) -> Optional[Path]:
         return backup_sqlite(self.folder.db, self.folder.backups)
+
+    def month_label(self) -> str:
+        """«2026-10» — подпись разметки этого месяца в папках new/ датасетов."""
+        return month_label(self.db.meta("created_at"))
 
     # ─── чтение ─────────────────────────────────────────────────────────────
     def table_columns(self) -> list[str]:

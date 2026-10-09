@@ -366,3 +366,50 @@ def test_long_lists_full_in_report_file(tmp_path):
     assert f"… и ещё 5 — полный список в файле {rep.report_file}" in screen
     saved = Path(rep.report_file).read_text(encoding="utf-8")
     assert saved.count("номер счётчика «5000") == 25 and "… и ещё" not in saved
+
+
+# ─── 2026-10-09: месяц без показаний из таблицы (решение 2а), подпись месяца (1а) ──
+
+def test_month_without_table_readings(tmp_path, capsys):
+    m = tmp_path / "m"
+    assert month.table_readings_count(str(SAMPLE)) == 1
+    rep = month.load_table(str(m), str(SAMPLE), clear_readings=True)
+    assert (rep.readings_from_table, rep.readings_ignored) == (0, 1)
+    assert "Показания из таблицы не взяты (месяц без них): 1" in rep.text()
+    with _db(m) as db:
+        assert db.readings() == {}
+    assert ", показания из таблицы не взяты" in month.month_summary(str(m))
+    again = month.load_table(str(m), str(SAMPLE))                   # обновление помнит выбор
+    assert (again.readings_from_table, again.readings_ignored) == (0, 1)
+    with _db(m) as db:
+        assert db.readings() == {}
+    month.export_month(str(m))
+    rows = [{h: c.value for h, c in zip(HEAD, r)} for r in _sheet(m).iter_rows(min_row=2)]
+    assert rows[1]["Текущие показания"] is None and rows[1]["Дата"] is None   # и дата того показания
+    with pytest.raises(ValueError, match="только при создании"):
+        month.load_table(str(m), str(SAMPLE), clear_readings=True)
+    assert SAMPLE.read_bytes() == next(MonthFolder(m).tables.glob("*register_sample.xls")).read_bytes()
+
+
+def test_cli_month_clear_readings(tmp_path, capsys):
+    assert gmr.main(["month", str(tmp_path / "m"), "--table", str(SAMPLE), "--clear-readings"]) == 0
+    assert "Показания из таблицы не взяты" in capsys.readouterr().out
+    with _db(tmp_path / "m") as db:
+        assert db.readings() == {}
+    assert gmr.main(["month", str(tmp_path / "m"), "--table", str(SAMPLE), "--clear-readings"]) == 1
+    assert "только при создании" in capsys.readouterr().out
+
+
+def test_month_label():
+    from datetime import datetime
+    assert month.month_label("2026-10-03 12:00:00") == "2026-10"
+    assert month.month_label(None, today=datetime(2027, 1, 5)) == "2027-01"
+    assert month.month_label("вчера", today=datetime(2027, 1, 5)) == "2027-01"
+
+
+def test_table_readings_count_only_rows_with_account(tmp_path):
+    t = _xlsx(tmp_path / "t.xlsx", [
+        {"Лицевой счет": "1", "Номер счетчика": "111111", "Текущие показания": 5},
+        {"Лицевой счет": "", "Номер счетчика": "222222", "Текущие показания": 7},   # без счёта — пропущена
+        {"Лицевой счет": "3", "Номер счетчика": "333333"}])
+    assert month.table_readings_count(str(t)) == 1

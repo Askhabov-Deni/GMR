@@ -43,6 +43,8 @@ _LIST_LIMIT = 20          # сколько строк списка показы�
 # журнал изменений: оператор исправил номер счётчика в базе («Серийник в базе с
 # ошибкой», 2026-10-01); при обновлении таблицы такое исправление сохраняется
 SERIAL_FIX_ACTION = "номер исправлен оператором"
+# «ignored» — месяц создан без текущих показаний из таблицы компании (2а, 2026-10-09)
+META_TABLE_READINGS = "table_readings"
 
 
 class ExportLocked(Exception):
@@ -101,6 +103,7 @@ class LoadReport:
     readings_kept: list = field(default_factory=list)         # (счёт, в базе, в таблице)
     serial_fixes_kept: list = field(default_factory=list)     # (счёт, в таблице, исправлен оператором)
     log_rows: int = 0
+    readings_ignored: int = 0                                  # показания таблицы не взяты (месяц без них)
 
     report_file: str = ""                                      # полный отчёт в таблицы/
 
@@ -120,6 +123,8 @@ class LoadReport:
         if self.readings_from_table:
             out.append(f"Показаний уже было в таблице (считаются внесёнными до программы): "
                        f"{self.readings_from_table}")
+        if self.readings_ignored:
+            out.append(f"Показания из таблицы не взяты (месяц без них): {self.readings_ignored}")
         if not self.created:
             out.append(f"Новых абонентов: {len(self.added)}")
             out += lines("Нет в новой таблице (в выгрузку не попадут)", self.removed, lambda x: f"л/с {x}")
@@ -151,16 +156,39 @@ class LoadReport:
         return "\n".join(out)
 
 
+def month_label(created_at: Optional[str], today: Optional[datetime] = None) -> str:
+    """«2026-10» — месяц папки месяца (по дате её создания): так подписана
+    разметка в папках new/ датасетов (решение владельца 2026-10-09, 1а)."""
+    if created_at and re.match(r"\d{4}-\d{2}", created_at):
+        return created_at[:7]
+    return (today or datetime.now()).strftime("%Y-%m")
+
+
+def table_readings_count(table_path: str, config: Optional[PipelineConfig] = None) -> int:
+    """Сколько абонентов в таблице компании уже с текущим показанием (окно
+    спрашивает, очистить ли их при создании месяца)."""
+    cfg = config or PipelineConfig()
+    reg = read_register(table_path)
+    return sum(1 for row in reg.rows
+               if normalize_account(row.get(cfg.col_account_id, "")) and str(row.get(cfg.col_new_reading, "")).strip())
+
+
 def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig] = None,
-               who: Optional[str] = None, import_old_log: bool = True) -> LoadReport:
+               who: Optional[str] = None, import_old_log: bool = True,
+               clear_readings: bool = False) -> LoadReport:
     """Создаёт месяц из таблицы компании или загружает её обновлённую версию.
     Ошибка ValueError — если таблица не читается или в ней нет нужных столбцов;
     тогда база не меняется. import_old_log=False — не переносить лог старого
     режима (<таблица>_log.csv рядом с таблицей) при создании месяца: окно
-    оператора спрашивает об этом (этап 4)."""
+    оператора спрашивает об этом (этап 4). clear_readings=True — только при
+    создании: текущие показания из таблицы не берутся, месяц начинается без
+    них; выбор запоминается (META_TABLE_READINGS) и при обновлении таблицы
+    (решение владельца 2026-10-09, 2а). Оригинал таблицы не меняется."""
     cfg = config or PipelineConfig()
     who = who or _who()
     folder = MonthFolder(Path(month_dir))
+    if clear_readings and is_month(folder):
+        raise ValueError("Очистить показания из таблицы можно только при создании месяца")
     reg = read_register(table_path)
     required = [cfg.col_account_id, cfg.col_serial, cfg.col_last_reading, cfg.col_new_reading]
     missing = [c for c in required if c not in reg.columns]
@@ -197,6 +225,7 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
         created = rep.created = db.meta("created_at") is None
         if not created:
             backup_sqlite(folder.db, folder.backups)
+        ignore_readings = clear_readings or db.meta(META_TABLE_READINGS) == "ignored"
         with db.transaction():
             old = db.abonents()
             readings = db.readings()
@@ -226,7 +255,9 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
                 db.put_abonent(a)
 
                 in_table = a.data.get(cfg.col_new_reading, "").strip()
-                if in_table:
+                if in_table and ignore_readings:
+                    rep.readings_ignored += 1
+                elif in_table:
                     have = readings.get(account)
                     if have is None:
                         db.put_reading(Reading(account, in_table, a.data.get(cfg.col_date, ""),
@@ -251,6 +282,8 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
             db.set_meta("table_loaded_at", stamp)
             if created:
                 db.set_meta("created_at", stamp)
+                if clear_readings:
+                    db.set_meta(META_TABLE_READINGS, "ignored")
                 old_log = Path(log_path_for(table_path))
                 if import_old_log and old_log.is_file():
                     rows = load_log(str(old_log))
@@ -339,6 +372,7 @@ def export_month(month_dir: str, config: Optional[PipelineConfig] = None) -> Exp
         abonents = list(db.abonents(only_in_table=True).values())
         readings = db.readings()
         log_rows = db.log_rows()
+        readings_ignored = db.meta(META_TABLE_READINGS) == "ignored"
 
     letter = {c: get_column_letter(i) for i, c in enumerate(columns, start=1)}
     # лицевой счёт и номер — всегда текст (ведущие нули); остальное — как было
@@ -364,6 +398,8 @@ def export_month(month_dir: str, config: Optional[PipelineConfig] = None) -> Exp
                 text = r.value if r else ""
             elif col == cfg.col_date and r is not None and r.date:
                 text = r.date
+            elif col == cfg.col_date and r is None and readings_ignored:
+                text = ""                                      # дата показания, которое не взято
             if col == cfg.col_difference and formula:
                 row.append(f"={letter[cfg.col_new_reading]}{n}-{letter[cfg.col_last_reading]}{n}")
                 continue
@@ -452,6 +488,7 @@ def month_summary(month_dir: str) -> str:
         log_rows = len(db.log_rows())
         serial_fixes = {c["account"] for c in db.changes() if c["action"] == SERIAL_FIX_ACTION}
         meta = (db.meta("created_at"), db.meta("table"), db.meta("table_loaded_at"))
+        no_table_readings = db.meta(META_TABLE_READINGS) == "ignored"
     with_reading = [a for a in in_table if a in readings]
     by_source = {src: sum(1 for a in with_reading if readings[a].source == src) for src, _ in _SOURCE_NAMES}
     without = [ab for a, ab in in_table.items() if a not in readings]
@@ -460,7 +497,8 @@ def month_summary(month_dir: str) -> str:
     waiting = waiting_photos(folder.results)
     lines = [
         f"Месяц: {folder.root}",
-        f"  создан: {meta[0]}, таблица: {meta[1]} (загружена {meta[2]})",
+        f"  создан: {meta[0]}, таблица: {meta[1]} (загружена {meta[2]})"
+        + (", показания из таблицы не взяты" if no_table_readings else ""),
         f"  абонентов в таблице: {len(in_table)}",
         f"  с показанием: {len(with_reading)} — "
         + ", ".join(f"{name} {by_source[src]}" for src, name in _SOURCE_NAMES),

@@ -65,6 +65,21 @@ def _split_line(parts: dict) -> str:
     return "  деление при обучении: " + ", ".join(f"{names[k]} {cnt(v)}" for k, v in parts.items() if k in names)
 
 
+def _new_images(root: Path) -> list[Path]:
+    """Картинки в new/ — по папкам месяцев new/<ГГГГ-ММ>/… (2026-10-09, 1а)."""
+    new = root / "new"
+    return sorted(p for p in new.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS) \
+        if new.is_dir() else []
+
+
+def _new_line(root: Path, what: str) -> str:
+    files = _new_images(root)
+    months = Counter(p.relative_to(root / "new").parts[0] if len(p.relative_to(root / "new").parts) > 1
+                     else "без месяца" for p in files)
+    return f"  new/ ({what}): {len(files)}" + (
+        " — " + ", ".join(f"{m}: {n}" for m, n in sorted(months.items())) if files else "")
+
+
 def check_yolo(root: Path, rep: Report) -> None:
     images_dir, labels_dir = root / "images", root / "labels"
     images = images_in(images_dir)
@@ -108,7 +123,7 @@ def check_yolo(root: Path, rep: Report) -> None:
         parts = split_by_photo(labelled, lambda p: p.name, YOLO_SEED, 1 - YOLO_VAL, YOLO_VAL)
         rep.add(_split_line({"train": parts["train"], "val": parts["val"]}))
     if (root / "new").is_dir():
-        rep.add(f"  new/ (на разметку): {len(images_in(root / 'new'))} фото")
+        rep.add(_new_line(root, "на разметку"))
 
 
 def check_cnn(root: Path, rep: Report) -> None:
@@ -136,8 +151,10 @@ def check_cnn(root: Path, rep: Report) -> None:
     if samples:
         from models.cnn.config_cnn import SEED, TRAIN_RATIO, VAL_RATIO
         rep.add(_split_line(split_by_photo(samples, lambda p: p.name, SEED, TRAIN_RATIO, VAL_RATIO)))
-    new = {d: len(images_in(root / "new" / d)) for d in DIGITS}
-    rep.add(f"  new/ (исправил оператор): {sum(new.values())} — " + ", ".join(f"{d}: {n}" for d, n in new.items()))
+    rep.add(_new_line(root, "исправил оператор"))
+    by_digit = Counter(p.parent.name for p in _new_images(root))
+    if by_digit:
+        rep.add("    по цифрам: " + ", ".join(f"{d}: {by_digit[d]}" for d in DIGITS))
 
 
 def check_crnn(root: Path, rep: Report) -> None:
@@ -166,8 +183,7 @@ def check_crnn(root: Path, rep: Report) -> None:
     rep.problem("одинаковые фото", [" = ".join(p.name for p in g) for g in _duplicates(images)])
     if good:
         rep.add(_split_line(split_by_photo(good, lambda p: p.name, CRNN_SEED, CRNN_TRAIN, CRNN_VAL)))
-    new = images_in(root / "new" / "images")
-    rep.add(f"  new/ (исправил оператор): {len(new)} фото")
+    rep.add(_new_line(root, "исправил оператор"))
 
 
 CHECKS = {"meter_yolo": check_yolo, "digits_yolo": check_yolo, "digits_cnn": check_cnn,

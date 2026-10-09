@@ -60,34 +60,36 @@ def test_controller_dir_of_photo(tmp_path):
 def test_save_crnn_markup(tmp_path):
     crop = np.full((20, 60, 3), 50, np.uint8)
     # серийник не исправляли — ничего не сохраняется
-    program2.save_crnn_markup(tmp_path, "h1", crop, "1234567", "1234567")
-    program2.save_crnn_markup(tmp_path, "h1", None, "1234567", "1284567")
+    program2.save_crnn_markup(tmp_path, "h1", "2026-10", crop, "1234567", "1234567")
+    program2.save_crnn_markup(tmp_path, "h1", "2026-10", None, "1234567", "1284567")
     assert not (tmp_path / "serials_crnn").exists()
-    # исправили — кроп в new/images и номер в new/labels; имя — номер и фото
-    program2.save_crnn_markup(tmp_path, "h1", crop, "1234567", "1284567")
-    program2.save_crnn_markup(tmp_path, "h2", crop, "1234567", None)
-    new = tmp_path / "serials_crnn" / "new"
-    assert sorted(p.name for p in (new / "images").iterdir()) == ["1234567__h1.jpg", "1234567__h2.jpg"]
-    assert (new / "labels" / "1234567__h1.txt").read_text(encoding="utf-8") == "1234567"
+    # исправили — в new/<месяц>/images и labels; имя — номер, фото, месяц
+    program2.save_crnn_markup(tmp_path, "h1", "2026-10", crop, "1234567", "1284567")
+    program2.save_crnn_markup(tmp_path, "h2", "2026-10", crop, "1234567", None)
+    new = tmp_path / "serials_crnn" / "new" / "2026-10"
+    assert sorted(p.name for p in (new / "images").iterdir()) == ["1234567__h1__2026-10.jpg",
+                                                                 "1234567__h2__2026-10.jpg"]
+    assert (new / "labels" / "1234567__h1__2026-10.txt").read_text(encoding="utf-8") == "1234567"
 
 
 def test_save_cnn_markup_only_changed_digits(tmp_path):
     crops = [np.full((30, 15, 3), v, np.uint8) for v in range(5)]
     crops[1] = None                                            # заглушка — пропускается
-    program2.save_cnn_markup(tmp_path, "h1", crops, [{}] * 5, "12?45", "12745")
+    program2.save_cnn_markup(tmp_path, "h1", "2026-10", crops, [{}] * 5, "12?45", "12745")
     saved = [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.jpg")]
-    assert saved == ["digits_cnn/new/7/h1__digit_3.jpg"]      # изменилась только позиция 3
+    assert saved == ["digits_cnn/new/2026-10/7/h1__2026-10__digit_3.jpg"]   # изменилась только позиция 3
     # длины не совпадают — ничего
-    program2.save_cnn_markup(tmp_path / "x", "h1", crops, [{}] * 5, "12345", "1234")
+    program2.save_cnn_markup(tmp_path / "x", "h1", "2026-10", crops, [{}] * 5, "12345", "1234")
     assert not (tmp_path / "x").exists()
 
 
 def test_save_meter_markup(tmp_path):
     orig = img(tmp_path / "фото" / "Аюб" / "IMG-1.JPG")
-    program2.save_meter_markup(tmp_path / "ds", "h1", orig)
-    program2.save_meter_markup(tmp_path / "ds", "h2", None)
-    program2.save_meter_markup(tmp_path / "ds", "h3", tmp_path / "нет.jpg")
-    assert [p.name for p in (tmp_path / "ds" / "meter_yolo" / "new").iterdir()] == ["h1.jpg"]
+    program2.save_meter_markup(tmp_path / "ds", "h1", "2026-10", orig)
+    program2.save_meter_markup(tmp_path / "ds", "h2", "2026-10", None)
+    program2.save_meter_markup(tmp_path / "ds", "h3", "2026-10", tmp_path / "нет.jpg")
+    new = tmp_path / "ds" / "meter_yolo" / "new"
+    assert [p.relative_to(new).as_posix() for p in new.rglob("*.*")] == ["2026-10/h1__2026-10.jpg"]
 
 
 def test_default_month_name():
@@ -302,14 +304,17 @@ def test_accept_saves_silent_markup_when_model_was_wrong(app):
                          "reading_str": "01?00", "digit_crops": [np.full((30, 15, 3), 1, np.uint8)] * 5,
                          "digit_preds": [{}] * 5}
     img(app.month.photos / "Аюб" / "IMG-20260915-WA0001.jpg")  # исходное фото есть, но счётчик найден —
-    _fill(scr, "A1", "01200")                                 # в meter_yolo/new не кладётся
+    with MonthDB(app.month.db) as db, db.transaction():      # в meter_yolo/new не кладётся
+        db.set_meta("created_at", "2026-09-30 23:50:00")       # месяц создан в сентябре
+    _fill(scr, "A1", "01200")
     scr._accept()
     ds = program2.DATASETS_ROOT
     assert not (ds / "meter_yolo").exists()
     h = "h-IMG-20260915-WA0001.jpg"                            # отпечаток из авто-строки
-    assert (ds / "serials_crnn" / "new" / "images" / f"1234567__{h}.jpg").exists()
+    m = "2026-09"                                              # месяц папки месяца, а не сегодня
+    assert (ds / "serials_crnn" / "new" / m / "images" / f"1234567__{h}__{m}.jpg").exists()
     assert [p.relative_to(ds).as_posix() for p in ds.rglob("*.jpg") if "digits_cnn" in p.parts] == [
-        f"digits_cnn/new/2/{h}__digit_3.jpg"]
+        f"digits_cnn/new/{m}/2/{h}__{m}__digit_3.jpg"]
 
 
 @needs_display
@@ -825,7 +830,7 @@ def test_no_meter_accept_copies_original_for_labeling(app):
     scr = app._current_screen
     _fill(scr, "A2", "00600")
     scr._accept()
-    new = program2.DATASETS_ROOT / "meter_yolo" / "new"
+    new = program2.DATASETS_ROOT / "meter_yolo" / "new" / app.session.month_label()
     assert [p.read_bytes() for p in new.iterdir()] == [orig.read_bytes()]
 
 
@@ -870,3 +875,21 @@ def test_ask_new_month_like_save_as(app, tmp_path, monkeypatch):
     files.append(table)
     saves.append(str(app.month.root))                          # там уже месяц — не создаётся
     assert app.ask_new_month() is None
+
+
+@needs_display
+@pytest.mark.parametrize("clear,readings", [(True, 0), (False, 1)])
+def test_new_month_asks_to_clear_table_readings(app, tmp_path, monkeypatch, clear, readings):
+    table = _table_csv(tmp_path / "компания" / "Ноябрь.csv",
+                       [("7777777", "B1", "10", "15"), ("8888888", "B2", "20", "")])
+    _dialogs(monkeypatch, files=[table], saves=[tmp_path / "Ноябрь_2026"])
+    app.answers.append(clear)
+    app.new_month()
+    assert "В таблице уже есть показания у 1 абонентов" in app.asked[0][1]
+    assert len(readings_of(tmp_path / "Ноябрь_2026")) == readings
+    assert app.session.folder.root == tmp_path / "Ноябрь_2026"
+
+
+def readings_of(path):
+    from tests._month import readings
+    return readings(MonthFolderOf(path))

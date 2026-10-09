@@ -28,7 +28,7 @@ def test_layout_created_and_nothing_touched(tmp_path):
     keep = touch(tmp_path / "digits_cnn" / "3" / "a.jpg", b"crop")
     created = ds.ensure_layout(tmp_path)
     for d in ("meter_yolo/images", "meter_yolo/labels", "meter_yolo/new", "digits_yolo/labels",
-              "digits_cnn/0", "digits_cnn/new/9", "serials_crnn/new/images", "serials_crnn/new/labels", "etalon"):
+              "digits_cnn/0", "digits_cnn/new", "serials_crnn/new", "etalon"):
         assert (tmp_path / d).is_dir(), d
     assert (tmp_path / "digits_yolo" / "classes.txt").read_text(encoding="utf-8") == "digit\n"
     assert keep.read_bytes() == b"crop" and tmp_path / "digits_cnn" / "3" not in created
@@ -146,7 +146,7 @@ def _yolo(root: Path):
         touch(root / "images" / f"{n}.jpg", n.encode())
         touch(root / "labels" / f"{n}.txt", line)
     touch(root / "images" / "readme.txt", b"not a photo")
-    touch(root / "new" / "n1.jpg")
+    touch(root / "new" / "2026-10" / "n1__2026-10.jpg")
 
 
 def test_check_yolo(tmp_path):
@@ -162,7 +162,7 @@ def test_check_yolo(tmp_path):
                  "ошибки в разметке (не «класс cx cy w h», числа вне 0…1, класс вне classes.txt): 3",
                  "одинаковые фото: 1"):
         assert f"  ⚠ {line}" in lines, line
-    assert "new/ (на разметку): 1 фото" in block and "деление при обучении: обучение" in block
+    assert "new/ (на разметку): 1 — 2026-10: 1" in block and "деление при обучении: обучение" in block
     problems = (tmp_path / "datasets_problems.txt").read_text(encoding="utf-8")
     assert "nolabel.jpg" in problems and "orphan.txt" in problems and "bad3.txt" in problems
     assert "p0.jpg = copy.jpg" in problems or "copy.jpg = p0.jpg" in problems
@@ -176,7 +176,7 @@ def test_check_cnn_and_crnn(tmp_path):
     touch(cnn / "8" / "same.jpg", b"c0")                           # тот же кроп с другой меткой
     touch(cnn / "3" / "again.jpg", b"c1")                          # повтор в той же цифре
     touch(cnn / "8" / "notes.txt", b"?")
-    touch(cnn / "new" / "4" / "x.jpg")
+    touch(cnn / "new" / "2026-10" / "4" / "x.jpg")
     touch(cnn / "старое" / "y.jpg")
     crnn = tmp_path / "serials_crnn"
     touch(crnn / "images" / "s1.jpg", b"1")
@@ -184,7 +184,8 @@ def test_check_cnn_and_crnn(tmp_path):
     touch(crnn / "images" / "s2.jpg", b"2")
     touch(crnn / "labels" / "s2.txt", b"12")                        # коротко
     touch(crnn / "images" / "s3.jpg", b"3")
-    touch(crnn / "new" / "images" / "1234567__h1.jpg")              # исправил оператор (окно)
+    touch(crnn / "new" / "2026-10" / "images" / "1234567__h1__2026-10.jpg")   # исправил оператор (окно)
+    touch(crnn / "new" / "2026-11" / "images" / "1234567__h2__2026-11.jpg")
     out = check_ds.run(tmp_path)
     c = out.split("digits_cnn —")[1].split("serials_crnn —")[0]
     lines = c.splitlines()
@@ -193,11 +194,11 @@ def test_check_cnn_and_crnn(tmp_path):
     assert "  ⚠ одинаковые кропы в разных цифрах (одна из меток неверна): 1" in lines
     assert "  ⚠ одинаковые кропы в одной цифре: 1" in lines
     assert "не картинки в папках цифр: 1" in c and "лишние папки (обучение их не читает): 1" in c
-    assert "new/ (исправил оператор): 1 — 0: 0, 1: 0, 2: 0, 3: 0, 4: 1" in c
+    assert "new/ (исправил оператор): 1 — 2026-10: 1" in c and "по цифрам: 0: 0, 1: 0, 2: 0, 3: 0, 4: 1" in c
     s = out.split("serials_crnn —")[1].split("etalon —")[0]
     assert "фото: 3, с годным номером: 1" in s and "длина номера: 7 цифр — 1" in s
     assert "фото без разметки: 1" in s and "номер не годится" in s
-    assert "new/ (исправил оператор): 1 фото" in s
+    assert "new/ (исправил оператор): 2 — 2026-10: 1, 2026-11: 1" in s
     assert "Имена проблемных файлов — с --list" in out
 
 

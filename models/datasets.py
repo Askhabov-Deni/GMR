@@ -48,8 +48,8 @@ DIGITS = [str(d) for d in range(10)]
 LAYOUT: dict[str, list[str]] = {
     "meter_yolo":   ["images", "labels", "new"],
     "digits_yolo":  ["images", "labels"],
-    "digits_cnn":   DIGITS + [f"new/{d}" for d in DIGITS],
-    "serials_crnn": ["images", "labels", "new/images", "new/labels"],
+    "digits_cnn":   DIGITS + ["new"],
+    "serials_crnn": ["images", "labels", "new"],
     "etalon":       [],
 }
 # classes.txt, который известен заранее (детектор цифр — один класс, как в
