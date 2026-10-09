@@ -16,12 +16,12 @@ MainWindow (Tk root)
 ├── EditScreen          — разбор одного фото: Принять / Дубль / Нечитаемо / Нет в базе /
 │                         Серийник в базе с ошибкой; подсказка «похожие номера в базе»
 └── VerifyScreen        — проверка одного фото: Верно / Исправить (→ база) / Пропустить
-ТИХАЯ РАЗМЕТКА (оператор не видит): если оператор исправил модель — в папки
-new/<ГГГГ-ММ>/ датасетов проекта (database/datasets; месяц — в имени файла
-тоже; фото эталона — нет):
-CRNN: кроп serial_number + правильный номер — serials_crnn/new/<месяц>/images, labels
-CNN:  кропы изменённых цифр — digits_cnn/new/<месяц>/<цифра>
-YOLO: «Нет счётчика», а оператор ввёл показание — исходное фото в meter_yolo/new/<месяц>
+ТИХАЯ РАЗМЕТКА (оператор не видит): если оператор исправил модель — в папку
+месяца <месяц>/разметка/ (месяц — и в имени файла; фото эталона — нет); на
+компьютер разработки её забирает `gmr.py datasets --collect <месяц>`:
+CRNN: кроп serial_number + правильный номер — разметка/serials_crnn/images, labels
+CNN:  кропы изменённых цифр — разметка/digits_cnn/<цифра>
+YOLO: «Нет счётчика», а оператор ввёл показание — исходное фото в разметка/meter_yolo
 """
 import json
 import logging
@@ -65,7 +65,7 @@ from src.gmr.domain.serial_match import alphabet_for, one_char_matches
 # Модели — через контракты и общий с reader.py сервис распознавания (Фаза 3)
 from src.gmr.application import digit_crops_by_position, recognize_photo
 from src.gmr.ml.loader import default_device, load_models
-from src.gmr.domain.datasets import DATASETS_DIR, to_etalon
+from src.gmr.domain.datasets import to_etalon
 
 _LOG_FILE = _BASE / "program2.log"
 
@@ -109,12 +109,7 @@ class AppSettings:
     operator_name: str = ""
     month_dir:     str = ""   # папка месяца: база, фото, результат
     # «Папки для разметки» больше нет (2026-10-07): исправления оператора идут
-    # в папки new/ датасетов проекта (DATASETS_ROOT); старый ключ в
-    # settings.json просто не читается.
-
-
-# Датасеты моделей (database/datasets, docs/GUIDE.md 5.0): тихая разметка
-DATASETS_ROOT = _BASE / DATASETS_DIR
+    # в папку месяца (<месяц>/разметка); старый ключ в settings.json не читается.
 
 RU_MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август",
              "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
@@ -654,11 +649,12 @@ def now_iso() -> str:
     return datetime.now().strftime("%d.%m.%Y %H:%M")
 
 # ─── Разметка (тихо) ─────────────────────────────────────────────────────────
-# Этап 5c (2026-10-07): в папки new/ датасетов проекта (DATASETS_ROOT), имена —
-# с отпечатком фото (обучение делит датасет по фото, models/datasets.py). С
-# 2026-10-09 (решение 1а) — в подпапке месяца new/<ГГГГ-ММ>/ и с месяцем в имени:
-# после переноса в датасет видно, откуда кроп. Что в new/ — владелец
-# просматривает и переносит в датасет сам.
+# root — <месяц>/разметка (с 2026-10-11: на рабочем компьютере папки проекта с
+# датасетами нет, папка месяца есть всегда). Внутри — как в датасетах:
+# digits_cnn/<цифра>/, serials_crnn/images|labels/, meter_yolo/. Имена — с
+# отпечатком фото (обучение делит датасет по фото, models/datasets.py) и с
+# месяцем (решение 1а, 2026-10-09). `gmr.py datasets --collect <месяц>` копирует
+# это в database/datasets/<датасет>/new/<ГГГГ-ММ>/.
 def save_crnn_markup(
     root: Path,
     photo_key: str,
@@ -668,14 +664,14 @@ def save_crnn_markup(
     model_text: Optional[str],
 ) -> None:
     """Кроп серийника и правильный номер — только если номер исправили:
-    serials_crnn/new/<месяц>/images/<номер>__<фото>__<месяц>.jpg и labels/… .txt."""
+    serials_crnn/images/<номер>__<фото>__<месяц>.jpg и labels/… .txt."""
     if serial_crop is None:
         return
     if model_text is not None and correct_text == model_text:
         return
     safe_text = "".join(c for c in correct_text if c.isalnum() or c in "-_") or "serial"
     name = f"{safe_text}__{photo_key}__{month}"
-    new = Path(root) / "serials_crnn" / "new" / month
+    new = Path(root) / "serials_crnn"
     (new / "images").mkdir(parents=True, exist_ok=True)
     (new / "labels").mkdir(parents=True, exist_ok=True)
     if not write_image(new / "images" / f"{name}.jpg", serial_crop):
@@ -693,7 +689,7 @@ def save_cnn_markup(
     model_reading_str: Optional[str],
     final_reading_str: str,
 ) -> None:
-    """Кропы только изменённых цифр: digits_cnn/new/<месяц>/<цифра>/<фото>__<месяц>__digit_<N>.jpg."""
+    """Кропы только изменённых цифр: digits_cnn/<цифра>/<фото>__<месяц>__digit_<N>.jpg."""
     if not digit_crops or not digit_preds:
         return
     if len(digit_crops) != len(final_reading_str):
@@ -713,7 +709,7 @@ def save_cnn_markup(
         if not final_char.isdigit():
             continue
 
-        out_dir = Path(root) / "digits_cnn" / "new" / month / final_char
+        out_dir = Path(root) / "digits_cnn" / final_char
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{photo_key}__{month}__digit_{pos + 1}.jpg"
         if not write_image(out_path, crop):
@@ -723,10 +719,10 @@ def save_cnn_markup(
 
 def save_meter_markup(root: Path, photo_key: str, month: str, original: Optional[Path]) -> None:
     """«Нет счётчика», а оператор ввёл показание — детектор промахнулся:
-    исходное фото в meter_yolo/new/<месяц>/ на ручную разметку (решение 3а)."""
+    исходное фото в meter_yolo/ на ручную разметку (решение 3а)."""
     if original is None or not Path(original).is_file():
         return
-    out = Path(root) / "meter_yolo" / "new" / month
+    out = Path(root) / "meter_yolo"
     out.mkdir(parents=True, exist_ok=True)
     shutil.copy2(original, out / f"{photo_key}__{month}{Path(original).suffix.lower()}")
     log.info(f"YOLO разметка: {photo_key} → meter_yolo/new")
@@ -2201,19 +2197,20 @@ class EditScreen(ttk.Frame):
         )
 
     def _save_markup_silent(self, final_serial: str, final_reading_str: str, mr: dict, row: dict):
-        """Исправления оператора — в папки new/ датасетов. Фото эталона не
-        сохраняются: эталон и обучение не пересекаются (models.datasets.to_etalon)."""
+        """Исправления оператора — в <месяц>/разметка. Фото эталона не
+        сохраняются: эталон и обучение не пересекаются (to_etalon)."""
         h = row.get("photo_hash") or ""
         if h and to_etalon(h):
             return
         key = h or Path(self.photo_path).stem
         try:
             month = self.app.session.month_label()
-            save_crnn_markup(DATASETS_ROOT, key, month, mr.get("serial_crop"), final_serial, mr.get("serial_text"))
-            save_cnn_markup(DATASETS_ROOT, key, month, mr.get("digit_crops"), mr.get("digit_preds"),
+            root = self.app.session.folder.markup
+            save_crnn_markup(root, key, month, mr.get("serial_crop"), final_serial, mr.get("serial_text"))
+            save_cnn_markup(root, key, month, mr.get("digit_crops"), mr.get("digit_preds"),
                             mr.get("reading_str"), final_reading_str)
             if self.reason == "no_meter":
-                save_meter_markup(DATASETS_ROOT, key, month, self._original_photo(row))
+                save_meter_markup(root, key, month, self._original_photo(row))
         except Exception as e:
             log.warning(f"Ошибка сохранения разметки: {e}")
 

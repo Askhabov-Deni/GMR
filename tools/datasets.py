@@ -2,6 +2,7 @@
 tools/datasets.py — папки датасетов и их проверка (этап 5).
 
   python gmr.py datasets [--root database/datasets] [--list]
+  python gmr.py datasets --collect <папка месяца> [<папка месяца> …]
 
 Создаёт недостающие папки раскладки (models/datasets.py) — ничего не
 переносит и не удаляет — и показывает по каждому датасету: сколько файлов,
@@ -9,14 +10,21 @@ tools/datasets.py — папки датасетов и их проверка (э
 одинаковые файлы) и как его поделит обучение. В выводе только числа: его
 можно прислать, персональных данных в нём нет. --list — имена проблемных
 файлов в <root>/datasets_problems.txt (остаётся у вас на диске).
+
+--collect — забрать разметку месяца (исправления оператора, которые окно
+кладёт в <месяц>/разметка) в <датасет>/new/<ГГГГ-ММ>/. Копирует, папку месяца
+не меняет; повторный запуск ничего не дублирует.
 """
 import argparse
 import hashlib
+import shutil
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from models.datasets import DATASETS_DIR, DIGITS, IMAGE_EXTS, ensure_layout, images_in, photo_key, split_by_photo
+from models.datasets import (
+    DATASETS_DIR, DIGITS, IMAGE_EXTS, LAYOUT, ensure_layout, images_in, photo_key, split_by_photo,
+)
 
 YOLO_VAL, YOLO_SEED = 0.2, 67            # как models/yolo_all_detect/train_yolo.py
 CRNN_TRAIN, CRNN_VAL, CRNN_SEED = 0.7, 0.15, 42   # как models/crnn/train_crnn.py
@@ -218,13 +226,52 @@ def run(root: Path, list_problems: bool = False) -> str:
     return "\n".join(rep.lines)
 
 
+def collect(month_dir: Path, root: Path) -> str:
+    """Разметка месяца (<месяц>/разметка/<датасет>/…) → <root>/<датасет>/new/<ГГГГ-ММ>/…"""
+    from src.gmr.application.month import is_month, month_label
+    from src.gmr.storage.month import MonthDB, MonthFolder
+    folder = MonthFolder(Path(month_dir))
+    if not is_month(folder):
+        raise ValueError(f"{month_dir} — не папка месяца")
+    with MonthDB(folder.db) as db:
+        label = month_label(db.meta("created_at"))
+    copied, already = Counter(), 0
+    src = folder.markup
+    for p in sorted(src.rglob("*")) if src.is_dir() else []:
+        rel = p.relative_to(src)
+        if not p.is_file() or rel.parts[0] not in LAYOUT or len(rel.parts) < 2:
+            continue
+        dst = Path(root) / rel.parts[0] / "new" / label / Path(*rel.parts[1:])
+        if dst.exists():
+            already += p.suffix.lower() in IMAGE_EXTS
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, dst)
+        copied[rel.parts[0]] += p.suffix.lower() in IMAGE_EXTS
+    return (f"Разметка месяца {folder.root.name} ({label}): "
+            + (", ".join(f"{k} — {n}" for k, n in sorted(copied.items())) or "новых нет")
+            + (f"; уже были: {already}" if already else ""))
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python gmr.py datasets",
                                 description="Папки датасетов (создать недостающие) и их проверка.")
     p.add_argument("--root", default=str(DATASETS_DIR), help=f"папка датасетов (по умолчанию {DATASETS_DIR})")
     p.add_argument("--list", action="store_true", help="записать имена проблемных файлов в datasets_problems.txt")
+    p.add_argument("--collect", nargs="+", metavar="МЕСЯЦ",
+                   help="забрать разметку из папок месяцев (<месяц>/разметка) в new/<ГГГГ-ММ>/")
     args = p.parse_args(argv)
-    print(run(Path(args.root), args.list))
+    root = Path(args.root)
+    for month_dir in args.collect or []:
+        ensure_layout(root)
+        try:
+            print(collect(Path(month_dir), root))
+        except ValueError as e:
+            print(f"ОШИБКА: {e}")
+            return 1
+    if args.collect:
+        print()
+    print(run(root, args.list))
     return 0
 
 

@@ -422,3 +422,40 @@ def test_crnn_split_saved(tmp_path):
     info = json.loads((tmp_path / "run" / "run_info.json").read_text(encoding="utf-8"))
     assert info["dataset_files"] == 6 and info["split"]["counts"] == {"train": 2, "val": 1, "test": 0}
     assert (tmp_path / "run" / "split" / "val.txt").read_text(encoding="utf-8") == "images/s2.jpg\n"
+
+
+# ─── 2026-10-11: разметка лежит в папке месяца, --collect забирает её в датасеты ─
+
+def test_collect_markup_from_month(tmp_path, capsys):
+    from src.gmr.storage.month import MonthDB
+    from tests._month import make_month
+    f = make_month(tmp_path, [("100000", "A1", "1", "")], name="Октябрь_2026")
+    with MonthDB(f.db) as db, db.transaction():
+        db.set_meta("created_at", "2026-09-28 09:00:00")      # месяц создан в сентябре
+    m = f.markup
+    assert m == f.root / "разметка"
+    touch(m / "digits_cnn" / "7" / "h1__2026-10__digit_3.jpg")
+    touch(m / "serials_crnn" / "images" / "123__h2__2026-10.jpg")
+    touch(m / "serials_crnn" / "labels" / "123__h2__2026-10.txt", b"123")
+    touch(m / "meter_yolo" / "h3__2026-10.jpg")
+    touch(m / "чужое" / "x.jpg")                                    # не датасет — пропускается
+    root = tmp_path / "ds"
+    assert check_ds.collect(f.root, root) == (
+        "Разметка месяца Октябрь_2026 (2026-09): digits_cnn — 1, meter_yolo — 1, serials_crnn — 1")
+    new = root / "serials_crnn" / "new" / "2026-09"
+    assert (new / "labels" / "123__h2__2026-10.txt").read_text() == "123"
+    assert (root / "digits_cnn" / "new" / "2026-09" / "7" / "h1__2026-10__digit_3.jpg").is_file()
+    assert (root / "meter_yolo" / "new" / "2026-09" / "h3__2026-10.jpg").is_file()
+    assert (m / "meter_yolo" / "h3__2026-10.jpg").is_file()            # в месяце остаётся
+    assert check_ds.collect(f.root, root) == "Разметка месяца Октябрь_2026 (2026-09): новых нет; уже были: 3"
+    assert gmr.main(["datasets", "--root", str(root), "--collect", str(f.root)]) == 0
+    out = capsys.readouterr().out
+    assert "новых нет" in out and "new/ (исправил оператор): 1 — 2026-09: 1" in out
+    assert gmr.main(["datasets", "--root", str(root), "--collect", str(tmp_path / "нет")]) == 1
+    assert "не папка месяца" in capsys.readouterr().out
+
+
+def test_collect_month_without_markup(tmp_path):
+    from tests._month import make_month
+    f = make_month(tmp_path, [("100000", "A1", "1", "")])
+    assert check_ds.collect(f.root, tmp_path / "ds").endswith("новых нет")

@@ -57,6 +57,11 @@ class MonthFolder:
     # reader.py проверяет файл между фото и заканчивает аккуратно
     @property
     def stop_file(self) -> Path: return self.root / ".gmr_stop"
+    # исправления оператора для дообучения моделей (тихая разметка окна,
+    # 2026-10-11): остаются в папке месяца, на компьютер разработки их забирает
+    # `gmr.py datasets --collect <месяц>`
+    @property
+    def markup(self) -> Path: return self.root / "разметка"
 
     def exists(self) -> bool:
         return self.db.is_file()

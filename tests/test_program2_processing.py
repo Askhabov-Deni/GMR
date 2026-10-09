@@ -63,10 +63,10 @@ def test_save_crnn_markup(tmp_path):
     program2.save_crnn_markup(tmp_path, "h1", "2026-10", crop, "1234567", "1234567")
     program2.save_crnn_markup(tmp_path, "h1", "2026-10", None, "1234567", "1284567")
     assert not (tmp_path / "serials_crnn").exists()
-    # исправили — в new/<месяц>/images и labels; имя — номер, фото, месяц
+    # исправили — в images и labels; имя — номер, фото, месяц
     program2.save_crnn_markup(tmp_path, "h1", "2026-10", crop, "1234567", "1284567")
     program2.save_crnn_markup(tmp_path, "h2", "2026-10", crop, "1234567", None)
-    new = tmp_path / "serials_crnn" / "new" / "2026-10"
+    new = tmp_path / "serials_crnn"
     assert sorted(p.name for p in (new / "images").iterdir()) == ["1234567__h1__2026-10.jpg",
                                                                  "1234567__h2__2026-10.jpg"]
     assert (new / "labels" / "1234567__h1__2026-10.txt").read_text(encoding="utf-8") == "1234567"
@@ -77,7 +77,7 @@ def test_save_cnn_markup_only_changed_digits(tmp_path):
     crops[1] = None                                            # заглушка — пропускается
     program2.save_cnn_markup(tmp_path, "h1", "2026-10", crops, [{}] * 5, "12?45", "12745")
     saved = [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.jpg")]
-    assert saved == ["digits_cnn/new/2026-10/7/h1__2026-10__digit_3.jpg"]   # изменилась только позиция 3
+    assert saved == ["digits_cnn/7/h1__2026-10__digit_3.jpg"]  # изменилась только позиция 3
     # длины не совпадают — ничего
     program2.save_cnn_markup(tmp_path / "x", "h1", "2026-10", crops, [{}] * 5, "12345", "1234")
     assert not (tmp_path / "x").exists()
@@ -88,8 +88,8 @@ def test_save_meter_markup(tmp_path):
     program2.save_meter_markup(tmp_path / "ds", "h1", "2026-10", orig)
     program2.save_meter_markup(tmp_path / "ds", "h2", "2026-10", None)
     program2.save_meter_markup(tmp_path / "ds", "h3", "2026-10", tmp_path / "нет.jpg")
-    new = tmp_path / "ds" / "meter_yolo" / "new"
-    assert [p.relative_to(new).as_posix() for p in new.rglob("*.*")] == ["2026-10/h1__2026-10.jpg"]
+    new = tmp_path / "ds" / "meter_yolo"
+    assert [p.relative_to(new).as_posix() for p in new.rglob("*.*")] == ["h1__2026-10.jpg"]
 
 
 def test_default_month_name():
@@ -308,13 +308,13 @@ def test_accept_saves_silent_markup_when_model_was_wrong(app):
         db.set_meta("created_at", "2026-09-30 23:50:00")       # месяц создан в сентябре
     _fill(scr, "A1", "01200")
     scr._accept()
-    ds = program2.DATASETS_ROOT
+    ds = app.month.markup                                      # разметка — в папке месяца
     assert not (ds / "meter_yolo").exists()
     h = "h-IMG-20260915-WA0001.jpg"                            # отпечаток из авто-строки
     m = "2026-09"                                              # месяц папки месяца, а не сегодня
-    assert (ds / "serials_crnn" / "new" / m / "images" / f"1234567__{h}__{m}.jpg").exists()
+    assert (ds / "serials_crnn" / "images" / f"1234567__{h}__{m}.jpg").exists()
     assert [p.relative_to(ds).as_posix() for p in ds.rglob("*.jpg") if "digits_cnn" in p.parts] == [
-        f"digits_cnn/new/{m}/2/{h}__{m}__digit_3.jpg"]
+        f"digits_cnn/2/{h}__{m}__digit_3.jpg"]
 
 
 @needs_display
@@ -820,7 +820,7 @@ def test_markup_of_etalon_photo_not_saved(app, monkeypatch):
                          "digit_preds": [{}] * 5}
     _fill(scr, "A1", "01200")
     scr._accept()
-    assert not program2.DATASETS_ROOT.exists()                 # фото эталона — не в обучение
+    assert not app.month.markup.exists()                      # фото эталона — не в обучение
 
 
 @needs_display
@@ -830,7 +830,8 @@ def test_no_meter_accept_copies_original_for_labeling(app):
     scr = app._current_screen
     _fill(scr, "A2", "00600")
     scr._accept()
-    new = program2.DATASETS_ROOT / "meter_yolo" / "new" / app.session.month_label()
+    new = app.month.markup / "meter_yolo"
+    assert [p.name for p in new.iterdir()] == [f"h-p3.jpg__{app.session.month_label()}.jpg"]
     assert [p.read_bytes() for p in new.iterdir()] == [orig.read_bytes()]
 
 
