@@ -250,3 +250,15 @@ def test_train_account_smoke(tmp_path):
     info = json.loads((out / "run_info.json").read_text(encoding="utf-8"))
     assert "labels_dir" not in info["args"] and math.isfinite(
         json.loads((out / "history.json").read_text(encoding="utf-8"))["epochs"][0]["train_loss"])
+
+    # оценка с таблицей другого участка: предупреждение, папка ошибок — только эта оценка
+    from models.account import evaluate_account
+    (out / "eval" / "errors").mkdir(exist_ok=True)
+    (out / "eval" / "errors" / "старое.jpg").write_bytes(b"x")
+    table = tmp_path / "t.csv"
+    table.write_text("Лицевой счет;Номер счетчика\n1300026377;1\n1300015718;2\n", encoding="utf-8")
+    assert evaluate_account.main(["--run_dir", str(out), "--table", str(table)]) == 0
+    report = (out / "eval" / "report.txt").read_text(encoding="utf-8")
+    assert "Похоже, таблица не того участка" in report
+    errors = sorted(p.name for p in (out / "eval" / "errors").iterdir())
+    assert "старое.jpg" not in errors and errors and all("__прочитано_" in e and "__выбран_" in e for e in errors)

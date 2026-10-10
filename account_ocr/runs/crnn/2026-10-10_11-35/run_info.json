@@ -1,0 +1,45 @@
+{
+  "created_at": "2026-10-10T11:35:51",
+  "dataset": "C:\\AD\\GSM\\gas-meter-reader\\database\\datasets\\accounts_crnn",
+  "dataset_files": 1722,
+  "dataset_fingerprint": "1189a09bc91db4b0",
+  "split": {
+    "rule": "по фото (имя до «__»), часть — по sha256(seed:фото); списки — split/*.txt",
+    "seed": 42,
+    "counts": {
+      "train": 1380,
+      "val": 192,
+      "test": 150
+    },
+    "photos": {
+      "train": 1333,
+      "val": 189,
+      "test": 144
+    }
+  },
+  "code": "d751655 + незакоммиченные изменения",
+  "packages": {
+    "python": "3.14.3",
+    "torch": "2.14.0",
+    "torchvision": "0.29.0",
+    "ultralytics": "8.4.163",
+    "albumentations": "2.0.8",
+    "numpy": "2.4.4"
+  },
+  "args": {
+    "images_dir": "database\\datasets\\accounts_crnn\\images",
+    "output_dir": null,
+    "epochs": 80,
+    "batch_size": 32,
+    "lr": 0.001,
+    "patience": 20,
+    "synthetic": 4000,
+    "synthetic_epochs": 12,
+    "seed": 42,
+    "img_h": 48,
+    "img_w": 224,
+    "finetune": null,
+    "num_workers": 0,
+    "device": null
+  }
+}

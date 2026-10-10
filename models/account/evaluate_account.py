@@ -19,7 +19,10 @@
   - eval/suspect_labels.txt — кропы всего датасета, где модель уверенно
     выбирает другой счёт, чем в имени файла: часто это неверный кроп
     (не тот счёт, не надпись) — проверьте глазами, переименуйте или удалите;
-  - eval/errors/ — картинки ошибок теста.
+  - eval/errors/ — картинки ошибок теста (папка очищается при каждой оценке):
+    <счёт>__прочитано_<что>__выбран_<счёт по словарю>__<файл>;
+  - если счетов теста нет в словаре (таблица не того участка), отчёт об этом
+    предупреждает: такие кропы всегда «неверно».
 """
 import argparse
 import json
@@ -73,6 +76,7 @@ def evaluate(log_probs: Sequence[torch.Tensor], accounts: Sequence[str], alphabe
     res = {"n": len(accounts), "exact_match": sum(g in vs for g, vs in zip(greedy, written)) / max(len(accounts), 1),
            "cer": cer(greedy, nearest)}
     groups = groups if groups is not None else account_groups(accounts)
+    res["not_in_dictionary"] = sum(a not in groups for a in accounts)
     lexicon = CompiledLexicon(groups, alphabet)
     picks = []
     for lp, account, g in zip(log_probs, accounts, greedy):
@@ -101,6 +105,11 @@ def report_text(res: dict, title: str) -> str:
     for r in res["by_threshold"]:
         lines.append(f"  {r['threshold']:<5}  {r['accepted']:6.1%} ({r['accepted_n']:>4})   "
                      f"{r['wrong_n']} ({r['wrong_share']:.2%})")
+    missing = res.get("not_in_dictionary", 0)
+    if missing:
+        lines.append(f"  ⚠ счетов теста нет в словаре: {missing} из {res['n']} — их кропы всегда «неверно»"
+                     + (". Похоже, таблица не того участка: возьмите таблицу, из которой эти фото"
+                        if missing * 2 > res["n"] else ""))
     return "\n".join(lines)
 
 
@@ -146,6 +155,9 @@ def main(argv=None) -> int:
 
     out = run_dir / "eval"
     (out / "errors").mkdir(parents=True, exist_ok=True)
+    for old in (out / "errors").iterdir():                  # прошлая оценка (другой словарь) — не смешивать
+        if old.is_file():
+            old.unlink()
     title = f"Тест ({'словарь — таблица ' + Path(args.table).name if args.table else 'словарь — счета датасета'})"
     text = report_text(res, title)
 
@@ -156,7 +168,9 @@ def main(argv=None) -> int:
                     f"{pick['confidence']:.3f} {'✓' if pick['ok'] else '✗'}  {f.name}")
         if not pick["ok"] and saved < args.max_errors:
             data = f.read_bytes()
-            (out / "errors" / f"{pick['account']}__read_{pick['greedy'] or 'пусто'}__{f.name}").write_bytes(data)
+            name = (f"{pick['account']}__прочитано_{pick['greedy'] or 'пусто'}__"
+                    f"выбран_{pick['group'] or 'нет'}__{f.name}")
+            (out / "errors" / name).write_bytes(data)
             saved += 1
     (out / "predictions_test.txt").write_text(
         f"{'счёт':>12} {'прочитано':>12} {'по словарю':>12} увер.  файл\n" + "\n".join(rows) + "\n",

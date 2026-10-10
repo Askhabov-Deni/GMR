@@ -1,0 +1,58 @@
+{
+  "n": 150,
+  "exact_match": 0.68,
+  "cer": 0.11671469740634005,
+  "lexicon_size": 9002,
+  "lexicon_top1": 0.0,
+  "by_threshold": [
+    {
+      "threshold": 0.5,
+      "accepted": 0.09333333333333334,
+      "accepted_n": 14,
+      "wrong_n": 14,
+      "wrong_share": 1.0
+    },
+    {
+      "threshold": 0.7,
+      "accepted": 0.04666666666666667,
+      "accepted_n": 7,
+      "wrong_n": 7,
+      "wrong_share": 1.0
+    },
+    {
+      "threshold": 0.8,
+      "accepted": 0.02666666666666667,
+      "accepted_n": 4,
+      "wrong_n": 4,
+      "wrong_share": 1.0
+    },
+    {
+      "threshold": 0.9,
+      "accepted": 0.013333333333333334,
+      "accepted_n": 2,
+      "wrong_n": 2,
+      "wrong_share": 1.0
+    },
+    {
+      "threshold": 0.95,
+      "accepted": 0.006666666666666667,
+      "accepted_n": 1,
+      "wrong_n": 1,
+      "wrong_share": 1.0
+    },
+    {
+      "threshold": 0.98,
+      "accepted": 0.0,
+      "accepted_n": 0,
+      "wrong_n": 0,
+      "wrong_share": 0.0
+    },
+    {
+      "threshold": 0.99,
+      "accepted": 0.0,
+      "accepted_n": 0,
+      "wrong_n": 0,
+      "wrong_share": 0.0
+    }
+  ]
+}

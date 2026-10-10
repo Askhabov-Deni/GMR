@@ -417,4 +417,10 @@ def test_evaluate_counts_lexicon_hits_and_threshold_table():
     by = {r["threshold"]: r for r in res["by_threshold"]}
     assert (by[0.9]["accepted_n"], by[0.9]["wrong_n"]) == (2, 1)
     assert (by[0.95]["accepted_n"], by[0.95]["wrong_n"]) == (2, 1)
-    assert "порог" in report_text(res, "тест")
+    assert "порог" in report_text(res, "тест") and res["not_in_dictionary"] == 0
+    assert "⚠" not in report_text(res, "тест")
+    one = evaluate(lps, accounts, DIGITS, BLANK, account_groups(["1300000065", "1300000082", "1300000083"]))
+    assert one["not_in_dictionary"] == 1
+    assert "нет в словаре: 1 из 3" in report_text(one, "т") and "не того участка" not in report_text(one, "т")
+    other = evaluate(lps, accounts, DIGITS, BLANK, account_groups(["1300026377", "1300015718"]))
+    assert other["not_in_dictionary"] == 3 and "Похоже, таблица не того участка" in report_text(other, "т")
