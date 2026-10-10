@@ -3,6 +3,11 @@
 
   python models/account/evaluate_account.py --run_dir account_ocr/runs/crnn/<дата-время>
   python models/account/evaluate_account.py --run_dir … --table <таблица компании .xls/.xlsx/.csv>
+  python models/account/evaluate_account.py --run_dir … --dense
+      таблицы участка нет: словарь — все номера подряд от наименьшего до
+      наибольшего счёта кропов (как будто есть каждый — оценка с запасом)
+  python models/account/evaluate_account.py --run_dir … --images <папка кропов> --table <таблица>
+      другие кропы (например, нового месяца) вместо теста обучения
 
 Тест — те же файлы, что отложило обучение (split/test.txt в папке результата).
 
@@ -50,6 +55,7 @@ from src.gmr.domain.account_match import account_groups, account_variants
 
 THRESHOLDS = (0.5, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99)
 SUSPECT_CONF = 0.95
+DENSE_LIMIT = 200_000            # больше номеров подряд — словарь не собрать за разумное время
 
 
 @torch.no_grad()
@@ -124,6 +130,20 @@ def table_groups(table: Path) -> dict:
     return account_groups(r.get(col, "") for r in reg.rows)
 
 
+def dense_groups(accounts) -> dict:
+    """Словарь «все номера подряд» от наименьшего до наибольшего счёта, когда
+    таблицы участка нет: как будто существует каждый номер — похожих соседей
+    больше, чем в жизни, поэтому оценка получается с запасом."""
+    accounts = [a for a in accounts if a.isdigit()]
+    if not accounts:
+        raise ValueError("нет счетов для словаря")
+    lo, hi = min(map(int, accounts)), max(map(int, accounts))
+    if hi - lo + 1 > DENSE_LIMIT:
+        raise ValueError(f"номера от {lo} до {hi} — слишком много подряд ({hi - lo + 1}); нужна таблица")
+    width = max(map(len, accounts))
+    return account_groups(str(n).zfill(width) for n in range(lo, hi + 1))
+
+
 def _split_files(run_dir: Path, part: str, base: Path) -> list[Path]:
     path = run_dir / "split" / f"{part}.txt"
     if not path.is_file():
@@ -135,8 +155,13 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Оценка модели лицевого счёта по надписи маркером")
     p.add_argument("--run_dir", required=True)
     p.add_argument("--table", help="таблица компании: словарь — все её счета, как в работе")
+    p.add_argument("--dense", action="store_true",
+                   help="таблицы нет: словарь — все номера подряд от наименьшего до наибольшего счёта кропов")
+    p.add_argument("--images", help="оценить на этих кропах (имена начинаются со счёта), а не на тесте обучения")
     p.add_argument("--max_errors", type=int, default=100, help="сколько картинок ошибок сохранить")
     args = p.parse_args(argv)
+    if args.table and args.dense:
+        p.error("--table и --dense вместе не нужны: словарь — что-то одно")
 
     run_dir = Path(args.run_dir)
     info = json.loads((run_dir / "run_info.json").read_text(encoding="utf-8"))
@@ -146,10 +171,24 @@ def main(argv=None) -> int:
     items = load_dataset(targs["images_dir"], verbose=False)
     by_file = {Path(it["file"]).resolve(): it["account"] for it in items}
 
-    test_files = [f for f in _split_files(run_dir, "test", base) if f.resolve() in by_file]
-    test_accounts = [by_file[f.resolve()] for f in test_files]
+    if args.images:                                    # другие кропы, например нового месяца
+        checked = load_dataset(args.images, verbose=False)
+        if not checked:
+            print(f"ОШИБКА: в {args.images} нет кропов, имя которых начинается с лицевого счёта")
+            return 1
+        test_files, test_accounts = [Path(it["file"]) for it in checked], [it["account"] for it in checked]
+    else:
+        checked = items
+        test_files = [f for f in _split_files(run_dir, "test", base) if f.resolve() in by_file]
+        test_accounts = [by_file[f.resolve()] for f in test_files]
     all_accounts = account_groups(it["account"] for it in items)             # все счета датасета
-    groups = table_groups(Path(args.table)) if args.table else all_accounts
+    if args.table:
+        groups, what = table_groups(Path(args.table)), "таблица " + Path(args.table).name
+    elif args.dense:
+        groups = dense_groups([it["account"] for it in items] + test_accounts)
+        what = f"все номера подряд {min(groups)}…{max(groups)} (таблицы нет — оценка с запасом)"
+    else:
+        groups, what = all_accounts, "счета датасета"
     lp = log_probs_for(model, meta, test_files)
     res = evaluate(lp, test_accounts, meta["alphabet"], model.blank, groups)
 
@@ -158,7 +197,8 @@ def main(argv=None) -> int:
     for old in (out / "errors").iterdir():                  # прошлая оценка (другой словарь) — не смешивать
         if old.is_file():
             old.unlink()
-    title = f"Тест ({'словарь — таблица ' + Path(args.table).name if args.table else 'словарь — счета датасета'})"
+    title = (f"{'Кропы ' + str(args.images) if args.images else 'Тест'} (словарь — {what}, "
+             f"счетов в словаре: {len(groups)})")
     text = report_text(res, title)
 
     # ошибки теста
@@ -176,10 +216,10 @@ def main(argv=None) -> int:
         f"{'счёт':>12} {'прочитано':>12} {'по словарю':>12} увер.  файл\n" + "\n".join(rows) + "\n",
         encoding="utf-8")
 
-    # подозрительные кропы во всём датасете (словарь — счета датасета)
-    all_files = [Path(it["file"]) for it in items]
-    all_res = evaluate(log_probs_for(model, meta, all_files), [it["account"] for it in items],
-                       meta["alphabet"], model.blank, all_accounts)
+    # подозрительные кропы во всём датасете или в --images (словарь — их счета)
+    all_files = [Path(it["file"]) for it in checked]
+    all_res = evaluate(log_probs_for(model, meta, all_files), [it["account"] for it in checked],
+                       meta["alphabet"], model.blank, account_groups(it["account"] for it in checked))
     suspects = [f"{pk['account']} → модель: {pk['group']} (прочитано {pk['greedy'] or 'пусто'}, "
                 f"{pk['confidence']:.2f})  {f.name}"
                 for f, pk in zip(all_files, all_res["picks"])
@@ -189,7 +229,8 @@ def main(argv=None) -> int:
         "не надпись) — проверьте глазами, переименуйте или удалите.\n"
         "(На кропах из обучения модель могла запомнить и неверный счёт: список неполный.)\n\n"
         + "\n".join(suspects) + "\n", encoding="utf-8")
-    text += f"\n\nПодозрительных меток во всём датасете: {len(suspects)} — {out / 'suspect_labels.txt'}"
+    text += (f"\n\nПодозрительных меток {'в этих кропах' if args.images else 'во всём датасете'}: "
+             f"{len(suspects)} — {out / 'suspect_labels.txt'}")
 
     metrics = {k: v for k, v in res.items() if k != "picks"}
     (out / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")

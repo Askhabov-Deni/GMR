@@ -75,6 +75,16 @@ def _jpg(path, text="0093"):
     cv2.imwrite(str(path), img)
 
 
+def test_dense_groups():
+    from models.account.evaluate_account import dense_groups
+    g = dense_groups(["1300000093", "1300000090", "1300000095"])
+    assert list(g) == [f"13000000{n}" for n in range(90, 96)] and g["1300000093"] == account_variants("1300000093")
+    with pytest.raises(ValueError, match="слишком много"):
+        dense_groups(["1300000000", "1301000000"])
+    with pytest.raises(ValueError):
+        dense_groups([])
+
+
 def test_written_metrics():
     from models.account.train_account import written_metrics
     vs = account_variants("1300000093")
@@ -262,3 +272,25 @@ def test_train_account_smoke(tmp_path):
     assert "Похоже, таблица не того участка" in report
     errors = sorted(p.name for p in (out / "eval" / "errors").iterdir())
     assert "старое.jpg" not in errors and errors and all("__прочитано_" in e and "__выбран_" in e for e in errors)
+
+    # таблицы нет: все номера подряд
+    assert evaluate_account.main(["--run_dir", str(out), "--dense"]) == 0
+    report = (out / "eval" / "report.txt").read_text(encoding="utf-8")
+    assert "словарь — все номера подряд" in report and "нет в словаре" not in report
+    with pytest.raises(SystemExit):
+        evaluate_account.main(["--run_dir", str(out), "--dense", "--table", str(table)])
+
+    # другие кропы (новый месяц) вместо теста обучения
+    month = tmp_path / "month_crops"
+    month.mkdir()
+    for i, a in enumerate(("1300026377", "1300015718", "1300015718")):
+        _jpg(month / f"{a}__marker_id_{i}.jpg", a[-5:])
+    _jpg(month / "photo.jpg")
+    assert evaluate_account.main(["--run_dir", str(out), "--images", str(month), "--table", str(table)]) == 0
+    report = (out / "eval" / "report.txt").read_text(encoding="utf-8")
+    assert f"Кропы {month}" in report and "примеров: 3" in report and "нет в словаре" not in report
+    assert "Подозрительных меток в этих кропах" in report
+    (month / "1300026377__marker_id_0.jpg").unlink()
+    for f in month.glob("1300015718*"):
+        f.unlink()
+    assert evaluate_account.main(["--run_dir", str(out), "--images", str(month)]) == 1

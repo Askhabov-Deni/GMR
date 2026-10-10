@@ -445,6 +445,15 @@ python models\account\train_account.py
 
 # 3) отчёт как в работе: словарь — все счета таблицы компании
 python models\account\evaluate_account.py --run_dir account_ocr\runs\crnn\<дата-время> --table <таблица компании.xls>
+#    таблицы участка этих кропов нет — оценка с запасом: в словаре все номера подряд
+#    от наименьшего до наибольшего счёта кропов (как будто есть каждый)
+python models\account\evaluate_account.py --run_dir account_ocr\runs\crnn\<дата-время> --dense
+#    после прогона месяца — на новых фото с настоящей таблицей месяца
+#    (кропы надписи из plus\: имя фото — лицевой счёт)
+python gmr.py inspect meter D:\GMR\Октябрь_2026\результат\<контролёр>\plus --out D:\GMR\кропы_окт
+mkdir D:\GMR\надписи_окт
+Copy-Item D:\GMR\кропы_окт\*__marker_id_*.jpg D:\GMR\надписи_окт
+python models\account\evaluate_account.py --run_dir account_ocr\runs\crnn\<дата-время> --images D:\GMR\надписи_окт --table <таблица месяца.xls>
 
 # 4) посмотреть глазами на реальных фото
 python gmr.py inspect account <папка с фото> --weights account_ocr\runs\crnn\<дата-время>\best.pt --table <таблица>
