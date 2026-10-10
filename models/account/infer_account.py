@@ -17,13 +17,13 @@ import numpy as np
 import torch
 
 try:
-    from .config_account import MIN_CONFIDENCE
+    from .config_account import LEN_WINDOW, MIN_CONFIDENCE
     from .dataset_account import prepare_input, read_gray
     from .model_account import load_checkpoint
     from ..ctc_lexicon import CompiledLexicon, greedy_decode, match
 except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from models.account.config_account import MIN_CONFIDENCE
+    from models.account.config_account import LEN_WINDOW, MIN_CONFIDENCE
     from models.account.dataset_account import prepare_input, read_gray
     from models.account.model_account import load_checkpoint
     from models.ctc_lexicon import CompiledLexicon, greedy_decode, match
@@ -70,7 +70,7 @@ class AccountInferer:
         res = {"text": text, "text_conf": sum(chars) / len(chars) if chars else 0.0,
                "group": None, "string": None, "confidence": 0.0, "top": []}
         if groups:
-            m = match(lp, self.compile(groups), self.blank)
+            m = match(lp, self.compile(groups), self.blank, len_window=LEN_WINDOW)
             res.update(group=m.group, string=m.string, confidence=m.confidence, top=m.top)
         return res
 

@@ -78,6 +78,7 @@ class CompiledLexicon:
                 membership.append((si, gi))
         self.strings = list(strings)
         self.string_set = frozenset(strings)
+        self._lengths = torch.tensor([len(s) for s in self.strings], dtype=torch.long)
         self._targets = [torch.tensor([index[c] for c in s], dtype=torch.long) for s in self.strings]
         self._member_string = torch.tensor([m[0] for m in membership], dtype=torch.long)
         self._member_group = torch.tensor([m[1] for m in membership], dtype=torch.long)
@@ -135,14 +136,25 @@ def _group_logsumexp(values: torch.Tensor, groups: torch.Tensor, n_groups: int) 
 
 @torch.no_grad()
 def match(log_probs: torch.Tensor, lexicon: CompiledLexicon, blank: int,
-          oov_weight: float = OOV_WEIGHT, top_k: int = 3) -> LexiconMatch:
-    """Лучшая группа словаря для одной картинки. log_probs — (T, C)."""
+          oov_weight: float = OOV_WEIGHT, top_k: int = 3, len_window: Optional[int] = None) -> LexiconMatch:
+    """Лучшая группа словаря для одной картинки. log_probs — (T, C).
+
+    len_window — считать только строки, длина которых отличается от жадного
+    чтения не больше чем на столько символов (у остальных вероятность
+    ничтожна: каждая лишняя или пропущенная цифра — в разы меньше). Ускоряет
+    большие словари (надпись маркером — до 14 вариантов на счёт); None — все."""
     log_probs = log_probs.detach().float().cpu()
     greedy = greedy_decode(log_probs, lexicon.alphabet, blank)
     if not lexicon.strings:
         return LexiconMatch(greedy, None, None, 0.0, [])
 
-    ll = string_log_likelihoods(log_probs, lexicon._targets, blank)            # (S,)
+    if len_window is not None and greedy:
+        near = torch.nonzero((lexicon._lengths - len(greedy)).abs() <= len_window).flatten().tolist()
+    else:
+        near = range(len(lexicon.strings))
+    ll = torch.full((len(lexicon.strings),), float("-inf"))
+    if near:
+        ll[list(near)] = string_log_likelihoods(log_probs, [lexicon._targets[i] for i in near], blank)
     # группа = logsumexp по её строкам
     group_ll = _group_logsumexp(ll[lexicon._member_string], lexicon._member_group,
                                 len(lexicon.group_names))

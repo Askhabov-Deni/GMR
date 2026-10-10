@@ -7,16 +7,18 @@
 Тест — те же файлы, что отложило обучение (split/test.txt в папке результата).
 
 Что считается (eval/metrics.json, eval/report.txt):
-  - «как написано»: весь номер верно (жадное чтение, без таблицы) и CER;
+  - «как написано»: жадное чтение (без таблицы) — одно из написаний счёта
+    из имени кропа (account_match.account_variants: 93, 0093, …), и CER до
+    ближайшего написания;
   - «счёт по таблице»: модель выбирает счёт из словаря. Без --table словарь
-    — все номера датасета (каждый — свой «счёт»); с --table — все счета
-    таблицы, как в работе (варианты записи — account_match.account_variants);
+    — все счета датасета; с --table — все счета таблицы, как в работе;
   - порог → «принято / ошибок среди принятых»: сколько фото программа
     решила бы сама и сколько из них неверно. По этой таблице выбирается
     PipelineConfig.account_conf_thresh: самый низкий порог, при котором
     ошибок среди принятых 0 (или столько, сколько вы готовы терпеть);
   - eval/suspect_labels.txt — кропы всего датасета, где модель уверенно
-    читает не то, что в метке: часто это ошибка разметки, проверьте глазами;
+    выбирает другой счёт, чем в имени файла: часто это неверный кроп
+    (не тот счёт, не надпись) — проверьте глазами, переименуйте или удалите;
   - eval/errors/ — картинки ошибок теста.
 """
 import argparse
@@ -29,16 +31,19 @@ import numpy as np
 import torch
 
 try:
+    from .config_account import LEN_WINDOW
     from .dataset_account import load_dataset, prepare_input, read_gray
     from .model_account import load_checkpoint
     from ..ctc_lexicon import CompiledLexicon, greedy_decode, match
-    from ..crnn.metrics_crnn import cer, exact_match
+    from ..crnn.metrics_crnn import cer, levenshtein
 except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from models.account.config_account import LEN_WINDOW
     from models.account.dataset_account import load_dataset, prepare_input, read_gray
     from models.account.model_account import load_checkpoint
     from models.ctc_lexicon import CompiledLexicon, greedy_decode, match
-    from models.crnn.metrics_crnn import cer, exact_match
+    from models.crnn.metrics_crnn import cer, levenshtein
+from src.gmr.domain.account_match import account_groups, account_variants
 
 THRESHOLDS = (0.5, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99)
 SUSPECT_CONF = 0.95
@@ -56,22 +61,24 @@ def log_probs_for(model, meta: dict, files: Sequence[Path], device="cpu", batch_
     return out
 
 
-def evaluate(log_probs: Sequence[torch.Tensor], labels: Sequence[str], alphabet: str, blank: int,
+def evaluate(log_probs: Sequence[torch.Tensor], accounts: Sequence[str], alphabet: str, blank: int,
              groups: Optional[Mapping[str, Sequence[str]]] = None) -> dict:
-    """Метрики по готовым выходам модели. groups — словарь {счёт: варианты};
-    None — каждый номер из labels сам себе счёт (оптимистично: словарь мал —
-    лучше передать все номера датасета или таблицу). Верно — если в вариантах
-    выбранного счёта есть метка."""
+    """Метрики по готовым выходам модели. accounts — верный счёт каждого
+    кропа (из имени); groups — словарь {счёт: написания}, None — счета из
+    accounts (оптимистично: словарь мал — лучше все счета датасета или
+    таблица). Верно — модель выбрала тот самый счёт."""
     greedy = [greedy_decode(lp, alphabet, blank) for lp in log_probs]
-    res = {"n": len(labels), "exact_match": exact_match(greedy, list(labels)), "cer": cer(greedy, list(labels))}
-    groups = groups if groups is not None else {lab: (lab,) for lab in dict.fromkeys(labels)}
+    written = [account_variants(a) for a in accounts]
+    nearest = [min(vs, key=lambda v: levenshtein(g, v)) if vs else "" for g, vs in zip(greedy, written)]
+    res = {"n": len(accounts), "exact_match": sum(g in vs for g, vs in zip(greedy, written)) / max(len(accounts), 1),
+           "cer": cer(greedy, nearest)}
+    groups = groups if groups is not None else account_groups(accounts)
     lexicon = CompiledLexicon(groups, alphabet)
     picks = []
-    for lp, lab, g in zip(log_probs, labels, greedy):
-        m = match(lp, lexicon, blank)
-        ok = m.group is not None and lab in groups.get(m.group, ())
-        picks.append({"label": lab, "greedy": g, "group": m.group, "string": m.string,
-                      "confidence": m.confidence, "ok": ok})
+    for lp, account, g in zip(log_probs, accounts, greedy):
+        m = match(lp, lexicon, blank, len_window=LEN_WINDOW)
+        picks.append({"account": account, "greedy": g, "group": m.group, "string": m.string,
+                      "confidence": m.confidence, "ok": m.group == account})
     n = max(len(picks), 1)
     res["lexicon_size"] = len(lexicon)
     res["lexicon_top1"] = sum(p["ok"] for p in picks) / n
@@ -88,7 +95,7 @@ def evaluate(log_probs: Sequence[torch.Tensor], labels: Sequence[str], alphabet:
 def report_text(res: dict, title: str) -> str:
     lines = [title,
              f"  примеров: {res['n']}",
-             f"  как написано (без таблицы): весь номер верно {res['exact_match']:.3f}, CER {res['cer']:.3f}",
+             f"  как написано (без таблицы): прочитано верно {res['exact_match']:.3f}, CER {res['cer']:.3f}",
              f"  счёт по словарю из {res['lexicon_size']}: верно {res['lexicon_top1']:.3f}",
              "  порог  принято        ошибок среди принятых"]
     for r in res["by_threshold"]:
@@ -97,16 +104,15 @@ def report_text(res: dict, title: str) -> str:
     return "\n".join(lines)
 
 
-def table_groups(table: Path, digits: int) -> dict:
-    """{счёт: варианты} по таблице компании — как в reader.py."""
+def table_groups(table: Path) -> dict:
+    """{счёт: написания} по таблице компании — как в reader.py."""
     from src.gmr.domain import PipelineConfig
-    from src.gmr.domain.account_match import account_groups
     from src.gmr.storage.register import read_register
     col = PipelineConfig().col_account_id
     reg = read_register(str(table))
     if col not in reg.columns:
         raise ValueError(f"в таблице нет столбца «{col}»")
-    return account_groups((r.get(col, "") for r in reg.rows), digits)
+    return account_groups(r.get(col, "") for r in reg.rows)
 
 
 def _split_files(run_dir: Path, part: str, base: Path) -> list[Path]:
@@ -117,12 +123,9 @@ def _split_files(run_dir: Path, part: str, base: Path) -> list[Path]:
 
 
 def main(argv=None) -> int:
-    from src.gmr.domain import PipelineConfig
     p = argparse.ArgumentParser(description="Оценка модели лицевого счёта по надписи маркером")
     p.add_argument("--run_dir", required=True)
     p.add_argument("--table", help="таблица компании: словарь — все её счета, как в работе")
-    p.add_argument("--digits", type=int, default=PipelineConfig().account_marker_digits,
-                   help="сколько последних цифр счёта пишут на счётчике")
     p.add_argument("--max_errors", type=int, default=100, help="сколько картинок ошибок сохранить")
     args = p.parse_args(argv)
 
@@ -131,44 +134,46 @@ def main(argv=None) -> int:
     base = Path(info["dataset"])
     targs = info["args"]
     model, meta = load_checkpoint(run_dir / "best.pt")
-    items = load_dataset(targs["images_dir"], targs["labels_dir"], verbose=False)
-    by_file = {Path(it["file"]).resolve(): it["label"] for it in items}
+    items = load_dataset(targs["images_dir"], verbose=False)
+    by_file = {Path(it["file"]).resolve(): it["account"] for it in items}
 
     test_files = [f for f in _split_files(run_dir, "test", base) if f.resolve() in by_file]
-    test_labels = [by_file[f.resolve()] for f in test_files]
-    groups = (table_groups(Path(args.table), args.digits) if args.table
-              else {it["label"]: (it["label"],) for it in items})      # все номера датасета
+    test_accounts = [by_file[f.resolve()] for f in test_files]
+    all_accounts = account_groups(it["account"] for it in items)             # все счета датасета
+    groups = table_groups(Path(args.table)) if args.table else all_accounts
     lp = log_probs_for(model, meta, test_files)
-    res = evaluate(lp, test_labels, meta["alphabet"], model.blank, groups)
+    res = evaluate(lp, test_accounts, meta["alphabet"], model.blank, groups)
 
     out = run_dir / "eval"
     (out / "errors").mkdir(parents=True, exist_ok=True)
-    title = f"Тест ({'словарь — таблица ' + Path(args.table).name if args.table else 'словарь — номера датасета'})"
+    title = f"Тест ({'словарь — таблица ' + Path(args.table).name if args.table else 'словарь — счета датасета'})"
     text = report_text(res, title)
 
     # ошибки теста
     rows, saved = [], 0
     for f, pick in zip(test_files, res["picks"]):
-        rows.append(f"{pick['label']:>12} {pick['greedy']:>12} {str(pick['string']):>12} "
+        rows.append(f"{pick['account']:>12} {pick['greedy']:>12} {str(pick['group']):>12} "
                     f"{pick['confidence']:.3f} {'✓' if pick['ok'] else '✗'}  {f.name}")
-        if (not pick["ok"] or pick["greedy"] != pick["label"]) and saved < args.max_errors:
+        if not pick["ok"] and saved < args.max_errors:
             data = f.read_bytes()
-            (out / "errors" / f"{pick['label']}__read_{pick['greedy'] or 'пусто'}__{f.name}").write_bytes(data)
+            (out / "errors" / f"{pick['account']}__read_{pick['greedy'] or 'пусто'}__{f.name}").write_bytes(data)
             saved += 1
     (out / "predictions_test.txt").write_text(
-        f"{'метка':>12} {'прочитано':>12} {'по словарю':>12} увер.  файл\n" + "\n".join(rows) + "\n",
+        f"{'счёт':>12} {'прочитано':>12} {'по словарю':>12} увер.  файл\n" + "\n".join(rows) + "\n",
         encoding="utf-8")
 
-    # подозрительные метки во всём датасете (словарь — номера датасета)
+    # подозрительные кропы во всём датасете (словарь — счета датасета)
     all_files = [Path(it["file"]) for it in items]
-    all_labels = [it["label"] for it in items]
-    all_res = evaluate(log_probs_for(model, meta, all_files), all_labels, meta["alphabet"], model.blank)
-    suspects = [f"{pk['label']} → модель: {pk['string'] or pk['greedy']} ({pk['confidence']:.2f})  {f.name}"
+    all_res = evaluate(log_probs_for(model, meta, all_files), [it["account"] for it in items],
+                       meta["alphabet"], model.blank, all_accounts)
+    suspects = [f"{pk['account']} → модель: {pk['group']} (прочитано {pk['greedy'] or 'пусто'}, "
+                f"{pk['confidence']:.2f})  {f.name}"
                 for f, pk in zip(all_files, all_res["picks"])
                 if not pk["ok"] and pk["confidence"] >= SUSPECT_CONF]
     (out / "suspect_labels.txt").write_text(
-        "Метка → что уверенно читает модель. Часто это ошибка разметки — проверьте кроп.\n"
-        "(На кропах из обучения модель могла запомнить и неверную метку: список неполный.)\n\n"
+        "Счёт в имени → какой счёт уверенно видит модель. Часто это неверный кроп (не тот счёт,\n"
+        "не надпись) — проверьте глазами, переименуйте или удалите.\n"
+        "(На кропах из обучения модель могла запомнить и неверный счёт: список неполный.)\n\n"
         + "\n".join(suspects) + "\n", encoding="utf-8")
     text += f"\n\nПодозрительных меток во всём датасете: {len(suspects)} — {out / 'suspect_labels.txt'}"
 

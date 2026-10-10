@@ -422,7 +422,7 @@ def main(argv: Optional[list[str]] = None, loaders_factory=default_loaders) -> l
     models = Models(cfg, loaders_factory(cfg))
     if args.table:
         from models.account.evaluate_account import table_groups
-        models.account_groups = table_groups(Path(args.table), cfg.account_marker_digits)
+        models.account_groups = table_groups(Path(args.table))
         print(f"Словарь: {len(models.account_groups)} счетов из {args.table}")
     return run(args.mode, target, out, models, from_crop=(source == "crop"))
 

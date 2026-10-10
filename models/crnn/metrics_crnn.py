@@ -11,17 +11,19 @@ def exact_match(preds: list[str], gts: list[str]) -> float:
     return sum(p == g for p, g in zip(preds, gts)) / len(gts)
 
 
+def levenshtein(a: str, b: str) -> int:
+    """Сколько замен, вставок и удалений символов отделяют a от b."""
+    dp = list(range(len(b) + 1))
+    for ca in a:
+        ndp = [dp[0] + 1]
+        for j, cb in enumerate(b):
+            ndp.append(min(dp[j] + (ca != cb), dp[j + 1] + 1, ndp[-1] + 1))
+        dp = ndp
+    return dp[-1]
+
+
 def cer(preds: list[str], gts: list[str]) -> float:
     """Character Error Rate (расстояние Левенштейна / суммарная длина GT)."""
-    def levenshtein(a: str, b: str) -> int:
-        dp = list(range(len(b) + 1))
-        for ca in a:
-            ndp = [dp[0] + 1]
-            for j, cb in enumerate(b):
-                ndp.append(min(dp[j] + (ca != cb), dp[j + 1] + 1, ndp[-1] + 1))
-            dp = ndp
-        return dp[-1]
-
     total_err   = sum(levenshtein(p, g) for p, g in zip(preds, gts))
     total_chars = sum(max(len(g), 1) for g in gts)
     return total_err / total_chars if total_chars > 0 else 0.0

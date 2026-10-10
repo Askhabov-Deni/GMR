@@ -2,8 +2,8 @@
 src/gmr/domain/account_match.py — лицевой счёт по надписи маркером: какие
 записи номера ищем в таблице и как надпись сочетается с серийником.
 
-Контролёр пишет на корпусе счётчика лицевой счёт (на фото — «00065»,
-«00082»: последние 5 цифр счёта вида 1300000065). Это второй, независимый от
+Контролёр пишет на корпусе счётчика лицевой счёт (account_variants: «93»,
+«0093», «13-0093» для счёта 1300000093). Это второй, независимый от
 серийника ключ к строке таблицы. Модель (models/account) выбирает счёт из
 таблицы по вероятности (models/ctc_lexicon.py); здесь — правила без моделей:
 
@@ -35,32 +35,37 @@ from .models import Outcome
 from .serial_match import normalize_serial
 
 
-def account_variants(account_id: str, digits: int) -> tuple[str, ...]:
-    """Как может быть написан счёт: последние `digits` цифр (с ведущими
-    нулями) и они же без ведущих нулей: 1300000065, 5 → ('00065', '65').
-    digits = 0 — пишут счёт целиком: ('1300000065',). Счёт не из цифр —
-    пусто (модель пишет только цифры).
+REGION_DIGITS = 2       # первые цифры счёта — код региона (владелец, 2026-10-12)
 
-    Полный номер при digits > 0 в словарь не входит: строк было бы вдвое
-    больше по длине, а чтение — вдвое медленнее. Если контролёр написал
-    счёт целиком, надпись просто не найдётся в словаре (уверенность низкая,
-    решает серийник или оператор)."""
+
+def account_variants(account_id: str) -> tuple[str, ...]:
+    """Как контролёр может написать счёт на корпусе (владелец, 2026-10-12).
+
+    Счёт = код региона (2 цифры) + номер. У одного контролёра все счётчики
+    одного региона, поэтому код обычно не пишут, а номер пишут без ведущих
+    нулей или с частью нулей: 93, 0093, 00000093; реже — с кодом региона:
+    1300000093, 13-0093 (черту модель не пишет — это «130093»). Варианты —
+    от коротких к длинным: 1300000093 → ('93', '093', …, '00000093', '1393',
+    '13093', …, '1300000093'). Счёт не из цифр — пусто (модель пишет только
+    цифры); не длиннее кода региона — сам счёт."""
     a = "".join(str(account_id).split())
     if not a.isdigit():
         return ()
-    if digits <= 0:
+    if len(a) <= REGION_DIGITS:
         return (a,)
-    tail = a[-digits:] if len(a) >= digits else a.zfill(digits)
-    return tuple(dict.fromkeys([tail, tail.lstrip("0") or "0"]))
+    region, rest = a[:REGION_DIGITS], a[REGION_DIGITS:]
+    core = rest.lstrip("0") or "0"
+    tails = [rest[-n:] for n in range(len(core), len(rest) + 1)]
+    return tuple(dict.fromkeys(tails + [region + t for t in tails]))
 
 
-def account_groups(accounts: Iterable[str], digits: int) -> dict[str, tuple[str, ...]]:
+def account_groups(accounts: Iterable[str]) -> dict[str, tuple[str, ...]]:
     """{счёт: варианты записи} для всех счетов таблицы — словарь модели."""
     groups = {}
     for a in accounts:
         a = str(a).strip()
         if a and a not in groups:
-            v = account_variants(a, digits)
+            v = account_variants(a)
             if v:
                 groups[a] = v
     return groups

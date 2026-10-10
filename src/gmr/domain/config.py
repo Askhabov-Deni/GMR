@@ -62,13 +62,12 @@ class PipelineConfig:
     # рамка обрезает крайний символ номера. 0 — как было; другое значение —
     # только решением владельца после `gmr.py etalon check --serial-pad`.
     serial_crop_pad:          float = 0.0
-    # Надпись маркером: имя её класса у детектора счётчика (если у модели
-    # другое — загрузка скажет, какие есть), порог уверенности счёта (доля
-    # среди всех счетов таблицы, models/ctc_lexicon.py) и сколько последних
-    # цифр счёта пишут на счётчике (00065 у счёта 1300000065).
-    account_class:            str   = "account"
+    # Надпись маркером: имя её класса у детектора счётчика (marker_id — как в
+    # разметке meter_yolo; если у модели другое — загрузка скажет, какие есть)
+    # и порог уверенности счёта (доля среди всех счетов таблицы,
+    # models/ctc_lexicon.py). Как пишут счёт — account_match.account_variants.
+    account_class:            str   = "marker_id"
     account_conf_thresh:      float = 0.9
-    account_marker_digits:    int   = 5
 
     # Прочее
     move_photos:              bool  = False  # True=перемещать, False=копировать

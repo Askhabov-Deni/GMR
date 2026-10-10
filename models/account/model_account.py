@@ -67,12 +67,30 @@ class AccountCRNN(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
-def ctc_loss(log_probs: torch.Tensor, targets: torch.Tensor, target_lengths: torch.Tensor,
-             blank: int) -> torch.Tensor:
+_IMPOSSIBLE = 1e4       # «−log P» варианта, который не влезает в выход модели
+
+
+def multi_ctc_loss(log_probs: torch.Tensor, targets: torch.Tensor, target_lengths: torch.Tensor,
+                   owners: torch.Tensor, blank: int) -> torch.Tensor:
+    """CTC, когда у картинки несколько допустимых меток (надпись — любое из
+    написаний счёта, dataset_account): −log Σ P(вариант | картинка) по её
+    вариантам. Модель, которая уже читает цифры, сама «выбирает» написание,
+    которое видит на картинке; с нуля так не учится — нужна разминка
+    (synthetic.py, train_account). Один вариант — обычный CTC. Масштаб — как
+    у обычного CTC (на символ), среднее по пачке. owners[k] — номер картинки
+    варианта k."""
     t, b = log_probs.shape[:2]
-    input_lengths = torch.full((b,), t, dtype=torch.long, device=log_probs.device)
-    return F.ctc_loss(log_probs, targets, input_lengths, target_lengths,
-                      blank=blank, reduction="mean", zero_infinity=True)
+    lp = log_probs[:, owners, :]
+    input_lengths = torch.full((lp.shape[1],), t, dtype=torch.long, device=log_probs.device)
+    nll = F.ctc_loss(lp, targets, input_lengths, target_lengths, blank=blank,
+                     reduction="none", zero_infinity=False)
+    nll = torch.nan_to_num(nll, nan=_IMPOSSIBLE, posinf=_IMPOSSIBLE)      # вариант не влезает в T шагов
+    neg = -nll
+    peak = torch.full((b,), float("-inf"), device=neg.device).scatter_reduce(
+        0, owners, neg, reduce="amax", include_self=True)
+    total = torch.zeros(b, device=neg.device).index_add(0, owners, torch.exp(neg - peak[owners]))
+    marginal = -(torch.log(total) + peak)                                  # −log Σ P(вариант)
+    return marginal.mean() / target_lengths.float().mean()
 
 
 def save_checkpoint(path, model: AccountCRNN, preprocess: dict, alphabet: str, **extra) -> None:

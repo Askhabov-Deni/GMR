@@ -307,7 +307,7 @@ def _rows_with_serial(df: pd.DataFrame, config: PipelineConfig, serial: str) -> 
 
 def account_groups_of(df: pd.DataFrame, config: PipelineConfig) -> dict:
     """Словарь модели надписи: {счёт: варианты записи} по всей таблице."""
-    return build_account_groups(df[config.col_account_id], config.account_marker_digits)
+    return build_account_groups(df[config.col_account_id])
 
 
 def _account_rows(df: pd.DataFrame, config: PipelineConfig, account: str) -> pd.DataFrame:

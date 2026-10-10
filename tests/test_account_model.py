@@ -13,8 +13,7 @@ import pytest
 import torch
 
 from models.account import config_account
-from models.account.dataset_account import parse_label, prepare_input
-from models.account.labels_from_names import label_from_name, write_labels
+from models.account.dataset_account import prepare_input
 from models.account.model_account import AccountCRNN, load_checkpoint, save_checkpoint
 from models.ctc_lexicon import CompiledLexicon, greedy_decode, match, string_log_likelihoods
 from src.gmr.domain import AccountPrediction, Outcome, PipelineConfig
@@ -95,9 +94,9 @@ def test_greedy_decode_collapses_repeats_and_blanks():
 # ─── Чтение по словарю ───────────────────────────────────────────────────────
 
 GROUPS = {
-    "1300000065": account_variants("1300000065", 5),
-    "1300000066": account_variants("1300000066", 5),
-    "1300000082": account_variants("1300000082", 5),
+    "1300000065": account_variants("1300000065"),
+    "1300000066": account_variants("1300000066"),
+    "1300000082": account_variants("1300000082"),
 }
 
 
@@ -127,8 +126,8 @@ def test_lexicon_does_not_force_number_missing_from_table():
 
 
 def test_shared_tail_makes_both_accounts_unsure():
-    groups = {"1300000065": account_variants("1300000065", 5),
-              "1400000065": account_variants("1400000065", 5)}
+    groups = {"1300000065": account_variants("1300000065"),
+              "1400000065": account_variants("1400000065")}
     m = match(peaky("00065"), CompiledLexicon(groups, DIGITS), BLANK)
     assert m.confidence < 0.6
 
@@ -136,13 +135,19 @@ def test_shared_tail_makes_both_accounts_unsure():
 # ─── Варианты записи и правила ───────────────────────────────────────────────
 
 def test_account_variants():
-    assert account_variants("1300000065", 5) == ("00065", "65")
-    assert account_variants("65", 5) == ("00065", "65")
-    assert account_variants("1300010000", 5) == ("10000",)
-    assert account_variants("1300000065", 0) == ("1300000065",)
-    assert account_variants("A-1", 5) == ()
-    assert account_groups(["1300000065", " 1300000065 ", "", "A-1"], 5) == {
-        "1300000065": ("00065", "65")}
+    # как пишут контролёры (владелец, 2026-10-12): без нулей, с частью нулей,
+    # реже — с кодом региона (13-0093: черту модель не пишет)
+    v = account_variants("1300000093")
+    assert v == ("93", "093", "0093", "00093", "000093", "0000093", "00000093",
+                 "1393", "13093", "130093", "1300093", "13000093", "130000093", "1300000093")
+    assert account_variants("1300010000") == ("10000", "010000", "0010000", "00010000",
+                                               "1310000", "13010000", "130010000", "1300010000")
+    assert account_variants("1312345678") == ("12345678", "1312345678")
+    assert account_variants("1300000000")[:2] == ("0", "00")
+    assert account_variants("65") == ("65",) and account_variants(" 1300000093 ") == v
+    assert account_variants("A-1") == ()
+    assert account_groups(["1300000065", " 1300000065 ", "", "A-1"]) == {
+        "1300000065": account_variants("1300000065")}
 
 
 def test_within_one_edit_and_serial_agrees():
@@ -209,14 +214,6 @@ def test_prepare_input_keeps_aspect_and_background_zero():
     assert bgr.shape == (1, 48, 224)
 
 
-def test_parse_label():
-    assert parse_label("00065\n") == "00065"
-    assert parse_label(" 00 065 ") == "00065"
-    assert parse_label("00a65") is None
-    assert parse_label("") is None
-    assert parse_label("1" * 13) is None
-
-
 def test_model_output_and_checkpoint_roundtrip(tmp_path):
     torch.manual_seed(0)
     model = AccountCRNN(img_h=48).eval()
@@ -251,22 +248,6 @@ def test_inferer_end_to_end_with_random_model(tmp_path):
 
 def test_cli_threshold_equals_prod():
     assert config_account.MIN_CONFIDENCE == PipelineConfig().account_conf_thresh
-
-
-def test_labels_from_names(tmp_path):
-    assert label_from_name("1300000065__account_1.jpg", 5) == "00065"
-    assert label_from_name("1300000065_2.jpg", 5) == "00065"
-    assert label_from_name("IMG_001.jpg", 5) is None
-    images = tmp_path / "images"
-    images.mkdir()
-    for n in ("1300000065__account_1.jpg", "1300000082__account_1.jpg", "photo.jpg"):
-        (images / n).write_bytes(b"x")
-    (tmp_path / "labels").mkdir()
-    (tmp_path / "labels" / "1300000082__account_1.txt").write_text("00083\n", encoding="utf-8")
-    s = write_labels(images, tmp_path / "labels", 5)
-    assert s == {"written": 1, "had_label": 1, "no_number": 1}
-    assert (tmp_path / "labels" / "1300000065__account_1.txt").read_text(encoding="utf-8") == "00065\n"
-    assert (tmp_path / "labels" / "1300000082__account_1.txt").read_text(encoding="utf-8") == "00083\n"
 
 
 # ─── reader.process_photo с надписью ─────────────────────────────────────────
@@ -390,7 +371,7 @@ def test_inspect_account_mode(tmp_path):
 
     class Meter:
         def detect(self, path):
-            return [{"class": "account", "conf": 0.9, "angle": 0.0, "bbox": (0, 0, 120, 40),
+            return [{"class": "marker_id", "conf": 0.9, "angle": 0.0, "bbox": (0, 0, 120, 40),
                      "crop": np.full((40, 120, 3), 128, np.uint8), "path": None}]
 
     class Account:
@@ -421,14 +402,17 @@ def test_inspect_account_mode(tmp_path):
 
 def test_evaluate_counts_lexicon_hits_and_threshold_table():
     from models.account.evaluate_account import evaluate, report_text
-    lps = [peaky("00065"), peaky("00082"), peaky("00065", alt={4: ("6", 0.5)})]
-    labels = ["00065", "00083", "00066"]          # вторая метка неверна (на кропе 00082)
-    groups = {"A": ("00065",), "B": ("00082",), "C": ("00083",), "D": ("00066",)}
-    res = evaluate(lps, labels, DIGITS, BLANK, groups)
-    assert res["exact_match"] == 1 / 3 and res["lexicon_size"] == 4
+    lps = [peaky("0065"), peaky("00082"), peaky("00065", alt={4: ("6", 0.5)})]
+    accounts = ["1300000065", "1300000083", "1300000066"]   # второй кроп — не тот счёт (на нём 00082)
+    groups = account_groups(["1300000065", "1300000082", "1300000083", "1300000066"])
+    res = evaluate(lps, accounts, DIGITS, BLANK, groups)
+    assert res["exact_match"] == 1 / 3 and res["lexicon_size"] == 4      # 0065 — одно из написаний 65
+    assert res["cer"] == pytest.approx(2 / 14)                            # 00082 → 00083, 00065 → 00066
     picks = res["picks"]
-    assert picks[0]["ok"] and picks[0]["confidence"] > 0.99
-    assert not picks[1]["ok"] and picks[1]["group"] == "B" and picks[1]["confidence"] > 0.95  # → suspect_labels
+    assert picks[0]["ok"] and picks[0]["confidence"] > 0.99 and picks[0]["string"] == "0065"
+    assert not picks[1]["ok"] and picks[1]["group"] == "1300000082" and picks[1]["confidence"] > 0.95
+    own = evaluate(lps[:1], accounts[:1], DIGITS, BLANK)["picks"][0]          # словарь — написания самих счетов
+    assert own["ok"] and own["confidence"] > 0.99
     assert 0.4 < picks[2]["confidence"] < 0.6                       # 5 или 6 — не решить
     by = {r["threshold"]: r for r in res["by_threshold"]}
     assert (by[0.9]["accepted_n"], by[0.9]["wrong_n"]) == (2, 1)
