@@ -362,6 +362,13 @@ def test_loader_refuses_detector_without_account_class():
     with pytest.raises(ValueError, match="gas_meter, serial_number"):
         loader.check_account_class(Det(), cfg)
     loader.check_account_class(Det(), PipelineConfig(account_class="serial_number"))
+    loader.check_account_class(Det(), PipelineConfig(account_class="serial"))         # то же слово
+
+    class Old:
+        class inferer:
+            class_names = ["gas_meter", "serial_number", "marker_id"]
+    assert PipelineConfig().account_class == "account"
+    loader.check_account_class(Old(), PipelineConfig())                # прежнее имя в весах — годится
 
 
 # ─── inspect account ─────────────────────────────────────────────────────────

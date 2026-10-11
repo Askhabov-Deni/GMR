@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from src.gmr.domain.config import PipelineConfig
+from src.gmr.domain.datasets import METER, SERIAL, standard_class
 from src.gmr.domain.ml import (
     AccountRecognizer,
     Detection,
@@ -71,9 +72,12 @@ class DigitReading:
 
 
 def find_detection(detections: Optional[list[Detection]], class_name: str) -> Optional[Detection]:
-    """Первая детекция нужного класса (весь dict, включая bbox) или None."""
+    """Первая детекция нужного класса (весь dict, включая bbox) или None.
+    Классы — одним словом (meter, serial, account); прежние имена детектора
+    (gas_meter, …) — то же самое (domain/datasets.standard_class)."""
+    want = standard_class(class_name)
     for c in detections or ():
-        if c["class"] == class_name:
+        if standard_class(c["class"]) == want:
             return c
     return None
 
@@ -405,8 +409,8 @@ def recognize_photo(
     if not detections:
         return result
 
-    result.meter = find_detection(detections, "gas_meter")
-    result.serial = find_detection(detections, "serial_number")
+    result.meter = find_detection(detections, METER)
+    result.serial = find_detection(detections, SERIAL)
 
     if result.serial is not None:
         result.serial_prediction = models.serial_recognizer.recognize(result.serial["crop"])

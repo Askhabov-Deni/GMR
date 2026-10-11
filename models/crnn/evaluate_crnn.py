@@ -2,8 +2,8 @@
 Полный анализ обученной CRNN модели.
 
 ИСПОЛЬЗОВАНИЕ (из папки проекта):
-  python models/crnn/evaluate_crnn.py --run_dir serial_id_ocr/runs/crnn/<дата-время> \\
-      --images_dir database/datasets/serials_crnn/images --labels_dir database/datasets/serials_crnn/labels
+  python models/crnn/evaluate_crnn.py --run_dir serial_id_ocr/runs/crnn/<дата-время>
+  (датасет по умолчанию — database/datasets/serials_crnn/images, номер — в имени кропа)
 
 ЧТО СОЗДАЁТСЯ в run_dir/eval/:
   metrics.json               — все метрики
@@ -35,6 +35,7 @@ except ImportError:  # запуск как отдельный скрипт (pyth
     from dataset_crnn import load_dataset, split, MeterDataset, val_transform, collate
     from metrics_crnn import exact_match, cer, per_position_accuracy
     from model_crnn import CRNN, predict
+from models.datasets import DATASETS_DIR  # noqa: E402 (папку проекта в sys.path кладёт dataset_crnn)
 
 
 # ── Аргументы ────────────────────────────────────────────────────────
@@ -42,8 +43,7 @@ except ImportError:  # запуск как отдельный скрипт (pyth
 def parse() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--run_dir",     required=True, help="Папка с результатами обучения")
-    p.add_argument("--images_dir",  required=True)
-    p.add_argument("--labels_dir",  required=True)
+    p.add_argument("--images_dir",  default=str(DATASETS_DIR / "serials_crnn" / "images"))
     p.add_argument("--batch_size",  type=int, default=32)
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--seed",        type=int, default=42)
@@ -136,6 +136,9 @@ def save_error_images(
         return
 
     os.makedirs(out_dir, exist_ok=True)
+    for old in os.listdir(out_dir):                     # картинки прошлой оценки этой же модели
+        if old.lower().endswith((".png", ".jpg", ".jpeg")):
+            os.remove(os.path.join(out_dir, old))
     errors = [(p, g, fp) for p, g, fp in results if p != g]
     print(f"   Ошибок: {len(errors)} из {len(results)}")
 
@@ -354,7 +357,7 @@ def main() -> None:
     print(f"✅ Модель загружена (val_acc={ckpt.get('val_acc', '?')}, вход: {input_mode})")
 
     # Данные
-    meta = load_dataset(args.images_dir, args.labels_dir)
+    meta = load_dataset(args.images_dir)
     _, _, test_meta = split(meta, seed=args.seed)
 
     # Предсказания

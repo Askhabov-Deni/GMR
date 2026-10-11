@@ -79,10 +79,10 @@ def _serial_sure(models, crop, config) -> bool:
 def measure(models, img, config: PipelineConfig, file: str) -> PhotoAngles:
     r = PhotoAngles(file)
     found = _detect(models, img)
-    meter, serial = find_detection(found, "gas_meter"), find_detection(found, "serial_number")
+    meter, serial = find_detection(found, "meter"), find_detection(found, "serial")
     if meter is None:
         r.found_turned = next((turn for turn, code in TURNS.items()
-                               if find_detection(_detect(models, cv2.rotate(img, code)), "gas_meter")), None)
+                               if find_detection(_detect(models, cv2.rotate(img, code)), "meter")), None)
     else:
         x1, y1, x2, y2 = meter["bbox"]
         r.meter, r.meter_angle, r.sideways = True, float(meter["angle"]), (y2 - y1) > (x2 - x1)

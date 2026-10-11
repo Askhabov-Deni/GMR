@@ -95,16 +95,18 @@ def test_written_metrics():
 def test_dataset_from_names(tmp_path, capsys):
     images = tmp_path / "images"
     images.mkdir()
-    for n in ("1300000093__marker_id_1.jpeg", "1300000093__marker_id_2.jpg", "1300000082 (2).jpg",
-              "IMG_1.jpg", "12__x.jpg"):
+    for n in ("1300000093__account1.jpg", "1300000093-2__account1.jpg", "IMG_1__account1__1300000082.jpg",
+              "1300000093__marker_id_1.jpeg", "IMG_1.jpg", "12__account1.jpg", "1300000093__serial1__1234.jpg",
+              "IMG_2__account1.jpg"):
         _jpg(images / n)
     items = ds.load_dataset(images)
-    assert "Загружено: 3  |  в имени нет лицевого счёта: 2" in capsys.readouterr().out
+    assert "Загружено: 3  |  имя не по стандарту (<счёт>__account1.jpg): 5" in capsys.readouterr().out
     assert [(it["file"].name, it["account"]) for it in items] == [
-        ("1300000082 (2).jpg", "1300000082"), ("1300000093__marker_id_1.jpeg", "1300000093"),
-        ("1300000093__marker_id_2.jpg", "1300000093")]
+        ("1300000093-2__account1.jpg", "1300000093"), ("1300000093__account1.jpg", "1300000093"),
+        ("IMG_1__account1__1300000082.jpg", "1300000082")]
     assert items[1]["variants"] == account_variants("1300000093")
-    assert ds.account_of("1300000093__marker_id_1.jpeg") == "1300000093" and ds.account_of("IMG_1.jpg") is None
+    assert ds.account_of("1300000093__account2.jpg") == "1300000093" and ds.account_of("IMG_1.jpg") is None
+    assert ds.account_of("1300000093__marker_id_1.jpeg") is None                  # старое имя — --standard
 
 
 def test_split_keeps_account_together(tmp_path):
@@ -119,8 +121,8 @@ def test_split_keeps_account_together(tmp_path):
 
 
 def test_dataset_items_and_collate(tmp_path):
-    _jpg(tmp_path / "1300000093__a.jpg")
-    _jpg(tmp_path / "1312345678__b.jpg", "12345678")
+    _jpg(tmp_path / "1300000093__account1.jpg")
+    _jpg(tmp_path / "1312345678__account1.jpg", "12345678")
     items = ds.load_dataset(tmp_path, verbose=False)
     data = ds.AccountDataset(items, 48, 224)
     x, targets = data[0]
@@ -224,13 +226,13 @@ def test_datasets_check(tmp_path):
     (root / "images").mkdir(parents=True)
     (root / "labels").mkdir()
     for i in range(30):
-        _jpg(root / "images" / f"13{i:08d}__marker_id_1.jpg", str(i))
+        _jpg(root / "images" / f"13{i:08d}__account1.jpg", str(i))
     _jpg(root / "images" / "photo.jpg")
     rep = datasets.Report()
     datasets.check_account(root, rep)
     text = "\n".join(rep.lines + rep.problems)
     assert "кропов: 31, с лицевым счётом в имени: 30, разных счетов: 30" in text
-    assert "в имени нет лицевого счёта" in text and "photo.jpg" in text
+    assert "имя не по стандарту (<счёт>__account1.jpg)" in text and "photo.jpg" in text
     assert "labels\\ не нужна" in text and "деление по счёту: обучение" in text
 
 
@@ -242,7 +244,7 @@ def test_train_account_smoke(tmp_path):
     rng = np.random.default_rng(0)
     for i in range(60):
         a = f"13{int(rng.integers(1, 99)):08d}"
-        _jpg(images / f"{a}__marker_id_{i}.jpg", a[-4:])
+        _jpg(images / f"{a}__account{i}.jpg", a[-4:])
     out = tmp_path / "run"
     seen = []
     real = train_account.synthetic_items
@@ -284,13 +286,13 @@ def test_train_account_smoke(tmp_path):
     month = tmp_path / "month_crops"
     month.mkdir()
     for i, a in enumerate(("1300026377", "1300015718", "1300015718")):
-        _jpg(month / f"{a}__marker_id_{i}.jpg", a[-5:])
+        _jpg(month / f"{a}__account{i}.jpg", a[-5:])
     _jpg(month / "photo.jpg")
     assert evaluate_account.main(["--run_dir", str(out), "--images", str(month), "--table", str(table)]) == 0
     report = (out / "eval" / "report.txt").read_text(encoding="utf-8")
     assert f"Кропы {month}" in report and "примеров: 3" in report and "нет в словаре" not in report
     assert "Подозрительных меток в этих кропах" in report
-    (month / "1300026377__marker_id_0.jpg").unlink()
+    (month / "1300026377__account0.jpg").unlink()
     for f in month.glob("1300015718*"):
         f.unlink()
     assert evaluate_account.main(["--run_dir", str(out), "--images", str(month)]) == 1

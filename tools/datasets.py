@@ -3,7 +3,7 @@ tools/datasets.py — папки датасетов и их проверка (э
 
   python gmr.py datasets [--root database/datasets] [--list]
   python gmr.py datasets --collect <папка месяца> [<папка месяца> …]
-  python gmr.py datasets --zeros-from <таблица> [<таблица> …] [--apply]
+  python gmr.py datasets --standard [--month <папка месяца> …] [--apply]
 
 Создаёт недостающие папки раскладки (models/datasets.py) — ничего не
 переносит и не удаляет — и показывает по каждому датасету: сколько файлов,
@@ -16,15 +16,9 @@ tools/datasets.py — папки датасетов и их проверка (э
 кладёт в <месяц>/разметка) в <датасет>/new/<ГГГГ-ММ>/. Копирует, папку месяца
 не меняет; повторный запуск ничего не дублирует.
 
---zeros-from — ведущие нули в разметке серийников по таблице абонентов.
-Старая разметка (кропы «<лицевой счёт>__serial_number_…») сделана из Excel
-скриптом, который брал номер как число и дописывал нули до 5 знаков
-(archive/utils/excel_label_tool.py): 007035 стал «07035». Номер ищется в
-таблице по лицевому счёту из имени кропа; подпись исправляется, только если
-номер в таблице отличается от неё одними ведущими нулями. Без --apply только
-считает; с --apply переписывает подписи, прежние сохраняются в
-serials_crnn/labels_before_zeros/. По каждой подписи —
-<root>/zeros_from_table.csv (остаётся у вас на диске).
+Имена кропов — по стандарту датасетов (docs/DATASETS.md):
+<фото>__serial1__<номер>.jpg, <счёт>__account1.jpg, digits_cnn/<цифра>/<фото>__digit3.jpg.
+--standard — разовый переход старых имён на стандарт (tools/datasets_standard.py).
 """
 import argparse
 import hashlib
@@ -34,8 +28,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from models.datasets import (
-    DATASETS_DIR, DIGITS, IMAGE_EXTS, LAYOUT, ensure_layout, images_in, photo_key, split_by_photo,
+    DATASETS_DIR, DIGITS, IMAGE_EXTS, LAYOUT, ensure_layout, images_in, parse_crop_name, photo_key,
+    split_by_photo,
 )
+from src.gmr.domain.datasets import DIGIT, SERIAL, free_crop_name
 
 YOLO_VAL, YOLO_SEED = 0.2, 67            # как models/yolo_all_detect/train_yolo.py
 CRNN_TRAIN, CRNN_VAL, CRNN_SEED = 0.7, 0.15, 42   # как models/crnn/train_crnn.py
@@ -165,6 +161,9 @@ def check_cnn(root: Path, rep: Report) -> None:
                  if len({p.parent.name for p in g}) > 1])
     rep.problem("одинаковые кропы в одной цифре", [" = ".join(f"{p.parent.name}/{p.name}" for p in g) for g in dups
                                                    if len({p.parent.name for p in g}) == 1])
+    rep.problem("имя не по стандарту (<фото>__digit3.jpg)",
+                [f"{p.parent.name}/{p.name}" for p in samples
+                 if (c := parse_crop_name(p.name)) is None or c.kind != DIGIT])
     rep.problem("не картинки в папках цифр", other)
     rep.problem("лишние папки (обучение их не читает)", extra)
     if samples:
@@ -177,31 +176,28 @@ def check_cnn(root: Path, rep: Report) -> None:
 
 
 def check_crnn(root: Path, rep: Report) -> None:
-    from models.crnn.dataset_crnn import _parse_label_txt
-    images_dir, labels_dir = root / "images", root / "labels"
-    images = images_in(images_dir)
-    labels = sorted(p for p in _files(labels_dir) if p.suffix == ".txt")
-    stems = {p.stem for p in images}
-    good, lengths, bad = [], Counter(), []
+    from models.crnn.dataset_crnn import label_of
+    images = images_in(root / "images")
+    good, lengths, odd, bad = [], Counter(), [], []
     for p in images:
-        lab = labels_dir / (p.stem + ".txt")
-        if not lab.is_file():
-            continue
-        text = _parse_label_txt(lab)
-        if text is None:
-            bad.append(lab.name)
-        else:
+        crop, label = parse_crop_name(p.name), label_of(p.name)
+        if label is not None:
             good.append(p)
-            lengths[len(text)] += 1
-    rep.add(f"  фото: {len(images)}, с годным номером: {len(good)}")
+            lengths[len(label)] += 1
+        elif crop is None or crop.kind != SERIAL:
+            odd.append(p.name)
+        else:
+            bad.append(p.name)
+    rep.add(f"  кропов: {len(images)}, с годным номером в имени: {len(good)}")
     if lengths:
         rep.add("  длина номера: " + ", ".join(f"{n} цифр — {c}" for n, c in sorted(lengths.items())))
-    rep.problem("фото без разметки", [p.name for p in images if not (labels_dir / (p.stem + ".txt")).is_file()])
-    rep.problem("разметка без фото", [p.name for p in labels if p.stem not in stems])
-    rep.problem("номер не годится (не цифры или длина не 4–10) — в обучение не пойдёт", bad)
-    rep.problem("одинаковые фото", [" = ".join(p.name for p in g) for g in _duplicates(images)])
+    rep.problem("имя не по стандарту (<фото>__serial1__<номер>.jpg) — в обучение не пойдёт", odd)
+    rep.problem("номер в имени не годится (не 4–10 цифр) — в обучение не пойдёт", bad)
+    rep.problem("одинаковые кропы", [" = ".join(p.name for p in g) for g in _duplicates(images)])
     if good:
         rep.add(_split_line(split_by_photo(good, lambda p: p.name, CRNN_SEED, CRNN_TRAIN, CRNN_VAL)))
+    if (root / "labels").is_dir():
+        rep.add("  labels\\ не нужна: номер — в имени кропа (gmr.py datasets --standard)")
     rep.add(_new_line(root, "исправил оператор"))
 
 
@@ -213,7 +209,7 @@ def check_account(root: Path, rep: Report) -> None:
     named = {Path(it["file"]).name for it in items}
     rep.add(f"  кропов: {len(images)}, с лицевым счётом в имени: {len(items)}, разных счетов: "
             f"{len({it['account'] for it in items})}")
-    rep.problem("в имени нет лицевого счёта (имя должно начинаться с него: 1300000093__….jpg)",
+    rep.problem("имя не по стандарту (<счёт>__account1.jpg) — в обучение не пойдёт",
                 [p.name for p in images if p.name not in named])
     rep.problem("одинаковые кропы", [" = ".join(p.name for p in g) for g in _duplicates(images)])
     if items:
@@ -266,88 +262,40 @@ def collect(month_dir: Path, root: Path) -> str:
         raise ValueError(f"{month_dir} — не папка месяца")
     with MonthDB(folder.db) as db:
         label = month_label(db.meta("created_at"))
-    copied, already = Counter(), 0
+    copied, already, taken, hashes = Counter(), 0, {}, {}
     src = folder.markup
     for p in sorted(src.rglob("*")) if src.is_dir() else []:
         rel = p.relative_to(src)
         if not p.is_file() or rel.parts[0] not in LAYOUT or len(rel.parts) < 2:
             continue
         dst = Path(root) / rel.parts[0] / "new" / label / Path(*rel.parts[1:])
-        if dst.exists():
-            already += p.suffix.lower() in IMAGE_EXTS
-            continue
+        crop = parse_crop_name(p.name)
+        if crop is None:                                 # не кроп (фото для YOLO) — как раньше
+            if dst.exists():
+                already += p.suffix.lower() in IMAGE_EXTS
+                continue
+        else:
+            # кроп: имя не должно совпасть ни с одним в датасете (тот же счёт
+            # в другом месяце → «-2»); уже забранный — узнаётся по содержимому
+            if dst.parent not in hashes:
+                hashes[dst.parent] = {_hash(f) for f in _files(dst.parent)}
+            if _hash(p) in hashes[dst.parent]:
+                already += 1
+                continue
+            ds = rel.parts[0]
+            if ds not in taken:
+                taken[ds] = {f.name.lower() for f in (Path(root) / ds).rglob("*") if f.is_file()}
+            name = p.name if p.name.lower() not in taken[ds] else free_crop_name(
+                taken[ds], crop.photo, crop.kind, crop.n, crop.answer, p.suffix.lower())
+            dst = dst.with_name(name)
+            taken[ds].add(name.lower())
+            hashes[dst.parent].add(_hash(p))
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(p, dst)
         copied[rel.parts[0]] += p.suffix.lower() in IMAGE_EXTS
     return (f"Разметка месяца {folder.root.name} ({label}): "
             + (", ".join(f"{k} — {n}" for k, n in sorted(copied.items())) or "новых нет")
             + (f"; уже были: {already}" if already else ""))
-
-
-ZEROS_FIXED, ZEROS_OK, ZEROS_OTHER, ZEROS_NO_ACCOUNT, ZEROS_SKIP = (
-    "исправить нули", "уже верно", "в таблице другой номер", "счёта нет в таблице",
-    "не трогаем (разметка оператора или не текстом)")
-
-
-def _table_serials(tables) -> dict[str, set[str]]:
-    """{лицевой счёт: номера счётчиков} из таблиц (текстом — нули целы)."""
-    from src.gmr.domain import PipelineConfig
-    from src.gmr.storage.register import clean_serial, read_register
-    cfg = PipelineConfig()
-    out = defaultdict(set)
-    for t in tables:
-        reg = read_register(str(t))
-        missing = [c for c in (cfg.col_account_id, cfg.col_serial) if c not in reg.columns]
-        if missing:
-            raise ValueError(f"в таблице {t} нет столбцов: {', '.join(missing)}")
-        for row in reg.rows:
-            serial = clean_serial(row[cfg.col_serial])
-            if row[cfg.col_account_id] and serial:
-                out[row[cfg.col_account_id]].add(serial)
-    return out
-
-
-def zeros_from_table(root: Path, tables, apply: bool = False) -> str:
-    import csv
-
-    from models.crnn.dataset_crnn import _parse_label_txt
-    crnn = Path(root) / "serials_crnn"
-    labels_dir, backup = crnn / "labels", crnn / "labels_before_zeros"
-    serials = _table_serials(tables)
-    counts, rows = Counter(), []
-    for img in images_in(crnn / "images"):
-        lab = labels_dir / (img.stem + ".txt")
-        if not lab.is_file():
-            continue
-        label = _parse_label_txt(lab)
-        prefix = img.name.split("__")[0]
-        if label is None or label == prefix or lab.read_text(encoding="utf-8").strip() != label:
-            what, new = ZEROS_SKIP, ""
-        elif prefix not in serials:
-            what, new = ZEROS_NO_ACCOUNT, ""
-        elif label in serials[prefix]:
-            what, new = ZEROS_OK, label
-        else:
-            same = sorted(t for t in serials[prefix] if t.isdigit() and t.lstrip("0") == label.lstrip("0"))
-            what, new = (ZEROS_FIXED, same[0]) if len(same) == 1 else (ZEROS_OTHER, " ".join(sorted(serials[prefix])))
-        counts[what] += 1
-        rows.append((img.name, label or "", new, what))
-        if apply and what == ZEROS_FIXED:
-            backup.mkdir(exist_ok=True)
-            if not (backup / lab.name).exists():
-                shutil.copy2(lab, backup / lab.name)
-            lab.write_text(new, encoding="utf-8")
-    out = Path(root) / "zeros_from_table.csv"
-    with open(out, "w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.writer(fh, delimiter=";")
-        w.writerow(["кроп", "подпись", "в таблице", "что"])
-        w.writerows(rows)
-    lines = [f"Ведущие нули по таблице ({', '.join(Path(t).name for t in tables)}): подписей {len(rows)}"]
-    lines += [f"  {name}: {counts[name]}" for name in (ZEROS_FIXED, ZEROS_OK, ZEROS_OTHER, ZEROS_NO_ACCOUNT, ZEROS_SKIP)]
-    lines.append(f"Исправлено: {counts[ZEROS_FIXED]}, прежние подписи — {backup}" if apply else
-                 "Это проверка — ничего не изменено. Исправить — тот же запуск с --apply.")
-    lines.append(f"По каждой подписи: {out}")
-    return "\n".join(lines)
 
 
 def main(argv=None) -> int:
@@ -357,14 +305,19 @@ def main(argv=None) -> int:
     p.add_argument("--list", action="store_true", help="записать имена проблемных файлов в datasets_problems.txt")
     p.add_argument("--collect", nargs="+", metavar="МЕСЯЦ",
                    help="забрать разметку из папок месяцев (<месяц>/разметка) в new/<ГГГГ-ММ>/")
-    p.add_argument("--zeros-from", nargs="+", metavar="ТАБЛИЦА",
-                   help="ведущие нули в разметке серийников — по таблице абонентов (лицевой счёт в имени кропа)")
-    p.add_argument("--apply", action="store_true", help="с --zeros-from: исправить подписи (без него — только проверка)")
+    p.add_argument("--standard", action="store_true",
+                   help="разово: переименовать кропы по стандарту (без --apply — только показать)")
+    p.add_argument("--month", nargs="+", metavar="МЕСЯЦ", default=[],
+                   help="с --standard: папки месяцев — лицевой счёт кропов разметки по отпечатку фото")
+    p.add_argument("--apply", action="store_true", help="с --standard: переименовать")
+    p.add_argument("--standard-undo", action="store_true", help="вернуть имена, как были до --standard --apply")
     args = p.parse_args(argv)
     root = Path(args.root)
-    if args.zeros_from:
+    if args.standard or args.standard_undo:
+        from tools import datasets_standard
         try:
-            print(zeros_from_table(root, [Path(t) for t in args.zeros_from], args.apply))
+            print(datasets_standard.undo(root) if args.standard_undo else
+                  datasets_standard.run(root, [Path(m) for m in args.month], args.apply))
         except (ValueError, OSError) as e:
             print(f"ОШИБКА: {e}")
             return 1

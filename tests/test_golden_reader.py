@@ -303,7 +303,7 @@ def test_case18_no_meter_class_missing(base_config):
               "bbox": (0, 0, 100, 30), "crop": make_crop(30, 100), "path": None}]
     result = _run(base_config, df, crops, FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95)
     assert result.outcome == Outcome.NO_METER
-    assert result.error_detail == "class gas_meter not detected"
+    assert result.error_detail == "class meter not detected"
 
 
 def test_case19_no_serial_class_missing(base_config):
@@ -313,7 +313,7 @@ def test_case19_no_serial_class_missing(base_config):
               "bbox": (0, 0, 300, 100), "crop": make_crop(100, 300), "path": None}]
     result = _run(base_config, df, crops, FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95)
     assert result.outcome == Outcome.NO_SERIAL
-    assert result.error_detail == "class serial_number not detected"
+    assert result.error_detail == "class serial not detected"
 
 
 # ─── 20-25: вариант Г — какие фото из лога перечитываются ─────────────────────

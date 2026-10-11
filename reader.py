@@ -11,7 +11,7 @@ docs/contract_reader_program2.md.
   process_photo(photo_path, df, config) -> PhotoResult
     │
     ├── шаг 0: фото уже разобрано / прочитано?  → REPEAT без запуска моделей
-    ├── MeterDetector    (YOLO)         → кроп gas_meter + кроп serial_numbers (+ надпись маркером)
+    ├── MeterDetector    (YOLO)         → кроп meter + кроп serial (+ надпись маркером, account)
     ├── AccountRecognizer (CRNN, если подключена) → лицевой счёт по надписи маркером
     ├── SerialRecognizer (CRNN)         → текст серийного номера
     ├── lookup_in_table(serial, df)     → строка таблицы (лицевой ID, последние показания);
@@ -25,8 +25,8 @@ docs/contract_reader_program2.md.
   minus/    — показания упали (< 0), данные записаны
   repeat/   — счётчик уже обработан (дубль)
   question/
-    no_meter/        — YOLO не нашёл gas_meter
-    no_serial/       — YOLO не нашёл serial_numbers
+    no_meter/        — YOLO не нашёл meter (рамку показаний)
+    no_serial/       — YOLO не нашёл serial (табличку с номером)
     serial_low_conf/ — CRNN уверенность ниже порога
     serial_not_found/— серийник не найден в таблице
     digits_error/    — не удалось прочитать 5 цифр
@@ -72,6 +72,7 @@ from src.gmr.domain import (
     AccountRecognizer,
 )
 from src.gmr.domain.account_match import AccountMarkerPolicy, account_groups as build_account_groups
+from src.gmr.domain.datasets import METER, SERIAL, standard_class
 from src.gmr.application import (
     RecognitionModels,
     detect_meter,
@@ -104,10 +105,10 @@ _account_policy      = AccountMarkerPolicy()
 
 # ─── Цвета боксов ────────────────────────────────────────────────────────────
 
-_BOX_COLORS = {
-    "gas_meter":     (0,   200,  0),    # зелёный
-    "serial_number": (200,  0,   0),    # синий (BGR)
-    "digit":         (0,   140, 255),   # оранжевый (BGR)
+_BOX_COLORS = {                         # классы — одним словом (standard_class)
+    "meter":  (0,   200,  0),           # зелёный
+    "serial": (200,  0,   0),           # синий (BGR)
+    "digit":  (0,   140, 255),          # оранжевый (BGR)
 }
 _BOX_THICKNESS = 2
 
@@ -158,17 +159,17 @@ def _draw_boxes(img: np.ndarray, result: PhotoResult) -> None:
     """
     Рисует боксы детекций на изображении (in-place).
 
-    gas_meter     — зелёный   — из meter_crops_raw
-    serial_number — синий     — из meter_crops_raw
+    meter         — зелёный   — из meter_crops_raw
+    serial        — синий     — из meter_crops_raw
     digit         — оранжевый — из digit_bboxes_in_orig (уже в координатах оригинала)
 
     Подписи классов не рисуются.
     """
-    # Боксы от meter_detector (gas_meter и serial_number)
+    # Боксы от meter_detector (meter и serial)
     if result.meter_crops_raw:
         for entry in result.meter_crops_raw:
             cls   = entry["class"]
-            color = _BOX_COLORS.get(cls, (128, 128, 128))
+            color = _BOX_COLORS.get(standard_class(cls), (128, 128, 128))
             x1, y1, x2, y2 = entry["bbox"]
             cv2.rectangle(img, (x1, y1), (x2, y2), color, _BOX_THICKNESS)
 
@@ -390,15 +391,15 @@ def process_photo(
         result.error_detail = "YOLO returned no crops"
         return result
 
-    meter_entry  = find_detection(crops, "gas_meter")
-    serial_entry = find_detection(crops, "serial_number")
+    meter_entry  = find_detection(crops, METER)
+    serial_entry = find_detection(crops, SERIAL)
 
     # Сохраняем все найденные детекции для отрисовки боксов
     result.meter_crops_raw = crops
 
     if meter_entry is None:
         result.outcome = Outcome.NO_METER
-        result.error_detail = "class gas_meter not detected"
+        result.error_detail = "class meter not detected"
         return result
 
     meter_crop = meter_entry["crop"]
@@ -425,7 +426,7 @@ def process_photo(
     matches = pd.DataFrame()
 
     if serial_entry is None:
-        failure = (Outcome.NO_SERIAL, "class serial_number not detected")
+        failure = (Outcome.NO_SERIAL, "class serial not detected")
     else:
         serial_res  = serial_recognizer.recognize(serial_entry["crop"])
         serial_text = serial_res.text

@@ -2,7 +2,7 @@
 tools/inspect_model.py — посмотреть, что делает с изображением одна модель
 (Фаза 4, docs/MIGRATION_TZ.md). Запускать из папки проекта:
 
-  python -m tools.inspect_model meter  <фото|папка>   рамки gas_meter/serial_number + кропы
+  python -m tools.inspect_model meter  <фото|папка>   рамки meter/serial/account + кропы
   python -m tools.inspect_model digits <фото|папка>   рамки цифр на кропе счётчика + кропы цифр
   python -m tools.inspect_model serial <фото|папка>   текст серийника + уверенность по символам
   python -m tools.inspect_model digit  <кроп|папка>   цифра + уверенность
@@ -31,6 +31,7 @@ summary.csv (разделитель «;», открывается в Excel).
 import argparse
 import csv
 import dataclasses
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -40,6 +41,7 @@ import numpy as np
 
 from src.gmr.application import find_detection, read_meter_digits
 from src.gmr.domain import PipelineConfig
+from src.gmr.domain.datasets import standard_class
 from src.gmr.render.image_io import read_image as _read_image, write_image as _write_image
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,7 +49,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 MODES = ("meter", "digits", "serial", "digit", "photo", "account")
 
 _GREEN, _BLUE, _ORANGE, _RED = (0, 200, 0), (200, 0, 0), (0, 140, 255), (0, 0, 255)
-_CLASS_COLOR = {"gas_meter": _GREEN, "serial_number": _BLUE}
+_CLASS_COLOR = {"meter": _GREEN, "serial": _BLUE}             # классы — одним словом (standard_class)
 
 
 # ─── Файлы ───────────────────────────────────────────────────────────────────
@@ -140,13 +142,16 @@ def inspect_meter(models: Models, path: Path, stem: str, out: Path, from_crop: b
     if img is not None:
         vis = img.copy()
         for d in dets:
-            draw_box(vis, d["bbox"], f"{d['class']} {d['conf']:.2f}",
-                     _CLASS_COLOR.get(d["class"], _ORANGE))
+            draw_box(vis, d["bbox"], f"{standard_class(d['class'])} {d['conf']:.2f}",
+                     _CLASS_COLOR.get(standard_class(d["class"]), _ORANGE))
         write_image(out / f"{stem}.jpg", vis)
-    for i, d in enumerate(dets):
-        crop_name = f"{stem}__{d['class']}_{i}.jpg"
+    seen = Counter()
+    for d in dets:
+        kind = standard_class(d["class"])                     # имя кропа — по стандарту датасетов
+        seen[kind] += 1
+        crop_name = f"{stem}__{kind}{seen[kind]}.jpg"
         write_image(out / crop_name, d["crop"])
-        rows.append({"file": str(path), "class": d["class"], "conf": round(float(d["conf"]), 4),
+        rows.append({"file": str(path), "class": kind, "conf": round(float(d["conf"]), 4),
                      "angle": round(float(d.get("angle") or 0.0), 2),
                      "bbox": " ".join(str(int(v)) for v in d["bbox"]), "result_file": crop_name})
     if not dets:
@@ -155,12 +160,12 @@ def inspect_meter(models: Models, path: Path, stem: str, out: Path, from_crop: b
 
 
 def _meter_crop(models: Models, path: Path, from_crop: bool):
-    """Кроп счётчика: сам файл (--from crop) или gas_meter от детектора счётчика."""
+    """Кроп счётчика: сам файл (--from crop) или meter от детектора счётчика."""
     if from_crop:
         return read_image(path), None
-    det = find_detection(models.get("meter").detect(str(path)), "gas_meter")
+    det = find_detection(models.get("meter").detect(str(path)), "meter")
     if det is None:
-        return None, "детектор счётчика не нашёл gas_meter"
+        return None, "детектор счётчика не нашёл meter"
     return det["crop"], None
 
 
@@ -191,9 +196,9 @@ def inspect_serial(models: Models, path: Path, stem: str, out: Path, from_crop: 
         if crop is None:
             return [{"file": str(path), "note": "не удалось открыть"}]
     else:
-        det = find_detection(models.get("meter").detect(str(path)), "serial_number")
+        det = find_detection(models.get("meter").detect(str(path)), "serial")
         if det is None:
-            return [{"file": str(path), "note": "детектор не нашёл serial_number"}]
+            return [{"file": str(path), "note": "детектор не нашёл serial"}]
         crop = det["crop"]
     pred = models.get("serial").recognize(crop)
     thr = models.config.serial_conf_thresh
@@ -237,9 +242,9 @@ def inspect_photo(models: Models, path: Path, stem: str, out: Path, from_crop: b
     cfg = models.config
     img = read_image(path)
     dets = models.get("meter").detect(str(path)) or []
-    meter = find_detection(dets, "gas_meter")
-    serial = find_detection(dets, "serial_number")
-    row = {"file": str(path), "classes": " ".join(d["class"] for d in dets)}
+    meter = find_detection(dets, "meter")
+    serial = find_detection(dets, "serial")
+    row = {"file": str(path), "classes": " ".join(standard_class(d["class"]) for d in dets)}
 
     if serial is not None:
         sp = models.get("serial").recognize(serial["crop"])
@@ -266,8 +271,8 @@ def inspect_photo(models: Models, path: Path, stem: str, out: Path, from_crop: b
     if img is not None:
         vis = img.copy()
         for d in dets:
-            draw_box(vis, d["bbox"], f"{d['class']} {d['conf']:.2f}",
-                     _CLASS_COLOR.get(d["class"], _ORANGE))
+            draw_box(vis, d["bbox"], f"{standard_class(d['class'])} {d['conf']:.2f}",
+                     _CLASS_COLOR.get(standard_class(d["class"]), _ORANGE))
         write_image(out / f"{stem}.jpg", vis)
     if not dets:
         row["note"] = "ничего не найдено"

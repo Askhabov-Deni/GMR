@@ -17,11 +17,12 @@ MainWindow (Tk root)
 │                         Серийник в базе с ошибкой; подсказка «похожие номера в базе»
 └── VerifyScreen        — проверка одного фото: Верно / Исправить (→ база) / Пропустить
 ТИХАЯ РАЗМЕТКА (оператор не видит): если оператор исправил модель — в папку
-месяца <месяц>/разметка/ (месяц — и в имени файла; фото эталона — нет); на
-компьютер разработки её забирает `gmr.py datasets --collect <месяц>`:
-CRNN: кроп serial_number + правильный номер — разметка/serials_crnn/images, labels
-CNN:  кропы изменённых цифр — разметка/digits_cnn/<цифра>
-YOLO: «Нет счётчика», а оператор ввёл показание — исходное фото в разметка/meter_yolo
+месяца <месяц>/разметка/ (фото эталона — нет); на компьютер разработки её
+забирает `gmr.py datasets --collect <месяц>`. Имена — по стандарту датасетов
+(docs/DATASETS.md), фото — лицевой счёт:
+CRNN: кроп номера — разметка/serials_crnn/images/<счёт>__serial1__<номер>.jpg
+CNN:  кропы изменённых цифр — разметка/digits_cnn/<цифра>/<счёт>__digit<N>.jpg
+YOLO: «Нет счётчика», а оператор ввёл показание — исходное фото в разметка/meter_yolo/<счёт>.jpg
 """
 import json
 import logging
@@ -65,7 +66,7 @@ from src.gmr.domain.serial_match import alphabet_for, one_char_matches
 # Модели — через контракты и общий с reader.py сервис распознавания (Фаза 3)
 from src.gmr.application import digit_crops_by_position, recognize_photo
 from src.gmr.ml.loader import default_device, load_models
-from src.gmr.domain.datasets import to_etalon
+from src.gmr.domain.datasets import DIGIT, SERIAL, free_crop_name, photo_id, to_etalon
 from src.gmr.domain.preset import FORGIVE_MODES, MISSING_MODES, SERIAL_PADS, RecognitionPreset
 
 _LOG_FILE = _BASE / "program2.log"
@@ -321,7 +322,7 @@ class ModelBundle:
             "reading_str": None,   # "56?25" — строка с ? на неуверенных позициях
             "digit_preds": None,   # list[dict] с conf по каждой позиции
             "digit_crops": None,   # list[ndarray|None] — кропы по позициям
-            "serial_crop": None,   # ndarray кропа serial_number
+            "serial_crop": None,   # ndarray кропа таблички с номером (serial)
             "error": None,
         }
         try:
@@ -720,45 +721,47 @@ def now_iso() -> str:
 # ─── Разметка (тихо) ─────────────────────────────────────────────────────────
 # root — <месяц>/разметка (с 2026-10-11: на рабочем компьютере папки проекта с
 # датасетами нет, папка месяца есть всегда). Внутри — как в датасетах:
-# digits_cnn/<цифра>/, serials_crnn/images|labels/, meter_yolo/. Имена — с
-# отпечатком фото (обучение делит датасет по фото, models/datasets.py) и с
-# месяцем (решение 1а, 2026-10-09). `gmr.py datasets --collect <месяц>` копирует
-# это в database/datasets/<датасет>/new/<ГГГГ-ММ>/.
+# digits_cnn/<цифра>/, serials_crnn/images/, meter_yolo/. Имена — по стандарту
+# датасетов (docs/DATASETS.md): фото — лицевой счёт (обучение делит датасет по
+# нему), тот же счёт ещё раз — «-2». Месяц — в папке: `gmr.py datasets
+# --collect <месяц>` копирует это в database/datasets/<датасет>/new/<ГГГГ-ММ>/.
+def _free_name(folder: Path, photo: str, kind: str, n: int, answer: str = "") -> Path:
+    taken = [p.name for p in folder.iterdir()] if folder.is_dir() else []
+    return folder / free_crop_name(taken, photo, kind, n, answer)
+
 def save_crnn_markup(
     root: Path,
-    photo_key: str,
-    month: str,
+    photo: str,
     serial_crop: Optional[np.ndarray],
     correct_text: str,
     model_text: Optional[str],
 ) -> None:
-    """Кроп серийника и правильный номер — только если номер исправили:
-    serials_crnn/images/<номер>__<фото>__<месяц>.jpg и labels/… .txt."""
+    """Кроп серийника — только если номер исправили:
+    serials_crnn/images/<счёт>__serial1__<номер>.jpg (номер — в имени)."""
     if serial_crop is None:
         return
     if model_text is not None and correct_text == model_text:
         return
-    safe_text = "".join(c for c in correct_text if c.isalnum() or c in "-_") or "serial"
-    name = f"{safe_text}__{photo_key}__{month}"
-    new = Path(root) / "serials_crnn"
-    (new / "images").mkdir(parents=True, exist_ok=True)
-    (new / "labels").mkdir(parents=True, exist_ok=True)
-    if not write_image(new / "images" / f"{name}.jpg", serial_crop):
-        log.warning(f"CRNN разметка: не удалось сохранить {name}.jpg")
+    if not correct_text.isdigit():
+        log.warning(f"CRNN разметка: номер «{correct_text}» не из цифр — не сохраняю")
         return
-    (new / "labels" / f"{name}.txt").write_text(correct_text, encoding="utf-8")
-    log.info(f"CRNN разметка: {name}.jpg → '{correct_text}'")
+    folder = Path(root) / "serials_crnn" / "images"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = _free_name(folder, photo, SERIAL, 1, correct_text)
+    if not write_image(path, serial_crop):
+        log.warning(f"CRNN разметка: не удалось сохранить {path.name}")
+        return
+    log.info(f"CRNN разметка: {path.name}")
 
 def save_cnn_markup(
     root: Path,
-    photo_key: str,
-    month: str,
+    photo: str,
     digit_crops: Optional[list],
     digit_preds: Optional[list],
     model_reading_str: Optional[str],
     final_reading_str: str,
 ) -> None:
-    """Кропы только изменённых цифр: digits_cnn/<цифра>/<фото>__<месяц>__digit_<N>.jpg."""
+    """Кропы только изменённых цифр: digits_cnn/<цифра>/<счёт>__digit<N>.jpg."""
     if not digit_crops or not digit_preds:
         return
     if len(digit_crops) != len(final_reading_str):
@@ -780,21 +783,26 @@ def save_cnn_markup(
 
         out_dir = Path(root) / "digits_cnn" / final_char
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{photo_key}__{month}__digit_{pos + 1}.jpg"
+        out_path = _free_name(out_dir, photo, DIGIT, pos + 1)
         if not write_image(out_path, crop):
             log.warning(f"CNN разметка: не удалось сохранить {out_path}")
             continue
         log.info(f"CNN разметка: pos={pos} model={model_char!r} → correct={final_char!r}")
 
-def save_meter_markup(root: Path, photo_key: str, month: str, original: Optional[Path]) -> None:
+def save_meter_markup(root: Path, photo: str, original: Optional[Path]) -> None:
     """«Нет счётчика», а оператор ввёл показание — детектор промахнулся:
-    исходное фото в meter_yolo/ на ручную разметку (решение 3а)."""
+    исходное фото в meter_yolo/<счёт>.jpg на ручную разметку (решение 3а)."""
     if original is None or not Path(original).is_file():
         return
     out = Path(root) / "meter_yolo"
     out.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(original, out / f"{photo_key}__{month}{Path(original).suffix.lower()}")
-    log.info(f"YOLO разметка: {photo_key} → meter_yolo/new")
+    ext = Path(original).suffix.lower()
+    base, k = photo_id(photo), 1
+    while (out / f"{base if k == 1 else f'{base}-{k}'}{ext}").exists():
+        k += 1
+    name = f"{base if k == 1 else f'{base}-{k}'}{ext}"
+    shutil.copy2(original, out / name)
+    log.info(f"YOLO разметка: {name} → meter_yolo")
 
 # ─── Виджет показаний (5 полей) ───────────────────────────────────────────────
 class ReadingWidget(ttk.Frame):
@@ -2306,15 +2314,14 @@ class EditScreen(ttk.Frame):
         h = row.get("photo_hash") or ""
         if h and to_etalon(h):
             return
-        key = h or Path(self.photo_path).stem
+        photo = row.get("account_id") or h or Path(self.photo_path).stem    # фото кропов — лицевой счёт
         try:
-            month = self.app.session.month_label()
             root = self.app.session.folder.markup
-            save_crnn_markup(root, key, month, mr.get("serial_crop"), final_serial, mr.get("serial_text"))
-            save_cnn_markup(root, key, month, mr.get("digit_crops"), mr.get("digit_preds"),
+            save_crnn_markup(root, photo, mr.get("serial_crop"), final_serial, mr.get("serial_text"))
+            save_cnn_markup(root, photo, mr.get("digit_crops"), mr.get("digit_preds"),
                             mr.get("reading_str"), final_reading_str)
             if self.reason == "no_meter":
-                save_meter_markup(root, key, month, self._original_photo(row))
+                save_meter_markup(root, photo, self._original_photo(row))
         except Exception as e:
             log.warning(f"Ошибка сохранения разметки: {e}")
 

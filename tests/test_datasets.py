@@ -172,32 +172,35 @@ def test_check_yolo(tmp_path):
 def test_check_cnn_and_crnn(tmp_path):
     cnn = tmp_path / "digits_cnn"
     for i in range(5):
-        touch(cnn / "3" / f"p{i}__gas_meter_1__digit_1.jpg", f"c{i}".encode())
+        touch(cnn / "3" / f"p{i}__digit1.jpg", f"c{i}".encode())
     touch(cnn / "8" / "same.jpg", b"c0")                           # тот же кроп с другой меткой
     touch(cnn / "3" / "again.jpg", b"c1")                          # повтор в той же цифре
     touch(cnn / "8" / "notes.txt", b"?")
     touch(cnn / "new" / "2026-10" / "4" / "x.jpg")
     touch(cnn / "старое" / "y.jpg")
     crnn = tmp_path / "serials_crnn"
-    touch(crnn / "images" / "s1.jpg", b"1")
-    touch(crnn / "labels" / "s1.txt", b"1234567")
-    touch(crnn / "images" / "s2.jpg", b"2")
-    touch(crnn / "labels" / "s2.txt", b"12")                        # коротко
-    touch(crnn / "images" / "s3.jpg", b"3")
-    touch(crnn / "new" / "2026-10" / "images" / "1234567__h1__2026-10.jpg")   # исправил оператор (окно)
-    touch(crnn / "new" / "2026-11" / "images" / "1234567__h2__2026-11.jpg")
+    touch(crnn / "images" / "s1__serial1__0234567.jpg", b"1")
+    touch(crnn / "images" / "s2__serial1__12.jpg", b"2")           # коротко
+    touch(crnn / "images" / "s3.jpg", b"3")                        # не по стандарту
+    touch(crnn / "images" / "s4__digit1.jpg", b"4")                # не серийник
+    touch(crnn / "labels" / "s3.txt", b"1234567")                  # от старой раскладки
+    touch(crnn / "new" / "2026-10" / "images" / "1300000001__serial1__1234567.jpg")   # исправил оператор (окно)
+    touch(crnn / "new" / "2026-11" / "images" / "1300000002__serial1__1234567.jpg")
     out = check_ds.run(tmp_path)
     c = out.split("digits_cnn —")[1].split("serials_crnn —")[0]
     lines = c.splitlines()
     assert "кропов: 7 — 0: 0, 1: 0, 2: 0, 3: 6, 4: 0" in c and "8: 1" in c
     assert "кропов без «__» в имени: 2" in c
+    assert "  ⚠ имя не по стандарту (<фото>__digit3.jpg): 2" in lines
     assert "  ⚠ одинаковые кропы в разных цифрах (одна из меток неверна): 1" in lines
     assert "  ⚠ одинаковые кропы в одной цифре: 1" in lines
     assert "не картинки в папках цифр: 1" in c and "лишние папки (обучение их не читает): 1" in c
     assert "new/ (исправил оператор): 1 — 2026-10: 1" in c and "по цифрам: 0: 0, 1: 0, 2: 0, 3: 0, 4: 1" in c
     s = out.split("serials_crnn —")[1].split("etalon —")[0]
-    assert "фото: 3, с годным номером: 1" in s and "длина номера: 7 цифр — 1" in s
-    assert "фото без разметки: 1" in s and "номер не годится" in s
+    assert "кропов: 4, с годным номером в имени: 1" in s and "длина номера: 7 цифр — 1" in s
+    assert "  ⚠ имя не по стандарту (<фото>__serial1__<номер>.jpg) — в обучение не пойдёт: 2" in s
+    assert "  ⚠ номер в имени не годится (не 4–10 цифр) — в обучение не пойдёт: 1" in s
+    assert "labels\\ не нужна: номер — в имени кропа" in s
     assert "new/ (исправил оператор): 2 — 2026-10: 1, 2026-11: 1" in s
     assert "Имена проблемных файлов — с --list" in out
 
@@ -207,84 +210,6 @@ def test_datasets_command(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Создано:" in out and (tmp_path / "ds" / "serials_crnn" / "new").is_dir()
     assert "Проблем не найдено." in out
-
-
-# ─── Ведущие нули в старой разметке серийников — по таблице ──────────────────
-
-def _zeros_case(tmp_path):
-    crnn = tmp_path / "ds" / "serials_crnn"
-    for name, label in [("1300000143__serial_number_1_set1.jpeg", "07035"),    # 007035 → zfill(5)
-                        ("1300000150__serial_number_1_set1.jpeg", "40971"),    # 0040971
-                        ("1300000160__serial_number_1_set1.jpeg", "1234567"),  # уже верно
-                        ("1300007348__serial_number_1_set1.jpeg", "00000"),    # в таблице другой номер
-                        ("1300000170__serial_number_1_set1.jpeg", "7777"),     # 07777 и 007777 — какой?
-                        ("1300099999__serial_number_1_set1.jpeg", "55555"),    # счёта нет
-                        ("008101__h1__2026-10.jpg", "008101"),                 # разметка оператора
-                        ("1300000190__serial_number_1_set1.jpeg", "05445"),    # zfill(5) от 5445
-                        ("1300000200__serial_number_1_set1.jpeg", "12121"),    # в таблице номер пустой
-                        ("1300000180__serial_number_1_set1.jpeg",              # рамками — не трогаем
-                         "\n".join(f"{d} 0.{d} 0.5 0.1 0.1" for d in range(1, 6)))]:
-        touch(crnn / "images" / name, name.encode())
-        touch(crnn / "labels" / (name.rsplit(".", 1)[0] + ".txt"), label.encode())
-    touch(crnn / "labels" / "без_фото.txt", b"123456")
-    table = tmp_path / "lb.csv"
-    table.write_text("Лицевой счет;Абонент;Номер счетчика\n1300000143;А;007035\n1300000150;Б;0040971\n"
-                     "1300000160;В;1234567\n1300007348;Г;3356971\n1300000170;Д;07777\n1300000170;Д;007777\n"
-                     "1300000180;Е;012345\n1300000143;А;\n1300000190;Ж;5445\n1300000200;З;\n", encoding="utf-8")
-    return crnn, table
-
-
-def test_zeros_from_table_check_then_apply(tmp_path):
-    crnn, table = _zeros_case(tmp_path)
-    before = {p.name: p.read_text(encoding="utf-8") for p in (crnn / "labels").iterdir()}
-    out = check_ds.zeros_from_table(tmp_path / "ds", [table])
-    assert out.splitlines()[:7] == [
-        "Ведущие нули по таблице (lb.csv): подписей 10", "  исправить нули: 3", "  уже верно: 1",
-        "  в таблице другой номер: 2", "  счёта нет в таблице: 2",
-        "  не трогаем (разметка оператора или не текстом): 2",
-        "Это проверка — ничего не изменено. Исправить — тот же запуск с --apply."]
-    assert {p.name: p.read_text(encoding="utf-8") for p in (crnn / "labels").iterdir()} == before
-    rows = (tmp_path / "ds" / "zeros_from_table.csv").read_text(encoding="utf-8-sig").splitlines()
-    assert rows[0] == "кроп;подпись;в таблице;что"
-    assert "1300000143__serial_number_1_set1.jpeg;07035;007035;исправить нули" in rows
-    assert "1300007348__serial_number_1_set1.jpeg;00000;3356971;в таблице другой номер" in rows
-    assert "1300000170__serial_number_1_set1.jpeg;7777;007777 07777;в таблице другой номер" in rows
-
-    out = check_ds.zeros_from_table(tmp_path / "ds", [table], apply=True)
-    assert "Исправлено: 3, прежние подписи — " in out
-
-    def lab(n):
-        return (crnn / "labels" / f"{n}__serial_number_1_set1.txt").read_text(encoding="utf-8")
-    assert (lab("1300000143"), lab("1300000150"), lab("1300000160"), lab("1300007348"), lab("1300000190")) == (
-        "007035", "0040971", "1234567", "00000", "5445")
-    assert lab("1300000180").startswith("1 0.1 0.5")
-    assert (crnn / "labels" / "008101__h1__2026-10.txt").read_text(encoding="utf-8") == "008101"
-    backup = crnn / "labels_before_zeros"
-    assert sorted(p.name for p in backup.iterdir()) == ["1300000143__serial_number_1_set1.txt",
-                                                       "1300000150__serial_number_1_set1.txt",
-                                                       "1300000190__serial_number_1_set1.txt"]
-    assert (backup / "1300000143__serial_number_1_set1.txt").read_text(encoding="utf-8") == "07035"
-    again = check_ds.zeros_from_table(tmp_path / "ds", [table], apply=True)
-    assert "  исправить нули: 0" in again and "  уже верно: 4" in again
-    (crnn / "labels" / "1300000143__serial_number_1_set1.txt").write_text("7035", encoding="utf-8")
-    check_ds.zeros_from_table(tmp_path / "ds", [table], apply=True)
-    assert lab("1300000143") == "007035"
-    assert (backup / "1300000143__serial_number_1_set1.txt").read_text(encoding="utf-8") == "07035"  # первая копия
-
-
-def test_zeros_from_table_command(tmp_path, capsys):
-    crnn, table = _zeros_case(tmp_path)
-    assert gmr.main(["datasets", "--root", str(tmp_path / "ds"), "--zeros-from", str(table)]) == 0
-    assert "  исправить нули: 3" in capsys.readouterr().out
-    assert (crnn / "labels" / "1300000143__serial_number_1_set1.txt").read_text(encoding="utf-8") == "07035"
-    assert gmr.main(["datasets", "--root", str(tmp_path / "ds"), "--zeros-from", str(table), "--apply"]) == 0
-    assert (crnn / "labels" / "1300000143__serial_number_1_set1.txt").read_text(encoding="utf-8") == "007035"
-    bad = tmp_path / "bad.csv"
-    bad.write_text("Лицевой счет;Абонент\n1;2\n", encoding="utf-8")
-    assert gmr.main(["datasets", "--root", str(tmp_path / "ds"), "--zeros-from", str(bad)]) == 1
-    err = capsys.readouterr().out
-    assert "ОШИБКА: в таблице" in err and "нет столбцов: Номер счетчика" in err
-    assert gmr.main(["datasets", "--root", str(tmp_path / "ds"), "--zeros-from", str(tmp_path / "нет.xls")]) == 1
 
 
 # ─── Обучение YOLO без train/val ─────────────────────────────────────────────
@@ -485,7 +410,7 @@ def test_cnn_crnn_default_dataset_is_new_layout():
     finally:
         sys.argv = sys_argv
     assert Path(a.images_dir) == Path("database/datasets/serials_crnn/images")
-    assert Path(a.labels_dir) == Path("database/datasets/serials_crnn/labels")
+    assert not hasattr(a, "labels_dir")                     # номер — в имени кропа
     assert a.save_dir == "serial_id_ocr/runs/crnn"
 
 
@@ -494,14 +419,13 @@ def test_crnn_split_saved(tmp_path):
 
     from models.crnn import train_crnn
     data = tmp_path / "serials_crnn"
-    meta = [{"file": touch(data / "images" / f"s{i}.jpg"), "label": "1234567"} for i in range(3)]
-    for i in range(3):
-        touch(data / "labels" / f"s{i}.txt", b"1234567")
-    a = Namespace(images_dir=str(data / "images"), labels_dir=str(data / "labels"), seed=42)
+    meta = [{"file": touch(data / "images" / f"s{i}__serial1__1234567.jpg"), "label": "1234567"} for i in range(3)]
+    a = Namespace(images_dir=str(data / "images"), seed=42)
     train_crnn.save_split(str(tmp_path / "run"), a, meta, meta[:2], meta[2:], [])
     info = json.loads((tmp_path / "run" / "run_info.json").read_text(encoding="utf-8"))
-    assert info["dataset_files"] == 6 and info["split"]["counts"] == {"train": 2, "val": 1, "test": 0}
-    assert (tmp_path / "run" / "split" / "val.txt").read_text(encoding="utf-8") == "images/s2.jpg\n"
+    assert info["dataset_files"] == 3 and info["split"]["counts"] == {"train": 2, "val": 1, "test": 0}
+    assert info["dataset"] == str(data.resolve())
+    assert (tmp_path / "run" / "split" / "val.txt").read_text(encoding="utf-8") == "images/s2__serial1__1234567.jpg\n"
 
 
 # ─── 2026-10-11: разметка лежит в папке месяца, --collect забирает её в датасеты ─

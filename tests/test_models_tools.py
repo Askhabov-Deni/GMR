@@ -218,9 +218,9 @@ def test_inspect_meter(photos, tmp_path):
     out = tmp_path / "out"
     rows = inspect_model.main(["meter", str(photos), "--out", str(out)], _fake_loaders())
     assert len(rows) == 4   # 2 фото × 2 детекции, txt пропущен
-    assert {r["class"] for r in rows} == {"gas_meter", "serial_number"}
+    assert {r["class"] for r in rows} == {"meter", "serial"}                 # классы — одним словом
     assert (out / "Сулиман С__a.jpg").exists()
-    assert (out / "Сулиман С__a__gas_meter_0.jpg").exists()
+    assert (out / "Сулиман С__a__meter1.jpg").exists() and (out / "Сулиман С__a__serial1.jpg").exists()
     assert len(_summary(out)) == 4
 
 

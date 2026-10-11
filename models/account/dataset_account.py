@@ -1,9 +1,10 @@
 """
 Данные для модели лицевого счёта по надписи маркером.
 
-Датасет: <датасет>/images/<счёт>__<что угодно>.jpg — кроп надписи (его
-вырезает YOLO-детектор), имя начинается с лицевого счёта:
-1300000093__marker_id_1.jpeg. Разметки нет и не нужно (решение владельца
+Датасет: <датасет>/images/<счёт>__account1.jpg — кроп надписи (его
+вырезает YOLO-детектор), имя по стандарту датасетов (docs/DATASETS.md):
+лицевой счёт — фото, к которому относится кроп (или ответ в конце имени:
+<фото>__account1__<счёт>.jpg). Разметки нет и не нужно (решение владельца
 2026-10-12): что именно написано — 93, 0093, 13-0093, … — заранее не
 известно, поэтому модель учится на «любом из допустимых написаний счёта»
 (src/gmr/domain/account_match.account_variants, model_account.multi_ctc_loss):
@@ -15,7 +16,6 @@ prepare_input — ЕДИНСТВЕННОЕ место, где картинка �
 модели; его вызывают и обучение, и инференс (infer_account.py), поэтому
 расхождения «обучали так, читаем иначе» быть не может.
 """
-import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -31,13 +31,11 @@ try:
 except ImportError:  # запуск как отдельный скрипт
     from config_account import ALPHABET
 try:
-    from ..datasets import images_in, photo_key, split_by_photo
+    from ..datasets import images_in, parse_crop_name, split_by_photo
 except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from models.datasets import images_in, photo_key, split_by_photo
+    from models.datasets import images_in, parse_crop_name, split_by_photo
 from src.gmr.domain.account_match import account_variants
-
-_LEADING_NUMBER = re.compile(r"\d+")
 
 
 # ── Чтение ───────────────────────────────────────────────────────────
@@ -53,10 +51,13 @@ def read_gray(path) -> np.ndarray:
 
 
 def account_of(name: str) -> Optional[str]:
-    """Лицевой счёт из имени кропа: «1300000093__marker_id_1.jpeg» →
-    «1300000093»; None — имя не начинается с номера хотя бы из 3 цифр."""
-    m = _LEADING_NUMBER.match(photo_key(name))
-    return m.group() if m is not None and len(m.group()) >= 3 else None
+    """Лицевой счёт из имени кропа: «1300000093__account1.jpg» (и
+    «1300000093-2__account1.jpg») → «1300000093»; None — имя не по
+    стандарту, не надпись или счёт не из цифр (хотя бы 3)."""
+    crop = parse_crop_name(name)
+    if crop is None or crop.kind != "account":
+        return None
+    return crop.account if crop.account.isdigit() and len(crop.account) >= 3 else None
 
 
 def load_dataset(images_dir, verbose: bool = True) -> list[dict]:
@@ -71,7 +72,7 @@ def load_dataset(images_dir, verbose: bool = True) -> list[dict]:
             continue
         items.append({"file": img, "account": account, "variants": variants})
     if verbose:
-        print(f"Загружено: {len(items)}  |  в имени нет лицевого счёта: {no_account}")
+        print(f"Загружено: {len(items)}  |  имя не по стандарту (<счёт>__account1.jpg): {no_account}")
     return items
 
 

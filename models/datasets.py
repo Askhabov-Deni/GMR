@@ -9,12 +9,12 @@ models/datasets.py — датасеты моделей и «виртуально
     meter_yolo/    images/ labels/ classes.txt   детектор на фото (YOLO)
                    new/                          фото на ручную разметку
     digits_yolo/   images/ labels/ classes.txt   детектор цифр на кропе показаний
-    digits_cnn/    0/ … 9/                       цифры (CNN)
+    digits_cnn/    0/ … 9/                       цифры (CNN): <фото>__digit3.jpg, ответ — папка
                    new/0/ … new/9/               цифры, исправленные оператором
-    serials_crnn/  images/ labels/               серийники (CRNN), labels/<имя>.txt — номер
+    serials_crnn/  images/                       серийники (CRNN): <фото>__serial1__<номер>.jpg
                    new/                          серийники, исправленные оператором
     accounts_crnn/ images/                       надписи маркером — лицевой счёт (models/account):
-                   new/                          имя кропа начинается со счёта, разметка не нужна
+                   new/                          <счёт>__account1.jpg, разметка не нужна
     etalon/                                      эталон для сравнения моделей (в обучение не идёт)
 
 Датасет — одна папка без train/val: «туда всегда можно что-то докинуть».
@@ -40,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
-from src.gmr.domain.datasets import DATASETS_DIR, to_etalon  # noqa: F401 (общие с окном оператора)
+from src.gmr.domain.datasets import DATASETS_DIR, parse_crop_name, to_etalon  # noqa: F401 (общие с окном оператора)
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -51,7 +51,7 @@ LAYOUT: dict[str, list[str]] = {
     "meter_yolo":   ["images", "labels", "new"],
     "digits_yolo":  ["images", "labels"],
     "digits_cnn":   DIGITS + ["new"],
-    "serials_crnn": ["images", "labels", "new"],
+    "serials_crnn": ["images", "new"],
     "accounts_crnn": ["images", "new"],
     "etalon":       [],
 }
@@ -78,10 +78,12 @@ def ensure_layout(root: Path) -> list[Path]:
 
 
 def photo_key(name: str) -> str:
-    """Исходное фото по имени файла: всё до первого «__»
-    (`1300000013__gas_meter_1__digit_3.jpg` → `1300000013`). Без «__» —
-    имя без расширения: файл сам себе фото."""
-    return Path(name).stem.split("__", 1)[0]
+    """Исходное фото по имени файла. Кроп по стандарту — счёт без «-2»
+    (`1300000375-2__serial1__007035.jpg` → `1300000375`: тот же счётчик —
+    в одной части); иначе всё до первого «__» (`1300000013__gas_meter_1.jpg`
+    → `1300000013`). Без «__» — имя без расширения: файл сам себе фото."""
+    crop = parse_crop_name(name)
+    return crop.source if crop else Path(name).stem.split("__", 1)[0]
 
 
 def split_of(key: str, seed: int, train: float, val: float) -> str:

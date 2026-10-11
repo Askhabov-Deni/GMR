@@ -3,7 +3,7 @@ src/gmr/domain/ml.py — контракты ML-моделей (Фаза 3, docs/
 
 Роли, которые модели играют в пайплайне:
 
-  MeterDetector     — фото → детекции gas_meter / serial_number / надписи
+  MeterDetector     — фото → детекции meter / serial / account (надпись)
                       маркером (YOLO)
   SerialRecognizer  — кроп серийника → текст + уверенность (CRNN)
   DigitDetector     — кроп счётчика → детекции цифр (YOLO)

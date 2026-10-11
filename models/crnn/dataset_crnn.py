@@ -14,10 +14,10 @@ try:
 except ImportError:  # запуск как отдельный скрипт (python models/crnn/dataset_crnn.py)
     from config_crnn import IMG_W, IMG_H, _MEAN, _STD, MIN_LABEL_LENGTH, MAX_LABEL_LENGTH
 try:
-    from ..datasets import split_by_photo
+    from ..datasets import images_in, parse_crop_name, split_by_photo
 except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from models.datasets import split_by_photo
+    from models.datasets import images_in, parse_crop_name, split_by_photo
 
 
 # ── Загрузка аннотаций ────────────────────────────────────────────────
@@ -60,39 +60,29 @@ def _parse_label_txt(label_path: Path) -> str | None:
     return None
 
 
-def load_dataset(images_dir: str, labels_dir: str) -> list[dict]:
+def label_of(name: str) -> str | None:
+    """Номер из имени кропа по стандарту (docs/DATASETS.md):
+    «1300000375__serial1__0070351.jpg» → «0070351». None — имя не по
+    стандарту, не серийник или номер не из 4–10 цифр."""
+    crop = parse_crop_name(name)
+    if crop is None or crop.kind != "serial" or not crop.answer.isdigit():
+        return None
+    return crop.answer if MIN_LABEL_LENGTH <= len(crop.answer) <= MAX_LABEL_LENGTH else None
+
+
+def load_dataset(images_dir: str) -> list[dict]:
     """
-    Возвращает список {"file": Path, "label": "12345"}.
-    Поддерживает оба формата разметки: YOLO и plain-text.
+    Возвращает список {"file": Path, "label": "0070351"}: номер — в имени
+    кропа (стандарт датасетов, docs/DATASETS.md), папки labels нет.
     """
-    images_dir = Path(images_dir)
-    labels_dir = Path(labels_dir)
-
-    all_images = sorted({
-        p
-        for ext in ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
-        for p in images_dir.glob(ext)
-    })
-
-    metadata = []
-    skipped_no_label = skipped_bad = 0
-
-    for img_path in all_images:
-        label_path = labels_dir / (img_path.stem + ".txt")
-        if not label_path.exists():
-            skipped_no_label += 1
-            continue
-        label = _parse_label_txt(label_path)
+    metadata, skipped = [], 0
+    for img_path in images_in(Path(images_dir)):
+        label = label_of(img_path.name)
         if label is None:
-            skipped_bad += 1
+            skipped += 1
             continue
         metadata.append({"file": img_path, "label": label})
-
-    print(
-        f"Загружено: {len(metadata)}"
-        f"  |  без разметки: {skipped_no_label}"
-        f"  |  некорректная длина/плохой формат: {skipped_bad}"
-    )
+    print(f"Загружено: {len(metadata)}  |  имя не по стандарту или номер не из 4–10 цифр: {skipped}")
     return metadata
 
 

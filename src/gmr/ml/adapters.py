@@ -22,6 +22,7 @@ src/gmr/ml/loader.py). Адаптеры его не переопределяют
 """
 from typing import Any, Optional
 
+from src.gmr.domain.datasets import METER, standard_class
 from src.gmr.domain.ml import AccountPrediction, Detection, DigitPrediction, SerialPrediction, SerialTableMatch
 from src.gmr.render.image_io import TURNS, read_image, turn_image
 
@@ -41,14 +42,14 @@ class YoloMeterDetector:
 
     def detect_turned(self, photo_path: str) -> tuple[Optional[list[Detection]], int]:
         """Фото, повёрнутое на 90, 180, 270° по часовой (этап 7b): первый поворот,
-        на котором найдены показания (gas_meter) — (детекции, градусы);
+        на котором найдены показания (meter) — (детекции, градусы);
         ни на одном — (None, 0). Рамки — в координатах повёрнутого фото."""
         img = read_image(photo_path)
         if img is None:
             return None, 0
         for degrees in TURNS:
             found = self.detect_array(turn_image(img, degrees))
-            if any(d["class"] == "gas_meter" for d in found or ()):
+            if any(standard_class(d["class"]) == METER for d in found or ()):
                 return found, degrees
         return None, 0
 

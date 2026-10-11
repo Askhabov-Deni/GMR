@@ -22,6 +22,7 @@ from models.yolo_all_detect.infer_yolo import YOLOInferer
 
 from src.gmr.application.recognition import RecognitionModels
 from src.gmr.domain.config import PipelineConfig
+from src.gmr.domain.datasets import ACCOUNT, METER, SERIAL, standard_class
 from src.gmr.ml.adapters import (
     CnnDigitRecognizer,
     CrnnAccountRecognizer,
@@ -37,7 +38,8 @@ def default_device() -> "torch.device":
 
 def load_meter_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = str) -> YoloMeterDetector:
     # запас вокруг рамки серийника (этап 5b): при 0 YOLOInferer создаётся как раньше
-    pad = {"pad": {"serial_number": config.serial_crop_pad}} if config.serial_crop_pad else {}
+    p = config.serial_crop_pad                                 # класс у детектора — по-старому или по-новому
+    pad = {"pad": {"serial_number": p, "serial": p}} if p else {}
     return YoloMeterDetector(YOLOInferer(
         resolve_path(config.meter_detect_model),
         conf_thresh=config.meter_conf_thresh,
@@ -84,8 +86,9 @@ def load_account_recognizer(
 
 
 # классы детектора счётчика, которые программа ищет по имени
-# (src/gmr/application/recognition.py, reader.py)
-METER_CLASSES = ("gas_meter", "serial_number")
+# (src/gmr/application/recognition.py, reader.py); прежние имена (gas_meter,
+# serial_number, marker_id) — то же самое (domain/datasets.standard_class)
+METER_CLASSES = (METER, SERIAL)
 
 
 def _class_names(detector) -> Optional[list]:
@@ -99,12 +102,13 @@ def check_meter_classes(meter_detector) -> None:
     """Детектор переобучили с другими именами классов — все фото молча стали
     бы NO_METER / NO_SERIAL; лучше сразу сказать (этап 6c)."""
     names = _class_names(meter_detector)
-    missing = [c for c in METER_CLASSES if names is not None and c not in names]
+    missing = [c for c in METER_CLASSES if names is not None and c not in {standard_class(n) for n in names}]
     if missing:
         raise ValueError(
             f"У детектора счётчика нет класса {', '.join(f'«{c}»' for c in missing)}; "
             f"его классы: {', '.join(map(str, names))}. Классы в classes.txt датасета должны "
-            f"называться {', '.join(METER_CLASSES)} (порядок любой).")
+            f"называться {', '.join((*METER_CLASSES, ACCOUNT))} (порядок любой; прежние имена "
+            f"gas_meter, serial_number, marker_id — тоже годятся).")
 
 
 def check_account_class(meter_detector, config: PipelineConfig) -> None:
@@ -113,7 +117,7 @@ def check_account_class(meter_detector, config: PipelineConfig) -> None:
     names = _class_names(meter_detector)
     if names is None:
         return
-    if config.account_class not in names:
+    if standard_class(config.account_class) not in {standard_class(n) for n in names}:
         raise ValueError(
             f"У детектора счётчика нет класса «{config.account_class}» (PipelineConfig.account_class); "
             f"его классы: {', '.join(map(str, names))}. Укажите в account_class имя класса надписи маркером.")

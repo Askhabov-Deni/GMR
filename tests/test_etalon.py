@@ -314,7 +314,7 @@ def test_loader_passes_pad_only_when_set(monkeypatch):
     monkeypatch.setattr(loader, "YOLOInferer", lambda *a, **k: calls.append(k) or object())
     loader.load_meter_detector(PipelineConfig())
     loader.load_meter_detector(PipelineConfig(serial_crop_pad=0.07))
-    assert "pad" not in calls[0] and calls[1]["pad"] == {"serial_number": 0.07}
+    assert "pad" not in calls[0] and calls[1]["pad"] == {"serial_number": 0.07, "serial": 0.07}
     assert PipelineConfig().serial_crop_pad == 0.0                              # в работе — как было
 
 

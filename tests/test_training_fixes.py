@@ -135,17 +135,15 @@ def test_train_crnn_writes_input_mode(tmp_path, monkeypatch):
     import cv2
 
     from models.crnn import train_crnn
-    images, labels = tmp_path / "images", tmp_path / "labels"
+    images = tmp_path / "images"
     images.mkdir()
-    labels.mkdir()
     rng = np.random.default_rng(0)
     for i in range(40):
         text = "".join(str(d) for d in rng.integers(0, 10, 6))
         img = np.full((30, 140, 3), 255, np.uint8)
         cv2.putText(img, text, (4, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
-        cv2.imwrite(str(images / f"p{i}__2026-10__serial.jpg"), img)
-        (labels / f"p{i}__2026-10__serial.txt").write_text(text, encoding="utf-8")
-    monkeypatch.setattr("sys.argv", ["train_crnn.py", "--images_dir", str(images), "--labels_dir", str(labels),
+        cv2.imwrite(str(images / f"p{i}__serial1__{text}.jpg"), img)        # номер — в имени
+    monkeypatch.setattr("sys.argv", ["train_crnn.py", "--images_dir", str(images),
                                      "--epochs", "1", "--batch_size", "8", "--save_dir", str(tmp_path / "runs")])
     monkeypatch.setattr(train_crnn, "save_plots", lambda *a: None)
     modes = []
@@ -177,16 +175,18 @@ def _det(names):
 def test_meter_detector_class_names_checked():
     loader.check_meter_classes(_det({0: "serial_number", 1: "marker_id", 2: "gas_meter"}))   # порядок любой
     loader.check_meter_classes(_det(["gas_meter", "serial_number"]))
+    loader.check_meter_classes(_det(["meter", "serial", "account"]))                  # новые имена
+    loader.check_meter_classes(_det(["meter", "serial_number"]))
     loader.check_meter_classes(SimpleNamespace())                                     # имён не узнать — молчим
-    with pytest.raises(ValueError, match="нет класса «serial_number»; его классы: gas_meter, display"):
+    with pytest.raises(ValueError, match="нет класса «serial»; его классы: gas_meter, display"):
         loader.check_meter_classes(_det({0: "gas_meter", 1: "display"}))
-    with pytest.raises(ValueError, match="«gas_meter», «serial_number»"):
+    with pytest.raises(ValueError, match="«meter», «serial»"):
         loader.check_meter_classes(_det({0: "display"}))
 
 
 def test_load_models_refuses_detector_with_other_class_names(monkeypatch):
-    monkeypatch.setattr(loader, "load_meter_detector", lambda cfg, rp: _det({0: "meter", 1: "serial"}))
-    with pytest.raises(ValueError, match="gas_meter"):
+    monkeypatch.setattr(loader, "load_meter_detector", lambda cfg, rp: _det({0: "display", 1: "serial"}))
+    with pytest.raises(ValueError, match="meter, serial, account .*прежние имена gas_meter"):
         loader.load_models(PipelineConfig())
 
 

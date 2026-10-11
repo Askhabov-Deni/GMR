@@ -62,11 +62,12 @@ class PipelineConfig:
     # рамка обрезает крайний символ номера. 0 — как было; другое значение —
     # только решением владельца после `gmr.py etalon check --serial-pad`.
     serial_crop_pad:          float = 0.0
-    # Надпись маркером: имя её класса у детектора счётчика (marker_id — как в
-    # разметке meter_yolo; если у модели другое — загрузка скажет, какие есть)
+    # Надпись маркером: имя её класса у детектора счётчика (account; прежнее
+    # имя marker_id — то же самое, domain/datasets.standard_class; если у
+    # модели другое — загрузка скажет, какие есть)
     # и порог уверенности счёта (доля среди всех счетов таблицы,
     # models/ctc_lexicon.py). Как пишут счёт — account_match.account_variants.
-    account_class:            str   = "marker_id"
+    account_class:            str   = "account"
     account_conf_thresh:      float = 0.9
 
     # Прочее

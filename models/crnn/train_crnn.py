@@ -4,16 +4,15 @@
 ИСПОЛЬЗОВАНИЕ:
 
 1. Обучение с нуля (из папки проекта; датасет по умолчанию —
-   database/datasets/serials_crnn/images и labels):
+   database/datasets/serials_crnn/images, номер — в имени кропа:
+   <фото>__serial1__<номер>.jpg, docs/DATASETS.md):
     python models/crnn/train_crnn.py
 
 2. Resume (продолжение прерванного обучения):
-    python train_crnn.py --images_dir data/images --labels_dir data/labels \\
-        --resume runs/2026-06-04_14-25/best.pt
+    python models/crnn/train_crnn.py --resume serial_id_ocr/runs/crnn/<дата-время>/best.pt
 
 3. Fine-tuning (только веса, оптимизатор заново):
-    python train_crnn.py --images_dir data/images --labels_dir data/labels \\
-        --finetune runs/2026-06-04_14-25/best.pt --lr 1e-4
+    python models/crnn/train_crnn.py --finetune serial_id_ocr/runs/crnn/<дата-время>/best.pt --lr 1e-4
 
 Кроп приводится к размеру с сохранением пропорций, край номера при
 обучении не срезается (этап 6c, --input keep_aspect, по умолчанию). Как
@@ -31,8 +30,7 @@
   plot_summary.png — итоговый summary
 
 После обучения запусти:
-  python models/crnn/evaluate_crnn.py --run_dir serial_id_ocr/runs/crnn/<дата-время> \\
-      --images_dir data/images --labels_dir data/labels
+  python models/crnn/evaluate_crnn.py --run_dir serial_id_ocr/runs/crnn/<дата-время>
 """
 
 import os
@@ -69,7 +67,6 @@ except ImportError:  # запуск как отдельный скрипт: ну
 def parse() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--images_dir",   default=str(DATASETS_DIR / "serials_crnn" / "images"))
-    p.add_argument("--labels_dir",   default=str(DATASETS_DIR / "serials_crnn" / "labels"))
     p.add_argument("--epochs",       type=int,   default=100)
     p.add_argument("--batch_size",   type=int,   default=32)
     p.add_argument("--lr",           type=float, default=3e-4)
@@ -201,12 +198,11 @@ def save_plots(history: list[dict], save_dir: str) -> None:
 def save_split(save_dir: str, args: argparse.Namespace, meta, train_meta, val_meta, test_meta) -> None:
     """split/*.txt и run_info.json: на чём и как обучали (этап 5). Отпечаток
     датасета — по картинкам и их разметке."""
-    images, labels = Path(args.images_dir).resolve(), Path(args.labels_dir).resolve()
-    base = Path(os.path.commonpath([images, labels]))
+    base = Path(args.images_dir).resolve().parent
     parts = {"train": [m["file"].resolve() for m in train_meta],
              "val":   [m["file"].resolve() for m in val_meta],
              "test":  [m["file"].resolve() for m in test_meta]}
-    files = [m["file"].resolve() for m in meta] + [labels / (m["file"].stem + ".txt") for m in meta]
+    files = [m["file"].resolve() for m in meta]                  # номер — в имени: отпечаток по именам
     write_split_lists(save_dir, parts, base)
     write_run_info(save_dir, base, files, parts, args.seed, vars(args))
 
@@ -234,7 +230,7 @@ def main() -> None:
 
     # Данные
     print("📂 Загрузка данных...")
-    meta = load_dataset(args.images_dir, args.labels_dir)
+    meta = load_dataset(args.images_dir)
     train_meta, val_meta, test_meta = split(meta, seed=args.seed)
     print(f"📊 train={len(train_meta)} | val={len(val_meta)} | test={len(test_meta)}")
     require_parts({"train": train_meta, "val": val_meta, "test": test_meta}, ("train", "val", "test"))
@@ -387,7 +383,7 @@ def main() -> None:
     print(f"  Run dir      : {save_dir}")
     print(f"{'='*55}")
     print("\n➡️  Для полного анализа запусти:")
-    print(f"   python models/crnn/evaluate_crnn.py --run_dir {save_dir} --images_dir {args.images_dir} --labels_dir {args.labels_dir}")
+    print(f"   python models/crnn/evaluate_crnn.py --run_dir {save_dir} --images_dir {args.images_dir}")
 
 
 if __name__ == "__main__":
