@@ -288,6 +288,11 @@ python gmr.py inspect digit <папка с кропами цифр> --weights me
 # 1) просмотреть database\datasets\serials_crnn\new\<месяц>\images\ (номер — в начале имени файла)
 #    и перенести хорошие: new\<месяц>\images\ → images\, new\<месяц>\labels\ → labels\
 python gmr.py datasets
+#    ведущие нули в старой разметке (кропы <лицевой счёт>__serial_number_…) — по таблице
+#    абонентов того датасета (lb.xls): сначала проверка, потом --apply (прежние подписи —
+#    в serials_crnn\labels_before_zeros\)
+python gmr.py datasets --zeros-from <путь к lb.xls>
+python gmr.py datasets --zeros-from <путь к lb.xls> --apply
 
 # 2) обучение заново (результат — serial_id_ocr\runs\crnn\<дата-время>\): кроп — с пропорциями,
 #    край номера не срезается (этап 6c)

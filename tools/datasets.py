@@ -3,6 +3,7 @@ tools/datasets.py — папки датасетов и их проверка (э
 
   python gmr.py datasets [--root database/datasets] [--list]
   python gmr.py datasets --collect <папка месяца> [<папка месяца> …]
+  python gmr.py datasets --zeros-from <таблица> [<таблица> …] [--apply]
 
 Создаёт недостающие папки раскладки (models/datasets.py) — ничего не
 переносит и не удаляет — и показывает по каждому датасету: сколько файлов,
@@ -14,6 +15,16 @@ tools/datasets.py — папки датасетов и их проверка (э
 --collect — забрать разметку месяца (исправления оператора, которые окно
 кладёт в <месяц>/разметка) в <датасет>/new/<ГГГГ-ММ>/. Копирует, папку месяца
 не меняет; повторный запуск ничего не дублирует.
+
+--zeros-from — ведущие нули в разметке серийников по таблице абонентов.
+Старая разметка (кропы «<лицевой счёт>__serial_number_…») сделана из Excel
+скриптом, который брал номер как число и дописывал нули до 5 знаков
+(archive/utils/excel_label_tool.py): 007035 стал «07035». Номер ищется в
+таблице по лицевому счёту из имени кропа; подпись исправляется, только если
+номер в таблице отличается от неё одними ведущими нулями. Без --apply только
+считает; с --apply переписывает подписи, прежние сохраняются в
+serials_crnn/labels_before_zeros/. По каждой подписи —
+<root>/zeros_from_table.csv (остаётся у вас на диске).
 """
 import argparse
 import hashlib
@@ -273,6 +284,72 @@ def collect(month_dir: Path, root: Path) -> str:
             + (f"; уже были: {already}" if already else ""))
 
 
+ZEROS_FIXED, ZEROS_OK, ZEROS_OTHER, ZEROS_NO_ACCOUNT, ZEROS_SKIP = (
+    "исправить нули", "уже верно", "в таблице другой номер", "счёта нет в таблице",
+    "не трогаем (разметка оператора или не текстом)")
+
+
+def _table_serials(tables) -> dict[str, set[str]]:
+    """{лицевой счёт: номера счётчиков} из таблиц (текстом — нули целы)."""
+    from src.gmr.domain import PipelineConfig
+    from src.gmr.storage.register import clean_serial, read_register
+    cfg = PipelineConfig()
+    out = defaultdict(set)
+    for t in tables:
+        reg = read_register(str(t))
+        missing = [c for c in (cfg.col_account_id, cfg.col_serial) if c not in reg.columns]
+        if missing:
+            raise ValueError(f"в таблице {t} нет столбцов: {', '.join(missing)}")
+        for row in reg.rows:
+            serial = clean_serial(row[cfg.col_serial])
+            if row[cfg.col_account_id] and serial:
+                out[row[cfg.col_account_id]].add(serial)
+    return out
+
+
+def zeros_from_table(root: Path, tables, apply: bool = False) -> str:
+    import csv
+
+    from models.crnn.dataset_crnn import _parse_label_txt
+    crnn = Path(root) / "serials_crnn"
+    labels_dir, backup = crnn / "labels", crnn / "labels_before_zeros"
+    serials = _table_serials(tables)
+    counts, rows = Counter(), []
+    for img in images_in(crnn / "images"):
+        lab = labels_dir / (img.stem + ".txt")
+        if not lab.is_file():
+            continue
+        label = _parse_label_txt(lab)
+        prefix = img.name.split("__")[0]
+        if label is None or label == prefix or lab.read_text(encoding="utf-8").strip() != label:
+            what, new = ZEROS_SKIP, ""
+        elif prefix not in serials:
+            what, new = ZEROS_NO_ACCOUNT, ""
+        elif label in serials[prefix]:
+            what, new = ZEROS_OK, label
+        else:
+            same = sorted(t for t in serials[prefix] if t.isdigit() and t.lstrip("0") == label.lstrip("0"))
+            what, new = (ZEROS_FIXED, same[0]) if len(same) == 1 else (ZEROS_OTHER, " ".join(sorted(serials[prefix])))
+        counts[what] += 1
+        rows.append((img.name, label or "", new, what))
+        if apply and what == ZEROS_FIXED:
+            backup.mkdir(exist_ok=True)
+            if not (backup / lab.name).exists():
+                shutil.copy2(lab, backup / lab.name)
+            lab.write_text(new, encoding="utf-8")
+    out = Path(root) / "zeros_from_table.csv"
+    with open(out, "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh, delimiter=";")
+        w.writerow(["кроп", "подпись", "в таблице", "что"])
+        w.writerows(rows)
+    lines = [f"Ведущие нули по таблице ({', '.join(Path(t).name for t in tables)}): подписей {len(rows)}"]
+    lines += [f"  {name}: {counts[name]}" for name in (ZEROS_FIXED, ZEROS_OK, ZEROS_OTHER, ZEROS_NO_ACCOUNT, ZEROS_SKIP)]
+    lines.append(f"Исправлено: {counts[ZEROS_FIXED]}, прежние подписи — {backup}" if apply else
+                 "Это проверка — ничего не изменено. Исправить — тот же запуск с --apply.")
+    lines.append(f"По каждой подписи: {out}")
+    return "\n".join(lines)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python gmr.py datasets",
                                 description="Папки датасетов (создать недостающие) и их проверка.")
@@ -280,8 +357,18 @@ def main(argv=None) -> int:
     p.add_argument("--list", action="store_true", help="записать имена проблемных файлов в datasets_problems.txt")
     p.add_argument("--collect", nargs="+", metavar="МЕСЯЦ",
                    help="забрать разметку из папок месяцев (<месяц>/разметка) в new/<ГГГГ-ММ>/")
+    p.add_argument("--zeros-from", nargs="+", metavar="ТАБЛИЦА",
+                   help="ведущие нули в разметке серийников — по таблице абонентов (лицевой счёт в имени кропа)")
+    p.add_argument("--apply", action="store_true", help="с --zeros-from: исправить подписи (без него — только проверка)")
     args = p.parse_args(argv)
     root = Path(args.root)
+    if args.zeros_from:
+        try:
+            print(zeros_from_table(root, [Path(t) for t in args.zeros_from], args.apply))
+        except (ValueError, OSError) as e:
+            print(f"ОШИБКА: {e}")
+            return 1
+        return 0
     for month_dir in args.collect or []:
         ensure_layout(root)
         try:

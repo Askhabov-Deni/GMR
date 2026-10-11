@@ -209,6 +209,84 @@ def test_datasets_command(tmp_path, capsys):
     assert "Проблем не найдено." in out
 
 
+# ─── Ведущие нули в старой разметке серийников — по таблице ──────────────────
+
+def _zeros_case(tmp_path):
+    crnn = tmp_path / "ds" / "serials_crnn"
+    for name, label in [("1300000143__serial_number_1_set1.jpeg", "07035"),    # 007035 → zfill(5)
+                        ("1300000150__serial_number_1_set1.jpeg", "40971"),    # 0040971
+                        ("1300000160__serial_number_1_set1.jpeg", "1234567"),  # уже верно
+                        ("1300007348__serial_number_1_set1.jpeg", "00000"),    # в таблице другой номер
+                        ("1300000170__serial_number_1_set1.jpeg", "7777"),     # 07777 и 007777 — какой?
+                        ("1300099999__serial_number_1_set1.jpeg", "55555"),    # счёта нет
+                        ("008101__h1__2026-10.jpg", "008101"),                 # разметка оператора
+                        ("1300000190__serial_number_1_set1.jpeg", "05445"),    # zfill(5) от 5445
+                        ("1300000200__serial_number_1_set1.jpeg", "12121"),    # в таблице номер пустой
+                        ("1300000180__serial_number_1_set1.jpeg",              # рамками — не трогаем
+                         "\n".join(f"{d} 0.{d} 0.5 0.1 0.1" for d in range(1, 6)))]:
+        touch(crnn / "images" / name, name.encode())
+        touch(crnn / "labels" / (name.rsplit(".", 1)[0] + ".txt"), label.encode())
+    touch(crnn / "labels" / "без_фото.txt", b"123456")
+    table = tmp_path / "lb.csv"
+    table.write_text("Лицевой счет;Абонент;Номер счетчика\n1300000143;А;007035\n1300000150;Б;0040971\n"
+                     "1300000160;В;1234567\n1300007348;Г;3356971\n1300000170;Д;07777\n1300000170;Д;007777\n"
+                     "1300000180;Е;012345\n1300000143;А;\n1300000190;Ж;5445\n1300000200;З;\n", encoding="utf-8")
+    return crnn, table
+
+
+def test_zeros_from_table_check_then_apply(tmp_path):
+    crnn, table = _zeros_case(tmp_path)
+    before = {p.name: p.read_text(encoding="utf-8") for p in (crnn / "labels").iterdir()}
+    out = check_ds.zeros_from_table(tmp_path / "ds", [table])
+    assert out.splitlines()[:7] == [
+        "Ведущие нули по таблице (lb.csv): подписей 10", "  исправить нули: 3", "  уже верно: 1",
+        "  в таблице другой номер: 2", "  счёта нет в таблице: 2",
+        "  не трогаем (разметка оператора или не текстом): 2",
+        "Это проверка — ничего не изменено. Исправить — тот же запуск с --apply."]
+    assert {p.name: p.read_text(encoding="utf-8") for p in (crnn / "labels").iterdir()} == before
+    rows = (tmp_path / "ds" / "zeros_from_table.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert rows[0] == "кроп;подпись;в таблице;что"
+    assert "1300000143__serial_number_1_set1.jpeg;07035;007035;исправить нули" in rows
+    assert "1300007348__serial_number_1_set1.jpeg;00000;3356971;в таблице другой номер" in rows
+    assert "1300000170__serial_number_1_set1.jpeg;7777;007777 07777;в таблице другой номер" in rows
+
+    out = check_ds.zeros_from_table(tmp_path / "ds", [table], apply=True)
+    assert "Исправлено: 3, прежние подписи — " in out
+
+    def lab(n):
+        return (crnn / "labels" / f"{n}__serial_number_1_set1.txt").read_text(encoding="utf-8")
+    assert (lab("1300000143"), lab("1300000150"), lab("1300000160"), lab("1300007348"), lab("1300000190")) == (
+        "007035", "0040971", "1234567", "00000", "5445")
+    assert lab("1300000180").startswith("1 0.1 0.5")
+    assert (crnn / "labels" / "008101__h1__2026-10.txt").read_text(encoding="utf-8") == "008101"
+    backup = crnn / "labels_before_zeros"
+    assert sorted(p.name for p in backup.iterdir()) == ["1300000143__serial_number_1_set1.txt",
+                                                       "1300000150__serial_number_1_set1.txt",
+                                                       "1300000190__serial_number_1_set1.txt"]
+    assert (backup / "1300000143__serial_number_1_set1.txt").read_text(encoding="utf-8") == "07035"
+    again = check_ds.zeros_from_table(tmp_path / "ds", [table], apply=True)
+    assert "  исправить нули: 0" in again and "  уже верно: 4" in again
+    (crnn / "labels" / "1300000143__serial_number_1_set1.txt").write_text("7035", encoding="utf-8")
+    check_ds.zeros_from_table(tmp_path / "ds", [table], apply=True)
+    assert lab("1300000143") == "007035"
+    assert (backup / "1300000143__serial_number_1_set1.txt").read_text(encoding="utf-8") == "07035"  # первая копия
+
+
+def test_zeros_from_table_command(tmp_path, capsys):
+    crnn, table = _zeros_case(tmp_path)
+    assert gmr.main(["datasets", "--root", str(tmp_path / "ds"), "--zeros-from", str(table)]) == 0
+    assert "  исправить нули: 3" in capsys.readouterr().out
+    assert (crnn / "labels" / "1300000143__serial_number_1_set1.txt").read_text(encoding="utf-8") == "07035"
+    assert gmr.main(["datasets", "--root", str(tmp_path / "ds"), "--zeros-from", str(table), "--apply"]) == 0
+    assert (crnn / "labels" / "1300000143__serial_number_1_set1.txt").read_text(encoding="utf-8") == "007035"
+    bad = tmp_path / "bad.csv"
+    bad.write_text("Лицевой счет;Абонент\n1;2\n", encoding="utf-8")
+    assert gmr.main(["datasets", "--root", str(tmp_path / "ds"), "--zeros-from", str(bad)]) == 1
+    err = capsys.readouterr().out
+    assert "ОШИБКА: в таблице" in err and "нет столбцов: Номер счетчика" in err
+    assert gmr.main(["datasets", "--root", str(tmp_path / "ds"), "--zeros-from", str(tmp_path / "нет.xls")]) == 1
+
+
 # ─── Обучение YOLO без train/val ─────────────────────────────────────────────
 
 def test_ultralytics_finds_labels_for_our_layout(tmp_path):
