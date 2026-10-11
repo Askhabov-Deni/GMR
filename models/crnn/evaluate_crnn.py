@@ -1,9 +1,9 @@
 """
 Полный анализ обученной CRNN модели.
 
-ИСПОЛЬЗОВАНИЕ:
-  python evaluate_crnn.py --run_dir runs/2026-06-04_14-25 \\
-      --images_dir data/images --labels_dir data/labels
+ИСПОЛЬЗОВАНИЕ (из папки проекта):
+  python models/crnn/evaluate_crnn.py --run_dir serial_id_ocr/runs/crnn/<дата-время> \\
+      --images_dir database/datasets/serials_crnn/images --labels_dir database/datasets/serials_crnn/labels
 
 ЧТО СОЗДАЁТСЯ в run_dir/eval/:
   metrics.json               — все метрики

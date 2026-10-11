@@ -31,7 +31,7 @@
   plot_summary.png — итоговый summary
 
 После обучения запусти:
-  python evaluate_crnn.py --run_dir runs/<дата-время> \\
+  python models/crnn/evaluate_crnn.py --run_dir serial_id_ocr/runs/crnn/<дата-время> \\
       --images_dir data/images --labels_dir data/labels
 """
 
@@ -387,7 +387,7 @@ def main() -> None:
     print(f"  Run dir      : {save_dir}")
     print(f"{'='*55}")
     print("\n➡️  Для полного анализа запусти:")
-    print(f"   python evaluate_crnn.py --run_dir {save_dir} --images_dir {args.images_dir} --labels_dir {args.labels_dir}")
+    print(f"   python models/crnn/evaluate_crnn.py --run_dir {save_dir} --images_dir {args.images_dir} --labels_dir {args.labels_dir}")
 
 
 if __name__ == "__main__":

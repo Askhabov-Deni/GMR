@@ -115,21 +115,30 @@ STRETCH, KEEP_ASPECT = "stretch", "keep_aspect"
 INPUT_MODES = (KEEP_ASPECT, STRETCH)
 
 
+# Поле вокруг кропа при обучении: случайное, до доли ширины / высоты с каждой
+# стороны, и поворот до ±TURN° с расширением холста — край номера не режется.
+MARGIN_W, MARGIN_H, TURN = 0.08, 0.10, 3.0
+
+
 class FitToBox:
     """Кроп → IMG_W×IMG_H без растяжения: высота → IMG_H (длинный номер —
     по ширине), справа и сверху/снизу — фон (медианный цвет кропа).
 
-    augment=True (обучение): поле вокруг кропа, поворот с расширением
-    холста и перспектива с фоном — край номера не срезается (раньше
-    RandomCrop срезал до 16 пикселей при той же метке)."""
+    augment=True (обучение): случайное поле вокруг кропа, поворот с
+    расширением холста и перспектива с фоном — край номера не срезается
+    (раньше RandomCrop срезал до 16 пикселей при той же метке).
+    При чтении — поле, как в среднем при обучении: цифры того же размера и
+    не прижаты к левому краю. Без него (первая модель с пропорциями,
+    2026-10-11) при чтении цифры были крупнее, чем все, на которых модель
+    училась, и стояли впритык к краю — модель теряла первую цифру, чаще
+    всего ведущий ноль."""
 
     def __init__(self, w: int, h: int, augment: bool = False):
         self.w, self.h, self.augment = w, h, augment
 
     def __call__(self, img: Image.Image) -> Image.Image:
         bg = tuple(int(v) for v in np.median(np.asarray(img).reshape(-1, 3), axis=0))
-        if self.augment:
-            img = self._augment(img, bg)
+        img = self._augment(img, bg) if self.augment else self._average_margin(img, bg)
         w, h = img.size
         scale = min(self.h / h, self.w / w)
         nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
@@ -138,13 +147,29 @@ class FitToBox:
         return out
 
     @staticmethod
-    def _augment(img: Image.Image, bg: tuple) -> Image.Image:
+    def _pad(img: Image.Image, bg: tuple, left: int, top: int, right: int, bottom: int) -> Image.Image:
         w, h = img.size
-        left, right = random.randint(0, w // 12), random.randint(0, w // 12)
-        top, bottom = random.randint(0, h // 6), random.randint(0, h // 6)
         canvas = Image.new("RGB", (w + left + right, h + top + bottom), bg)
         canvas.paste(img, (left, top))
-        img = canvas.rotate(random.uniform(-5, 5), resample=Image.BILINEAR, expand=True, fillcolor=bg)
+        return canvas
+
+    @classmethod
+    def _average_margin(cls, img: Image.Image, bg: tuple) -> Image.Image:
+        """Холст среднего размера при обучении: поле — половина наибольшего,
+        расширение — как от поворота на TURN/2°."""
+        w, h = img.size
+        cw, ch = w * (1 + MARGIN_W), h * (1 + MARGIN_H)
+        s, c = abs(np.sin(np.radians(TURN / 2))), np.cos(np.radians(TURN / 2))
+        dx, dy = (cw * c + ch * s - w) / 2, (ch * c + cw * s - h) / 2
+        return cls._pad(img, bg, round(dx), round(dy), round(dx), round(dy))
+
+    @classmethod
+    def _augment(cls, img: Image.Image, bg: tuple) -> Image.Image:
+        w, h = img.size
+        mw, mh = int(w * MARGIN_W), int(h * MARGIN_H)
+        img = cls._pad(img, bg, random.randint(0, mw), random.randint(0, mh),
+                       random.randint(0, mw), random.randint(0, mh))
+        img = img.rotate(random.uniform(-TURN, TURN), resample=Image.BILINEAR, expand=True, fillcolor=bg)
         if random.random() < 0.4:
             start, end = T.RandomPerspective.get_params(img.size[0], img.size[1], 0.2)
             img = TF.perspective(img, start, end, fill=list(bg))      # сжимает внутрь, края целы

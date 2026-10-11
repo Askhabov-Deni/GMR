@@ -57,6 +57,30 @@ def test_fit_to_box_augmentation_never_cuts_the_edges():
         assert quads == {(True, True), (True, False), (False, True), (False, False)}   # все 4 угла целы
 
 
+def _digits(w, h=40):
+    a = np.full((h, w, 3), 230, np.uint8)
+    for x in range(1, w - 4, 10):                             # «цифры» впритык к рамке, как у YOLO
+        a[1:h - 1, x:x + 4] = 20
+    return Image.fromarray(a)
+
+
+def _span(img):
+    xs = np.nonzero(np.asarray(img)[..., 0] < 100)[1]
+    return xs.max() - xs.min() + 1, xs.min()                 # ширина цифр, отступ слева
+
+
+@pytest.mark.parametrize("w", [150, 200, 250, 300])
+def test_reading_looks_like_average_training(w):
+    # 2026-10-11: при чтении цифры были крупнее всех, на которых модель
+    # училась, и прижаты к левому краю — модель теряла первую цифру
+    random.seed(2)
+    size, left = _span(ds.FitToBox(240, 40)(_digits(w)))
+    train = np.array([_span(ds.FitToBox(240, 40, augment=True)(_digits(w))) for _ in range(200)])
+    lo, hi = np.percentile(train[:, 0], [10, 90])
+    assert lo <= size <= hi                                   # размер — в обычном для обучения
+    assert 0.5 * np.median(train[:, 1]) <= left <= 1.5 * np.median(train[:, 1]) and left >= 5
+
+
 def test_old_stretch_crop_did_cut_the_edge():
     # для сравнения: прежний RandomCrop теряет угловые метки
     random.seed(0)
