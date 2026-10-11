@@ -2,57 +2,58 @@
   "n": 150,
   "exact_match": 0.68,
   "cer": 0.11671469740634005,
-  "lexicon_size": 9002,
-  "lexicon_top1": 0.0,
+  "not_in_dictionary": 0,
+  "lexicon_size": 32230,
+  "lexicon_top1": 0.68,
   "by_threshold": [
     {
       "threshold": 0.5,
-      "accepted": 0.09333333333333334,
-      "accepted_n": 14,
-      "wrong_n": 14,
-      "wrong_share": 1.0
+      "accepted": 0.8333333333333334,
+      "accepted_n": 125,
+      "wrong_n": 24,
+      "wrong_share": 0.192
     },
     {
       "threshold": 0.7,
-      "accepted": 0.04666666666666667,
-      "accepted_n": 7,
-      "wrong_n": 7,
-      "wrong_share": 1.0
+      "accepted": 0.7533333333333333,
+      "accepted_n": 113,
+      "wrong_n": 16,
+      "wrong_share": 0.1415929203539823
     },
     {
       "threshold": 0.8,
-      "accepted": 0.02666666666666667,
-      "accepted_n": 4,
-      "wrong_n": 4,
-      "wrong_share": 1.0
+      "accepted": 0.7133333333333334,
+      "accepted_n": 107,
+      "wrong_n": 14,
+      "wrong_share": 0.1308411214953271
     },
     {
       "threshold": 0.9,
-      "accepted": 0.013333333333333334,
-      "accepted_n": 2,
-      "wrong_n": 2,
-      "wrong_share": 1.0
+      "accepted": 0.62,
+      "accepted_n": 93,
+      "wrong_n": 7,
+      "wrong_share": 0.07526881720430108
     },
     {
       "threshold": 0.95,
-      "accepted": 0.006666666666666667,
-      "accepted_n": 1,
-      "wrong_n": 1,
-      "wrong_share": 1.0
+      "accepted": 0.5733333333333334,
+      "accepted_n": 86,
+      "wrong_n": 5,
+      "wrong_share": 0.05813953488372093
     },
     {
       "threshold": 0.98,
-      "accepted": 0.0,
-      "accepted_n": 0,
-      "wrong_n": 0,
-      "wrong_share": 0.0
+      "accepted": 0.5133333333333333,
+      "accepted_n": 77,
+      "wrong_n": 4,
+      "wrong_share": 0.05194805194805195
     },
     {
       "threshold": 0.99,
-      "accepted": 0.0,
-      "accepted_n": 0,
-      "wrong_n": 0,
-      "wrong_share": 0.0
+      "accepted": 0.4533333333333333,
+      "accepted_n": 68,
+      "wrong_n": 2,
+      "wrong_share": 0.029411764705882353
     }
   ]
 }

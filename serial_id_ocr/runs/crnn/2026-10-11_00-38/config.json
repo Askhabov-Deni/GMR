@@ -1,0 +1,15 @@
+{
+  "images_dir": "database\\datasets\\serials_crnn\\images",
+  "labels_dir": "database\\datasets\\serials_crnn\\labels",
+  "epochs": 100,
+  "batch_size": 32,
+  "lr": 0.0003,
+  "save_dir": "serial_id_ocr/runs/crnn",
+  "seed": 42,
+  "resume": null,
+  "finetune": null,
+  "es_patience": 15,
+  "es_min_delta": 0.0,
+  "num_workers": 0,
+  "input": "keep_aspect"
+}
