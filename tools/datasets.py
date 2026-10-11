@@ -4,6 +4,7 @@ tools/datasets.py — папки датасетов и их проверка (э
   python gmr.py datasets [--root database/datasets] [--list]
   python gmr.py datasets --collect <папка месяца> [<папка месяца> …]
   python gmr.py datasets --standard [--month <папка месяца> …] [--apply]
+  python gmr.py datasets --build <папка с фото> --table <таблица> [--only serials accounts digits] [--out <папка>]
 
 Создаёт недостающие папки раскладки (models/datasets.py) — ничего не
 переносит и не удаляет — и показывает по каждому датасету: сколько файлов,
@@ -19,6 +20,7 @@ tools/datasets.py — папки датасетов и их проверка (э
 Имена кропов — по стандарту датасетов (docs/DATASETS.md):
 <фото>__serial1__<номер>.jpg, <счёт>__account1.jpg, digits_cnn/<цифра>/<фото>__digit3.jpg.
 --standard — разовый переход старых имён на стандарт (tools/datasets_standard.py).
+--build — кропы для датасетов из папки фото и таблицы (tools/dataset_build.py).
 """
 import argparse
 import hashlib
@@ -311,8 +313,24 @@ def main(argv=None) -> int:
                    help="с --standard: папки месяцев — лицевой счёт кропов разметки по отпечатку фото")
     p.add_argument("--apply", action="store_true", help="с --standard: переименовать")
     p.add_argument("--standard-undo", action="store_true", help="вернуть имена, как были до --standard --apply")
+    p.add_argument("--build", metavar="ФОТО", help="собрать кропы из папки фото (имя фото — лицевой счёт)")
+    p.add_argument("--table", metavar="ТАБЛИЦА", help="с --build: таблица (номер счётчика, текущие показания)")
+    p.add_argument("--only", nargs="+", choices=["serials", "accounts", "digits"],
+                   default=["serials", "accounts", "digits"], help="с --build: какие кропы (по умолчанию все)")
+    p.add_argument("--out", metavar="ПАПКА", help="с --build: куда (по умолчанию <папка фото>_датасет)")
     args = p.parse_args(argv)
     root = Path(args.root)
+    if args.build:
+        from tools import dataset_build
+        if not args.table:
+            p.error("--build: нужна таблица (--table)")
+        try:
+            print(dataset_build.run(Path(args.build), Path(args.table), Path(args.out) if args.out else None,
+                                    args.only, dataset_root=root))
+        except (ValueError, OSError) as e:
+            print(f"ОШИБКА: {e}")
+            return 1
+        return 0
     if args.standard or args.standard_undo:
         from tools import datasets_standard
         try:
