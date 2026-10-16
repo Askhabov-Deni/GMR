@@ -88,7 +88,7 @@ from src.gmr.domain.photo_date import reading_date
 from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
 from src.gmr.storage import photo_fingerprint
 from src.gmr.storage.backup import KEEP, backup_sqlite, remove_old
-from src.gmr.domain.serial_match import build_serial_groups, normalize_serial
+from src.gmr.domain.serial_match import build_serial_groups, lookup_variants, normalize_serial
 from src.gmr.render import draw_annotation, read_image, turn_image, write_image
 
 # Модели вызываются только через контракты src/gmr/domain/ml.py:
@@ -445,11 +445,7 @@ def process_photo(
                     lambda x: normalize_serial(str(x)) == norm
                 )]
 
-            serial_candidates = [
-                serial_text,
-                "0"  + serial_text,
-                "00" + serial_text,
-            ]
+            serial_candidates = lookup_variants(serial_text)
 
             serial_used = serial_text
             for candidate in serial_candidates:
@@ -1026,7 +1022,7 @@ def _serial_lookup(df: pd.DataFrame, config: PipelineConfig):
 
     def in_table(serial: str) -> bool:
         s = normalize_serial(serial)
-        return any(c in serials for c in (s, "0" + s, "00" + s))
+        return any(c in serials for c in lookup_variants(s))
     return in_table
 
 

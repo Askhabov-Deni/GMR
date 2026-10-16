@@ -32,7 +32,7 @@ from typing import Iterable, Optional
 
 from .ml import AccountPrediction
 from .models import Outcome
-from .serial_match import normalize_serial
+from .serial_match import lookup_variants, normalize_serial
 
 
 REGION_DIGITS = 2       # первые цифры счёта — код региона (владелец, 2026-10-12)
@@ -91,8 +91,7 @@ def serial_agrees(read: str, table_serials: Iterable[str]) -> bool:
     read = normalize_serial(read or "")
     if not read:
         return False
-    variants = (read, "0" + read, "00" + read)
-    return any(within_one_edit(v, normalize_serial(str(t))) for t in table_serials for v in variants)
+    return any(within_one_edit(v, normalize_serial(str(t))) for t in table_serials for v in lookup_variants(read))
 
 
 def _short(pred: AccountPrediction) -> str:

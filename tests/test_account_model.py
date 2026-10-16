@@ -214,6 +214,29 @@ def test_prepare_input_keeps_aspect_and_background_zero():
     assert bgr.shape == (1, 48, 224)
 
 
+def _ink(x):
+    ys, xs = np.nonzero(x[0] < -1.0)
+    return xs.max() - xs.min() + 1, xs.min()                   # ширина надписи, отступ слева
+
+
+@pytest.mark.parametrize("w", [120, 160, 220])
+def test_reading_looks_like_average_training(w):
+    # 2026-10-19: без поля при чтении надпись стояла впритык к левому краю
+    # (2 точки против 10–15 при обучении) — как было у серийника
+    from models.account import dataset_account as ds
+    torch.manual_seed(1)
+    img = np.full((40, w), 220, np.uint8)
+    for x in range(2, w - 6, 12):
+        img[2:38, x:x + 5] = 30
+    aug = ds.train_augment()
+    train = np.array([_ink(prepare_input(aug(image=ds.random_margin(img))["image"], 48, 224, margin=False))
+                      for _ in range(150)])
+    width, left = _ink(prepare_input(img, 48, 224))
+    assert np.percentile(train[:, 0], 10) <= width <= np.percentile(train[:, 0], 90)
+    assert left >= 5 and np.percentile(train[:, 1], 10) <= left <= np.percentile(train[:, 1], 90)
+    assert _ink(prepare_input(img, 48, 224, margin=False))[1] < 5          # без поля — впритык
+
+
 def test_model_output_and_checkpoint_roundtrip(tmp_path):
     torch.manual_seed(0)
     model = AccountCRNN(img_h=48).eval()
@@ -432,3 +455,15 @@ def test_evaluate_counts_lexicon_hits_and_threshold_table():
     assert "нет в словаре: 1 из 3" in report_text(one, "т") and "не того участка" not in report_text(one, "т")
     other = evaluate(lps, accounts, DIGITS, BLANK, account_groups(["1300026377", "1300015718"]))
     assert other["not_in_dictionary"] == 3 and "Похоже, таблица не того участка" in report_text(other, "т")
+
+
+def test_dataset_margin_only_when_reading(tmp_path, monkeypatch):
+    from models.account import dataset_account as ds
+    calls = []
+    real = ds.reading_margin
+    monkeypatch.setattr(ds, "reading_margin", lambda img: calls.append(img.shape) or real(img))
+    items = [{"image": np.full((40, 120), 200, np.uint8), "variants": ("93",)}]
+    ds.AccountDataset(items, 48, 224, augment=True)[0]
+    assert calls == []                                          # обучение — своё, случайное поле
+    ds.AccountDataset(items, 48, 224)[0]
+    assert calls == [(40, 120)]                                 # проверка и тест — как при чтении

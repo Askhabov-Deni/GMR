@@ -86,15 +86,19 @@ def split(items: list[dict], train: float, val: float, seed: int) -> tuple[list,
 
 # ── Вход модели ──────────────────────────────────────────────────────
 
-def prepare_input(img: np.ndarray, img_h: int, img_w: int) -> np.ndarray:
+def prepare_input(img: np.ndarray, img_h: int, img_w: int, margin: bool = True) -> np.ndarray:
     """Кроп (серый или BGR) → float32 (1, img_h, img_w).
 
     Пропорции сохраняются: высота → img_h (если надпись не слишком длинная),
     справа — фон. Нормировка по самой картинке: фон (медиана) → 0, разброс
     яркости → ~1, поэтому не нужны средние по датасету и не важна
-    освещённость фото."""
+    освещённость фото. margin — поле вокруг кропа, как в среднем при
+    обучении (reading_margin); обучение ставит своё, случайное, и передаёт
+    margin=False."""
     if img.ndim == 3:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if margin:
+        img = reading_margin(img)
     h, w = img.shape[:2]
     if h < 2 or w < 2:
         raise ValueError(f"слишком маленький кроп: {w}×{h}")
@@ -135,13 +139,26 @@ def train_augment() -> A.Compose:
     ])
 
 
-def random_margin(img: np.ndarray, max_share: float = 0.10) -> np.ndarray:
+MARGIN = 0.10             # поле при обучении: 0..MARGIN размера с каждой стороны
+
+
+def random_margin(img: np.ndarray, max_share: float = MARGIN) -> np.ndarray:
     """Поле 0..max_share размера с каждой стороны (повтор края): рамка YOLO
     бывает и впритык, и с запасом. Случайность — от torch (своя у каждого
     процесса загрузки данных)."""
     h, w = img.shape[:2]
     t, b, l, r = (torch.rand(4) * max_share).tolist()
     return cv2.copyMakeBorder(img, int(t * h), int(b * h), int(l * w), int(r * w), cv2.BORDER_REPLICATE)
+
+
+def reading_margin(img: np.ndarray) -> np.ndarray:
+    """Поле при чтении — среднее поля при обучении (MARGIN/2 с каждой
+    стороны). Без него (до 2026-10-19) надпись при чтении стояла впритык к
+    левому краю (отступ 2 точки против 10–15 при обучении) и была шире, чем
+    обычно при обучении, — то же расхождение, что было у серийника."""
+    h, w = img.shape[:2]
+    dy, dx = int(MARGIN / 2 * h), int(MARGIN / 2 * w)
+    return cv2.copyMakeBorder(img, dy, dy, dx, dx, cv2.BORDER_REPLICATE)
 
 
 class AccountDataset(Dataset):
@@ -161,7 +178,7 @@ class AccountDataset(Dataset):
         if self.augment is not None:
             img = random_margin(img)
             img = self.augment(image=img)["image"]
-        x = torch.from_numpy(prepare_input(img, self.img_h, self.img_w))
+        x = torch.from_numpy(prepare_input(img, self.img_h, self.img_w, margin=self.augment is None))
         targets = [torch.tensor([self.index[c] for c in v], dtype=torch.long) for v in item["variants"]]
         return x, targets
 

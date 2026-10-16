@@ -25,6 +25,14 @@ def normalize_serial(s: str) -> str:
     return s.strip()
 
 
+def lookup_variants(serial: str) -> tuple[str, str, str]:
+    """Как номер ищется в таблице: сам номер, '0'+номер, '00'+номер — на
+    табличке ведущие нули бывает не видно, а модель, учившаяся на старой
+    разметке без нулей, их теряла. Единственное место этого правила:
+    reader.py, program2.py, account_match.py, one_char_matches."""
+    return (serial, "0" + serial, "00" + serial)
+
+
 def one_edit_neighbors(s: str, alphabet: str) -> set[str]:
     """Все строки, отличающиеся от s одной заменой, вставкой или удалением."""
     out = set()
@@ -44,11 +52,11 @@ def alphabet_for(table_serials: set[str]) -> str:
 def one_char_matches(serial: str, table_serials: set[str], alphabet: str = "") -> list[tuple[str, str]]:
     """
     Пары (прочитанный вариант, номер из таблицы), отличающиеся одним символом.
-    Варианты — как в reader.py: сам номер, '0'+номер, '00'+номер.
+    Варианты — как ищет reader.py (lookup_variants).
     """
     alphabet = alphabet or alphabet_for(table_serials)
     pairs = set()
-    for v in (serial, "0" + serial, "00" + serial):
+    for v in lookup_variants(serial):
         pairs.update((v, t) for t in one_edit_neighbors(v, alphabet) & table_serials)
     return sorted(pairs)
 

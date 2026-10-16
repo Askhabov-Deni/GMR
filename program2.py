@@ -62,7 +62,7 @@ from src.gmr.application.operator import OperatorSession
 # Этап 4: прогон из окна (отдельный процесс gmr.py process) и окно с текстом
 from src.gmr.ui.run_dialog import ProcessDialog, process_command, show_text
 from src.gmr.domain import find_auto_row_for_output_file
-from src.gmr.domain.serial_match import alphabet_for, one_char_matches
+from src.gmr.domain.serial_match import alphabet_for, lookup_variants, one_char_matches
 # Модели — через контракты и общий с reader.py сервис распознавания (Фаза 3)
 from src.gmr.application import digit_crops_by_position, recognize_photo
 from src.gmr.ml.loader import default_device, load_models
@@ -503,7 +503,7 @@ def plan_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row:
         if df is None:
             return VerifyCorrection(error="Таблица не загружена — сменить абонента нельзя.")
         match = None
-        for cand in (serial, "0" + serial, "00" + serial):
+        for cand in lookup_variants(serial):
             m = df[df[cfg.col_serial].apply(lambda x: _normalize_serial(str(x)) == _normalize_serial(cand))]
             if not m.empty:
                 match = m.iloc[0]
@@ -1957,7 +1957,7 @@ class EditScreen(ttk.Frame):
             return
 
         cfg = self.app.config
-        for candidate in [serial, "0" + serial, "00" + serial]:
+        for candidate in lookup_variants(serial):
             mask = self.app.df[cfg.col_serial].apply(
                 lambda x: _normalize_serial(str(x)) == _normalize_serial(candidate)
             )
