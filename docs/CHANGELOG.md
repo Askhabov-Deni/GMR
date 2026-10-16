@@ -5,6 +5,20 @@
 показания) помечаются **«поведение»** и делаются только решением владельца
 (`docs/WORKFLOW.md`).
 
+## 2026-10-19 — уборка: удалено ненужное
+Работа программы не меняется.
+- `archive\` удалена целиком (старые утилиты разметки и сборки датасетов,
+  в том числе скрипт, потерявший ведущие нули; всё есть в истории git).
+  Заменены: сборщик `gmr.py datasets --build`, стандарт имён, разметчики
+  YOLO — внешние (Label Studio, CVAT, LabelImg).
+- `models/cnn/build_dataset_cnn.py` удалён (собирал цифры из старых подписей).
+- Настройка `account_class` удалена: класс надписи — `account` (прежнее
+  имя `marker_id` понимается).
+- Неиспользуемый код: `photo_to_tk`, `ReadingWidget.focus_first`,
+  `EditScreen._last_edited`, `MonthDB.accounts_by_serial`,
+  `analyze_log.load_table_serials`, параметр `first_run`.
+- `prelabel` пишет в `classes.txt` новые имена классов (meter, serial, account).
+
 ## 2026-10-18 — кропы на проверку; разовый переход удалён
 - `gmr.py datasets --review serials|accounts|digits [--conf 0.9] [--weights …]`
   (`tools/dataset_review.py`): модель читает кропы датасета; где она не

@@ -286,9 +286,9 @@ def inspect_account(models: Models, path: Path, stem: str, out: Path, from_crop:
         if crop is None:
             return [{"file": str(path), "note": "не удалось открыть"}]
     else:
-        det = find_detection(models.get("meter").detect(str(path)), cfg.account_class)
+        det = find_detection(models.get("meter").detect(str(path)), "account")
         if det is None:
-            return [{"file": str(path), "note": f"детектор не нашёл {cfg.account_class}"}]
+            return [{"file": str(path), "note": "детектор не нашёл account"}]
         crop = det["crop"]
         write_image(out / f"{stem}__crop.jpg", crop)
     pred = models.get("account").recognize(crop, models.account_groups)

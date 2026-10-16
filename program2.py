@@ -702,19 +702,6 @@ def redraw_annotation(path: str, serial: str, reading_str: str) -> None:
     except Exception as e:
         log.warning(f"Не удалось перерисовать аннотацию: {e}")
 
-def photo_to_tk(path: str, max_w: int, max_h: int,
-                zoom: float = 1.0, offset: tuple = (0, 0)) -> Optional[ImageTk.PhotoImage]:
-    try:
-        img = Image.open(path)
-        base_w, base_h = img.size
-        scale = min(max_w / base_w, max_h / base_h)
-        new_w = max(1, int(base_w * scale * zoom))
-        new_h = max(1, int(base_h * scale * zoom))
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-        return ImageTk.PhotoImage(img)
-    except Exception:
-        return None
-
 def now_iso() -> str:
     return datetime.now().strftime("%d.%m.%Y %H:%M")
 
@@ -907,9 +894,6 @@ class ReadingWidget(ttk.Frame):
         for e in self._entries:
             e.config(bg=CLR_WHITE)
 
-    def focus_first(self):
-        self._entries[0].focus_set()
-
 # ─── Главное окно ─────────────────────────────────────────────────────────────
 class MainWindow(tk.Tk):
     def __init__(self):
@@ -939,7 +923,7 @@ class MainWindow(tk.Tk):
 
     def _do_login(self):
         if not self.settings.operator_name or not self.settings.month_dir:
-            if not self._open_settings(first_run=True):
+            if not self._open_settings():
                 self.destroy()
                 return
         else:
@@ -954,7 +938,7 @@ class MainWindow(tk.Tk):
         self._load_models_async()
         self._build_ui()
 
-    def _open_settings(self, first_run=False) -> bool:
+    def _open_settings(self) -> bool:
         dlg = SettingsDialog(self, self.settings, new_month=self.ask_new_month)
         if dlg.result:
             self.settings = dlg.result
@@ -1603,7 +1587,6 @@ class EditScreen(ttk.Frame):
         self._model_result: Optional[dict] = None
         self._tk_img: Optional[ImageTk.PhotoImage] = None
         self._confirmed_suspicious  = False
-        self._last_edited: str = "serial"
         self._filling_other: bool = False
         self._model_serial:  Optional[str] = None
         self._model_reading: Optional[str] = None
@@ -2118,7 +2101,6 @@ class EditScreen(ttk.Frame):
     def _on_serial_change(self):
         if self._filling_other:
             return
-        self._last_edited = "serial"
         model_serial = getattr(self, "_model_serial", None)
         if model_serial is not None and self._serial_var.get() != model_serial:
             self._serial_source = "Серийник: вручную"
@@ -2137,7 +2119,6 @@ class EditScreen(ttk.Frame):
     def _on_account_change(self):
         if self._filling_other:
             return
-        self._last_edited = "account"
         self._account_match_var.set("")
         if hasattr(self, "_account_lookup_job"):
             self.after_cancel(self._account_lookup_job)

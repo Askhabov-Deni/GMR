@@ -111,16 +111,16 @@ def check_meter_classes(meter_detector) -> None:
             f"gas_meter, serial_number, marker_id — тоже годятся).")
 
 
-def check_account_class(meter_detector, config: PipelineConfig) -> None:
+def check_account_class(meter_detector) -> None:
     """Модель надписи без класса надписи у детектора счётчика бесполезна
     молча — лучше сразу сказать, какие классы у детектора есть."""
     names = _class_names(meter_detector)
     if names is None:
         return
-    if standard_class(config.account_class) not in {standard_class(n) for n in names}:
+    if ACCOUNT not in {standard_class(n) for n in names}:
         raise ValueError(
-            f"У детектора счётчика нет класса «{config.account_class}» (PipelineConfig.account_class); "
-            f"его классы: {', '.join(map(str, names))}. Укажите в account_class имя класса надписи маркером.")
+            f"У детектора счётчика нет класса надписи маркером «account» (прежнее имя «marker_id»); "
+            f"его классы: {', '.join(map(str, names))}.")
 
 
 def load_models(
@@ -137,7 +137,7 @@ def load_models(
     check_meter_classes(meter_detector)
     account_recognizer = load_account_recognizer(config, device, resolve_path)
     if account_recognizer is not None:
-        check_account_class(meter_detector, config)
+        check_account_class(meter_detector)
     return RecognitionModels(
         meter_detector=meter_detector,
         digit_detector=load_digit_detector(config, resolve_path),

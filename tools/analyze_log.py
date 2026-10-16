@@ -514,10 +514,6 @@ def load_table(path: Path, cfg: PipelineConfig) -> tuple[set[str], dict[str, Opt
     return set(last), last, accounts
 
 
-def load_table_serials(path: Path, cfg: PipelineConfig) -> set[str]:
-    return load_table(path, cfg)[0]
-
-
 def main(argv=None) -> str:
     p = argparse.ArgumentParser(prog="python -m tools.analyze_log",
                                 description="Качество чтения reader.py по логу обработки.")

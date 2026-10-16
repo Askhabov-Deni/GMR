@@ -13,7 +13,9 @@
 - Если модель ничего не нашла — файл не пишется: пустой файл значил бы
   «на фото ничего нет», и такое фото пошло бы в обучение без разметки.
 - classes.txt (названия классов модели по строкам) — в папку разметки и в
-  папку датасета, если его там нет.
+  папку датасета, если его там нет. Названия — одним словом (стандарт
+  датасетов, docs/DATASETS.md): gas_meter → meter, serial_number → serial,
+  marker_id → account; номера классов — как у модели.
 - По умолчанию веса — детектор счётчика из PipelineConfig, порог — 0.25:
   ниже, чем в reader.py (0.7), чтобы человек видел и неуверенные рамки.
 """
@@ -26,6 +28,7 @@ try:
 except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from models.datasets import images_in
+from src.gmr.domain.datasets import standard_class
 
 
 def labels_dir_for(images: Path) -> Path:
@@ -87,7 +90,7 @@ def main(argv=None) -> int:
 
     from ultralytics import YOLO
     model = YOLO(args.weights)
-    names = [model.names[i] for i in sorted(model.names)]
+    names = [standard_class(model.names[i]) for i in sorted(model.names)]
 
     def predict(path: Path):
         r = model.predict(str(path), conf=args.conf, verbose=False)[0]

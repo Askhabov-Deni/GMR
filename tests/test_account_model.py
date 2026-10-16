@@ -277,7 +277,7 @@ def _photo(config, serial_text, serial_conf=0.95, marker=None, with_serial=True,
     if not with_serial:
         crops = [c for c in crops if c["class"] != "serial_number"]
     if with_account:
-        crops.append({"class": config.account_class, "conf": 0.9, "angle": 0.0,
+        crops.append({"class": "marker_id", "conf": 0.9, "angle": 0.0,
                       "bbox": (0, 150, 120, 190), "crop": make_crop(40, 120), "path": None})
     digit_crops, arrays = make_digit_crops_with_centers([i * 40 for i in range(5)])
     docr = FakeDigitOCR({id(a): (d, 0.95) for a, d in zip(arrays, "01200")})
@@ -358,17 +358,18 @@ def test_loader_refuses_detector_without_account_class():
     class Det:
         class inferer:
             class_names = {0: "gas_meter", 1: "serial_number"}
-    cfg = PipelineConfig(account_ocr_model="x.pt", account_class="account")
-    with pytest.raises(ValueError, match="gas_meter, serial_number"):
-        loader.check_account_class(Det(), cfg)
-    loader.check_account_class(Det(), PipelineConfig(account_class="serial_number"))
-    loader.check_account_class(Det(), PipelineConfig(account_class="serial"))         # то же слово
+    with pytest.raises(ValueError, match="«account» .*его классы: gas_meter, serial_number"):
+        loader.check_account_class(Det())
 
     class Old:
         class inferer:
             class_names = ["gas_meter", "serial_number", "marker_id"]
-    assert PipelineConfig().account_class == "account"
-    loader.check_account_class(Old(), PipelineConfig())                # прежнее имя в весах — годится
+
+    class New:
+        class inferer:
+            class_names = ["meter", "serial", "account"]
+    loader.check_account_class(Old())                                  # прежнее имя в весах — годится
+    loader.check_account_class(New())
 
 
 # ─── inspect account ─────────────────────────────────────────────────────────

@@ -79,7 +79,7 @@ def test_project_code_compiles_without_warnings():
     found = []
     for p in sorted(root.rglob("*.py")):
         rel = p.relative_to(root)
-        if rel.parts[0] in ("archive", ".venv", "venv") or "site-packages" in rel.parts:
+        if rel.parts[0] in (".venv", "venv") or "site-packages" in rel.parts:
             continue
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")

@@ -79,7 +79,7 @@ class PhotoResult:
     new_photo_name: Optional[str]   = None
     error_detail:   Optional[str]   = None
     # ↓ Данные для отрисовки боксов (заполняются в process_photo)
-    # meter_crops_raw — список dict из meter_detector (gas_meter, serial_number)
+    # meter_crops_raw — список dict из meter_detector (meter, serial, account)
     meter_crops_raw: Optional[list] = None
     # digit_bboxes_in_orig — боксы цифр в координатах оригинала [(x1,y1,x2,y2), ...]
     digit_bboxes_in_orig: Optional[list] = None

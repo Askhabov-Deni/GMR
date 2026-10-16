@@ -62,12 +62,9 @@ class PipelineConfig:
     # рамка обрезает крайний символ номера. 0 — как было; другое значение —
     # только решением владельца после `gmr.py etalon check --serial-pad`.
     serial_crop_pad:          float = 0.0
-    # Надпись маркером: имя её класса у детектора счётчика (account; прежнее
-    # имя marker_id — то же самое, domain/datasets.standard_class; если у
-    # модели другое — загрузка скажет, какие есть)
-    # и порог уверенности счёта (доля среди всех счетов таблицы,
+    # Надпись маркером (класс детектора account, прежнее имя marker_id):
+    # порог уверенности счёта (доля среди всех счетов таблицы,
     # models/ctc_lexicon.py). Как пишут счёт — account_match.account_variants.
-    account_class:            str   = "account"
     account_conf_thresh:      float = 0.9
 
     # Прочее
@@ -131,9 +128,9 @@ class PipelineConfig:
     debug_digits:              bool = False
 
     # Отрисовка боксов на итоговом фото (для визуальной проверки детекций).
-    # gas_meter    — зелёный
-    # serial_number — синий
-    # digit         — оранжевый
+    # meter  — зелёный
+    # serial — синий
+    # digit  — оранжевый
     # Подписи классов не рисуются.
     # До 2026-10-01 здесь было True, но обычный прогон (`python reader.py`,
     # `gmr.py process`) всегда переопределял на False — теперь значение одно.

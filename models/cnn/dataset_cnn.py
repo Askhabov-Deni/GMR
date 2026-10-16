@@ -1,10 +1,12 @@
 """
 Загрузка данных для CNN-классификатора цифр.
-Структура папки crops_dir (создаётся build_dataset_cnn.py):
+Структура папки crops_dir (database/datasets/digits_cnn, docs/DATASETS.md):
 crops_dir/
-0/  *.jpg
+0/  <фото>__digit<N>.jpg
 ...
-9/  *.jpg
+9/  <фото>__digit<N>.jpg
+Ответ — папка. Новые кропы — python gmr.py datasets --build (сборщик) или
+тихая разметка окна оператора.
 """
 import sys
 from pathlib import Path
@@ -151,7 +153,7 @@ def _collect_samples(root: Path):
 
 def _train_val_test_split(samples, train_ratio=TRAIN_RATIO, val_ratio=VAL_RATIO, seed=SEED):
     """Деление по фото (этап 5, models/datasets.py): все цифры одного фото
-    (`<фото>__…__digit_N.jpg`) — в одной части. До этапа 5 делились кропы
+    (`<фото>__digit<N>.jpg`, docs/DATASETS.md) — в одной части. До этапа 5 делились кропы
     по классам, и цифры одного фото попадали и в обучение, и в тест —
     test_acc был завышен."""
     parts = split_by_photo(samples, lambda s: s[0].name, seed, train_ratio, val_ratio)

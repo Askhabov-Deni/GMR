@@ -352,6 +352,27 @@ def test_prelabel_writes_only_missing(tmp_path):
     assert prelabel.labels_dir_for(tmp_path / "new") == tmp_path / "new"
 
 
+def test_prelabel_writes_classes_in_one_word(tmp_path, monkeypatch, capsys):
+    images = tmp_path / "meter_yolo" / "images"
+    touch(images / "a.jpg")
+
+    class Boxes:
+        cls, xywhn = types.SimpleNamespace(tolist=lambda: [0.0]), types.SimpleNamespace(tolist=lambda: [[.5, .5, .2, .2]])
+
+    class YOLO:                                   # обученный детектор — с прежними именами классов
+        names = {0: "gas_meter", 1: "serial_number", 2: "marker_id"}
+
+        def __init__(self, weights):
+            pass
+
+        def predict(self, path, conf, verbose):
+            return [types.SimpleNamespace(boxes=Boxes())]
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=YOLO))
+    assert prelabel.main([str(images)]) == 0
+    assert (tmp_path / "meter_yolo" / "classes.txt").read_text(encoding="utf-8") == "meter\nserial\naccount\n"
+    assert "0 — meter, 1 — serial, 2 — account" in capsys.readouterr().out
+
+
 def test_prelabel_keeps_existing_classes(tmp_path):
     (tmp_path / "classes.txt").write_text("мои\n", encoding="utf-8")
     assert prelabel.write_classes(tmp_path, ["display"]) is False

@@ -188,10 +188,6 @@ class MonthDB:
     def set_serial(self, account: str, serial: str) -> None:
         self.conn.execute("UPDATE abonents SET serial=? WHERE account=?", (serial, account))
 
-    def accounts_by_serial(self, serial: str) -> list[str]:
-        return [r[0] for r in self.conn.execute(
-            "SELECT account FROM abonents WHERE serial=? AND in_table=1 ORDER BY row_order", (serial,))]
-
     # ─── показания ──────────────────────────────────────────────────────────
     def readings(self) -> dict[str, Reading]:
         return {r["account"]: Reading(**dict(r)) for r in self.conn.execute("SELECT * FROM readings")}

@@ -98,7 +98,7 @@ def test_create_month(tmp_path):
         ab = db.abonents()
         assert list(ab) == [f"100000000{i}" for i in range(1, 7)]             # порядок файла
         assert ab["1000000002"].serial == "123456" and ab["1000000002"].data["Абонент"] == "Пробный П.П."
-        assert db.accounts_by_serial("0012345") == ["1000000001"]
+        assert ab["1000000001"].serial == "0012345"                           # нули — как в таблице
         r = db.readings()["1000000002"]
         assert (r.value, r.date, r.source, r.updated_by) == ("5100", "15 05 2026", "table", "тест")
         assert [c["action"] for c in db.changes()] == ["месяц создан"]

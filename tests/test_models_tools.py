@@ -18,8 +18,6 @@ import ast
 import csv
 import hashlib
 import inspect
-import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -116,13 +114,6 @@ def test_crnn_refuses_arbitrary_pickle(tmp_path):
         CRNN.from_pretrained(str(ckpt))
 
 
-# ─── 4. Архив ────────────────────────────────────────────────────────────────
-
-def test_extract_digit_crops_archived():
-    assert not (ROOT / "models/cnn/extract_digit_crops.py").exists()
-    assert (ROOT / "archive/models/cnn/extract_digit_crops.py").exists()
-
-
 # ─── 6. Абсолютные пути ─────────────────────────────────────────────────────
 
 def test_no_absolute_windows_paths_in_models_code():
@@ -133,12 +124,6 @@ def test_no_absolute_windows_paths_in_models_code():
                     and ("C:\\AD" in node.value or "D:\\" in node.value):
                 bad.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert bad == []
-
-
-def test_build_dataset_cnn_has_cli():
-    r = subprocess.run([sys.executable, str(ROOT / "models/cnn/build_dataset_cnn.py"), "--help"],
-                       capture_output=True, text=True)
-    assert r.returncode == 0 and "--digits_dir" in r.stdout
 
 
 # ─── 7. tools.inspect_model ──────────────────────────────────────────────────

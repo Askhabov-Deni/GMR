@@ -72,7 +72,7 @@ from src.gmr.domain import (
     AccountRecognizer,
 )
 from src.gmr.domain.account_match import AccountMarkerPolicy, account_groups as build_account_groups
-from src.gmr.domain.datasets import METER, SERIAL, standard_class
+from src.gmr.domain.datasets import ACCOUNT, METER, SERIAL, standard_class
 from src.gmr.application import (
     RecognitionModels,
     detect_meter,
@@ -320,7 +320,7 @@ def _read_marker(recognizer: Optional[AccountRecognizer], crops: list, groups: O
     """Что написано маркером и какой это счёт; None — нет модели или надписи."""
     if recognizer is None:
         return None
-    det = find_detection(crops, config.account_class)
+    det = find_detection(crops, ACCOUNT)
     return None if det is None else recognizer.recognize(det["crop"], groups)
 
 
@@ -1063,8 +1063,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
         if config.draw_boxes:
             log.info("⚙️  draw_boxes=True: на фото будут нарисованы боксы детекций")
         if loaded.account_recognizer is not None:
-            log.info(f"⚙️  надпись маркером: {config.account_ocr_model} (класс «{config.account_class}», "
-                     f"порог {config.account_conf_thresh})")
+            log.info(f"⚙️  надпись маркером: {config.account_ocr_model} (порог {config.account_conf_thresh})")
         return loaded
 
     # ── Папки контролёров ────────────────────────────────────────────────────

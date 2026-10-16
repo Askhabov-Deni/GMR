@@ -222,9 +222,9 @@ def test_table_serials_keep_leading_zeros(tmp_path):
     table = tmp_path / "t.csv"
     # таблица читается, как при создании месяца: «;» или «,», номер без знаков по краям
     table.write_text(f"{cfg.col_serial};{cfg.col_account_id}\n0045618;1\n 9076647. ;2\n;3\n", encoding="utf-8")
-    assert al.load_table_serials(table, cfg) == {"0045618", "9076647"}
+    assert al.load_table(table, cfg)[0] == {"0045618", "9076647"}
     table.write_text(f"{cfg.col_serial},{cfg.col_account_id}\n0045618,1\n 9076647 ,2\n,3\n", encoding="utf-8")
-    assert al.load_table_serials(table, cfg) == {"0045618", "9076647"}
+    assert al.load_table(table, cfg)[0] == {"0045618", "9076647"}
 
 
 def test_load_table_reads_xlsx_like_month(tmp_path):

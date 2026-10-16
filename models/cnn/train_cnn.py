@@ -197,7 +197,7 @@ def main() -> None:
 
     if not crops_dir.exists():
         print(f"❌ Папка с кропами не найдена: {crops_dir.resolve()}")
-        print("   Сначала запустите build_dataset_cnn.py")
+        print("   Кропы цифр: python gmr.py datasets --build <папка фото> --table <таблица> (docs/DATASETS.md)")
         return
 
     print(f"🖥️  Устройство: {device}")
