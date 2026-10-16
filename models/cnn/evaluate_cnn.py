@@ -291,8 +291,8 @@ def main() -> None:
     print("  Оценка завершена успешно!")
     print(f"  Все результаты сохранены в: {os.path.abspath(out_dir)}")
     print(f"{'=' * 65}")
-    print("\n➡️  Следующий шаг:")
-    print("   python infer_cnn.py --checkpoint runs/cnn/best_model.pt --image path/to/crop.jpg")
+    print("\n➡️  Следующий шаг — старая и новая модель на реальных фото (docs/GUIDE.md, 5.1, 5.4):")
+    print(f"   python gmr.py inspect digit <папка с кропами цифр> --weights {Path(args.run_dir) / 'best.pth'}")
 
 
 if __name__ == "__main__":

@@ -53,6 +53,14 @@ def agrees(kind: str, answer: str, read: str) -> bool:
     return read == answer
 
 
+def model_path(kind: str, weights: Optional[str] = None) -> str:
+    """Чьи веса читают: --weights или модель из настроек программы."""
+    cfg = PipelineConfig()
+    default = {"serials": cfg.serial_ocr_model, "digits": cfg.digit_ocr_model,
+               "accounts": cfg.account_ocr_model}[kind]
+    return weights or default
+
+
 def load_reader(kind: str, weights: Optional[str] = None) -> Callable:
     """Картинка → (что прочитано, уверенность) моделью из настроек или --weights."""
     from src.gmr.ml import loader
@@ -100,7 +108,8 @@ def review(root: Path, kind: str, conf: float = 0.9, weights: Optional[str] = No
         if i % 200 == 0 or i == len(crops):
             print(f"Кроп {i} из {len(crops)}", flush=True)
     rows.sort(key=lambda r: r.pop("_c"))
-    lines = [f"Проверка {FOLDERS[kind]}: кропов {len(crops)}, на проверку — {len(rows)} "
+    lines = [f"Модель: {model_path(kind, weights)}" + ("" if weights else " (из настроек программы; другую — --weights)"),
+             f"Проверка {FOLDERS[kind]}: кропов {len(crops)}, на проверку — {len(rows)} "
              f"(не совпадает — {sum(r['почему'] == 'не совпадает' for r in rows)}, "
              f"не уверена (< {conf}) — {sum(r['почему'] == 'не уверена' for r in rows)})"]
     if unread:

@@ -218,6 +218,8 @@ def test_check(tmp_path, monkeypatch):
     assert res["d"]["serial_ok"] == "False" and res["d"]["serial_wrong_sure"] == "False"   # неуверенный номер
     assert res["d"]["reading_wrong_sure"] == "True" and res["d"]["model_reading"] == "9678"
     assert res["e"]["meter_found"] == "False"
+    assert (res["b"]["model_serial"], res["b"]["true_serial"], res["b"]["true_reading"], res["b"]["file"]) == (
+        "222221", "222222", "1234", "b.jpg")                    # ошибка видна по CSV, без answers.csv
     assert out.parent == et / "checks"
 
 

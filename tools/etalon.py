@@ -42,7 +42,7 @@ from models.datasets import DATASETS_DIR, IMAGE_EXTS, to_etalon
 from src.gmr.application.operator import CORRECTED_NOTE
 from src.gmr.domain import PipelineConfig
 from src.gmr.domain.models import QUESTION_REASONS
-from src.gmr.domain.serial_match import build_serial_groups, normalize_serial
+from src.gmr.domain.serial_match import build_serial_groups, lookup_variants, normalize_serial
 
 ETALON_DIR = DATASETS_DIR / "etalon"
 # авто-исходы «модель не справилась»; ERROR — сбой программы, а не модели
@@ -220,9 +220,8 @@ def add(source: Path, photos: Optional[Path] = None, etalon: Path = ETALON_DIR) 
 # ─── Проверка моделей на эталоне ─────────────────────────────────────────────
 
 def serial_matches(text: str, truth: str) -> bool:
-    """Как reader.py ищет номер в таблице: как есть, с «0» или «00» спереди."""
-    return any(normalize_serial(p + (text or "")) == normalize_serial(truth) for p in ("", "0", "00")) \
-        and bool(text)
+    """Как reader.py ищет номер в таблице (serial_match.lookup_variants)."""
+    return bool(text) and normalize_serial(truth) in {normalize_serial(v) for v in lookup_variants(text)}
 
 
 def reading_matches(number: Optional[int], truth: str, config: PipelineConfig) -> bool:
@@ -252,6 +251,11 @@ class PhotoCheck:
     serial_right: Optional[bool] = None
     digits_conf: Optional[float] = None     # самая неуверенная из цифр
     digits_right: Optional[bool] = None     # все цифры модели (без подстановок) верны
+    # правильный ответ (оператор) и фото в etalon/photos — разбирать ошибки
+    # по CSV, не открывая answers.csv (2026-10-19)
+    true_serial: str = ""
+    true_reading: str = ""
+    file: str = ""
 
     @property
     def all_ok(self) -> bool:
@@ -284,7 +288,8 @@ def check_photo(models, path: Path, answer: dict, config: PipelineConfig,
     return PhotoCheck(answer["photo_hash"], answer["reason"], rec.meter is not None, rec.serial is not None,
                       s_ok and sure, sure and not s_ok, r_ok, number is not None and not r_ok,
                       text, "" if number is None else str(number),
-                      sp.confidence if sp else None, serial_right, d_conf, d_right)
+                      sp.confidence if sp else None, serial_right, d_conf, d_right,
+                      answer["serial"], str(answer["reading"]), answer.get("file", ""))
 
 
 def _digits_answer(digits, truth: str, config: PipelineConfig) -> tuple[Optional[float], Optional[bool]]:

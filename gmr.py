@@ -14,6 +14,8 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py check                                                 проверка перед коммитом
   python gmr.py shortcut                                              ярлык «Счётчики» на рабочем столе
   python gmr.py datasets [--list]                                     папки датасетов и их проверка
+  python gmr.py datasets --build <фото> --table <таблица>             кропы для датасетов из фото и таблицы
+  python gmr.py datasets --review serials|accounts|digits             кропы, где модель не согласна, — на проверку
   python gmr.py prelabel <папка с фото>                               предразметка YOLO текущей моделью
   python gmr.py etalon add <месяц> | check [--serial-pad X]           эталон трудных фото: пополнить / проверить модели
   python gmr.py angles <месяц | папка с фото>                         замер: насколько повёрнуты счётчики на фото
@@ -148,7 +150,8 @@ COMMANDS = {
     "weights": (_weights, "какие файлы весов в работе (tools/weights_manifest.py)"),
     "check":   (_check,   "проверка перед коммитом: данные, код, тесты (tools/check.py)"),
     "shortcut": (_shortcut, "ярлык «Счётчики» на рабочем столе — окно оператора (tools/shortcut.py)"),
-    "datasets": (_datasets, "папки датасетов моделей: создать недостающие и проверить (tools/datasets.py)"),
+    "datasets": (_datasets, "датасеты: проверить, собрать из фото (--build), на проверку глазами (--review) "
+                            "(tools/datasets.py)"),
     "etalon":   (_etalon,   "эталон трудных фото: пополнить из месяца, проверить на нём модели (tools/etalon.py)"),
     "angles":   (_angles,   "замер: насколько повёрнуты счётчики на фото (tools/angles.py)"),
     "prelabel": (_prelabel, "предразметка YOLO: рамки текущей модели на фото без разметки "

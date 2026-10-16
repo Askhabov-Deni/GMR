@@ -325,8 +325,8 @@ def main() -> None:
     print(f"  Run dir      : {output_dir.resolve()}")
     print(f"{'='*65}")
     print("\n➡️  Следующие шаги:")
-    print("   1. python evaluate_cnn.py --run_dir runs/cnn  (построит Confusion Matrix)")
-    print("   2. python infer_cnn.py --checkpoint runs/cnn/best_model.pt --image path/to/crop.jpg")
+    print(f"   1. python models/cnn/evaluate_cnn.py --run_dir {output_dir}  (матрица ошибок, картинки ошибок)")
+    print(f"   2. python gmr.py inspect digit <папка с кропами цифр> --weights {output_dir / 'best.pth'}")
 
 
 if __name__ == "__main__":

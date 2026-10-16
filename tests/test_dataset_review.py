@@ -56,7 +56,8 @@ def test_review_serials_and_back(tmp_path):
     _datasets(root)
     (root / "serials_crnn" / "images" / "1300000009__serial1__1234567.jpg").write_bytes(b"x")   # битая
     out = rv.review(root, "serials", read=read)
-    assert out.splitlines()[:2] == [
+    assert out.splitlines()[0].startswith("Модель: serial_id_ocr/") and "из настроек программы" in out
+    assert out.splitlines()[1:3] == [
         "Проверка serials_crnn: кропов 4, на проверку — 2 (не совпадает — 1, не уверена (< 0.9) — 1)",
         "Не открылись как картинка (оставлены): 1"]
     review = root / "serials_crnn" / "проверить"
@@ -118,7 +119,9 @@ def test_review_digits_by_folder(tmp_path):
 def test_review_conf_and_empty(tmp_path):
     root = tmp_path / "ds"
     _datasets(root)
-    assert "на проверку — 1 (не совпадает — 1, не уверена (< 0.3) — 0)" in rv.review(root, "serials", 0.3, read=read)
+    out = rv.review(root, "serials", 0.3, weights="w/best.pt", read=read)
+    assert "на проверку — 1 (не совпадает — 1, не уверена (< 0.3) — 0)" in out
+    assert out.splitlines()[0] == "Модель: w/best.pt"
     with pytest.raises(ValueError, match="нет кропов с ответом"):
         rv.review(tmp_path / "пусто", "serials", read=read)
     assert rv.agrees("accounts", "1300000093", "13-0093") is False         # черта не читается моделью
