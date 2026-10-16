@@ -3,7 +3,8 @@ tools/datasets.py — папки датасетов и их проверка (э
 
   python gmr.py datasets [--root database/datasets] [--list]
   python gmr.py datasets --collect <папка месяца> [<папка месяца> …]
-  python gmr.py datasets --standard [--month <папка месяца> …] [--apply]
+  python gmr.py datasets --review serials|accounts|digits [--conf 0.9] [--weights <best>]
+  python gmr.py datasets --review-done serials|accounts|digits
   python gmr.py datasets --build <папка с фото> --table <таблица> [--only serials accounts digits] [--out <папка>]
 
 Создаёт недостающие папки раскладки (models/datasets.py) — ничего не
@@ -19,7 +20,8 @@ tools/datasets.py — папки датасетов и их проверка (э
 
 Имена кропов — по стандарту датасетов (docs/DATASETS.md):
 <фото>__serial1__<номер>.jpg, <счёт>__account1.jpg, digits_cnn/<цифра>/<фото>__digit3.jpg.
---standard — разовый переход старых имён на стандарт (tools/datasets_standard.py).
+--review — кропы, где модель не согласна с ответом или не уверена, — в
+<датасет>/проверить/ на просмотр; --review-done — обратно (tools/dataset_review.py).
 --build — кропы для датасетов из папки фото и таблицы (tools/dataset_build.py).
 """
 import argparse
@@ -97,6 +99,15 @@ def _new_line(root: Path, what: str) -> str:
         " — " + ", ".join(f"{m}: {n}" for m, n in sorted(months.items())) if files else "")
 
 
+def _review_line(root: Path, rep: Report) -> None:
+    """Кропы на проверке (gmr.py datasets --review): обучение их не читает."""
+    files = [p for p in (root / "проверить").rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS] \
+        if (root / "проверить").is_dir() else []
+    if files:
+        rep.add(f"  ⚠ на проверке (проверить\\, обучение не читает): {len(files)} — "
+                f"вернуть: gmr.py datasets --review-done")
+
+
 def check_yolo(root: Path, rep: Report) -> None:
     images_dir, labels_dir = root / "images", root / "labels"
     images = images_in(images_dir)
@@ -152,7 +163,7 @@ def check_cnn(root: Path, rep: Report) -> None:
         other += [f"{d}/{f.name}" for f in files if f not in imgs]
         per_digit[d] = len(imgs)
         samples += imgs
-    extra = [p.name for p in root.iterdir() if p.is_dir() and p.name not in DIGITS + ["new"]] if root.is_dir() else []
+    extra = [p.name for p in root.iterdir() if p.is_dir() and p.name not in DIGITS + ["new", "проверить"]] if root.is_dir() else []
     rep.add(f"  кропов: {len(samples)} — " + ", ".join(f"{d}: {n}" for d, n in per_digit.items()))
     no_key = sum(1 for p in samples if "__" not in p.stem)
     rep.add(f"  фото (по имени до «__»): {len({photo_key(p.name) for p in samples})}"
@@ -172,6 +183,7 @@ def check_cnn(root: Path, rep: Report) -> None:
         from models.cnn.config_cnn import SEED, TRAIN_RATIO, VAL_RATIO
         rep.add(_split_line(split_by_photo(samples, lambda p: p.name, SEED, TRAIN_RATIO, VAL_RATIO)))
     rep.add(_new_line(root, "исправил оператор"))
+    _review_line(root, rep)
     by_digit = Counter(p.parent.name for p in _new_images(root))
     if by_digit:
         rep.add("    по цифрам: " + ", ".join(f"{d}: {by_digit[d]}" for d in DIGITS))
@@ -199,8 +211,9 @@ def check_crnn(root: Path, rep: Report) -> None:
     if good:
         rep.add(_split_line(split_by_photo(good, lambda p: p.name, CRNN_SEED, CRNN_TRAIN, CRNN_VAL)))
     if (root / "labels").is_dir():
-        rep.add("  labels\\ не нужна: номер — в имени кропа (gmr.py datasets --standard)")
+        rep.add("  labels\\ не нужна: номер — в имени кропа (docs\\DATASETS.md)")
     rep.add(_new_line(root, "исправил оператор"))
+    _review_line(root, rep)
 
 
 def check_account(root: Path, rep: Report) -> None:
@@ -220,6 +233,7 @@ def check_account(root: Path, rep: Report) -> None:
     if (root / "labels").is_dir():
         rep.add("  labels\\ не нужна: что написано, модель узнаёт сама по счёту из имени (папку можно удалить)")
     rep.add(_new_line(root, "исправил оператор"))
+    _review_line(root, rep)
 
 
 CHECKS = {"meter_yolo": check_yolo, "digits_yolo": check_yolo, "digits_cnn": check_cnn,
@@ -307,12 +321,12 @@ def main(argv=None) -> int:
     p.add_argument("--list", action="store_true", help="записать имена проблемных файлов в datasets_problems.txt")
     p.add_argument("--collect", nargs="+", metavar="МЕСЯЦ",
                    help="забрать разметку из папок месяцев (<месяц>/разметка) в new/<ГГГГ-ММ>/")
-    p.add_argument("--standard", action="store_true",
-                   help="разово: переименовать кропы по стандарту (без --apply — только показать)")
-    p.add_argument("--month", nargs="+", metavar="МЕСЯЦ", default=[],
-                   help="с --standard: папки месяцев — лицевой счёт кропов разметки по отпечатку фото")
-    p.add_argument("--apply", action="store_true", help="с --standard: переименовать")
-    p.add_argument("--standard-undo", action="store_true", help="вернуть имена, как были до --standard --apply")
+    p.add_argument("--review", choices=["serials", "accounts", "digits"],
+                   help="кропы, где модель не согласна с ответом или не уверена, — в <датасет>/проверить/")
+    p.add_argument("--review-done", choices=["serials", "accounts", "digits"],
+                   help="вернуть проверенные кропы из <датасет>/проверить/ в датасет")
+    p.add_argument("--conf", type=float, default=0.9, help="с --review: ниже этой уверенности — на проверку")
+    p.add_argument("--weights", help="с --review: веса модели (по умолчанию — из настроек программы)")
     p.add_argument("--build", metavar="ФОТО", help="собрать кропы из папки фото (имя фото — лицевой счёт)")
     p.add_argument("--table", metavar="ТАБЛИЦА", help="с --build: таблица (номер счётчика, текущие показания)")
     p.add_argument("--only", nargs="+", choices=["serials", "accounts", "digits"],
@@ -331,11 +345,11 @@ def main(argv=None) -> int:
             print(f"ОШИБКА: {e}")
             return 1
         return 0
-    if args.standard or args.standard_undo:
-        from tools import datasets_standard
+    if args.review or args.review_done:
+        from tools import dataset_review
         try:
-            print(datasets_standard.undo(root) if args.standard_undo else
-                  datasets_standard.run(root, [Path(m) for m in args.month], args.apply))
+            print(dataset_review.done(root, args.review_done) if args.review_done else
+                  dataset_review.review(root, args.review, args.conf, args.weights))
         except (ValueError, OSError) as e:
             print(f"ОШИБКА: {e}")
             return 1

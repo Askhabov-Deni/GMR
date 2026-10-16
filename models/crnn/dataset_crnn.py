@@ -20,45 +20,7 @@ except ImportError:  # запуск как отдельный скрипт: ну
     from models.datasets import images_in, parse_crop_name, split_by_photo
 
 
-# ── Загрузка аннотаций ────────────────────────────────────────────────
-
-def _parse_label_txt(label_path: Path) -> str | None:
-    """
-    Читает .txt и возвращает строку из цифр.
-    Авто-детекция формата: если в строках есть пробелы → YOLO, иначе → plain-text.
-    Возвращает None, если длина не попадает в [MIN_LABEL_LENGTH, MAX_LABEL_LENGTH].
-    """
-    raw = label_path.read_text(encoding="utf-8").strip()
-    if not raw:
-        return None
-
-    lines = [l.strip() for l in raw.splitlines() if l.strip()]
-    is_yolo = any(" " in line for line in lines)
-
-    if is_yolo:
-        boxes = []
-        for line in lines:
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            try:
-                cls = int(parts[0])
-                cx  = float(parts[1])
-                if 0 <= cls <= 9:
-                    boxes.append((cx, cls))
-            except ValueError:
-                continue
-        boxes.sort(key=lambda b: b[0])
-        label = "".join(str(c) for _, c in boxes)
-    else:
-        label = "".join(lines)
-        if not label.isdigit():
-            return None
-
-    if MIN_LABEL_LENGTH <= len(label) <= MAX_LABEL_LENGTH:
-        return label
-    return None
-
+# ── Загрузка: номер — в имени кропа ───────────────────────────────────
 
 def label_of(name: str) -> str | None:
     """Номер из имени кропа по стандарту (docs/DATASETS.md):

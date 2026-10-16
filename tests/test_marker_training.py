@@ -106,7 +106,7 @@ def test_dataset_from_names(tmp_path, capsys):
         ("IMG_1__account1__1300000082.jpg", "1300000082")]
     assert items[1]["variants"] == account_variants("1300000093")
     assert ds.account_of("1300000093__account2.jpg") == "1300000093" and ds.account_of("IMG_1.jpg") is None
-    assert ds.account_of("1300000093__marker_id_1.jpeg") is None                  # старое имя — --standard
+    assert ds.account_of("1300000093__marker_id_1.jpeg") is None                  # старое имя — не по стандарту
 
 
 def test_split_keeps_account_together(tmp_path):
