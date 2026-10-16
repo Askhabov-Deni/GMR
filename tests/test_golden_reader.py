@@ -1,5 +1,5 @@
 """
-Golden tests для reader.py — docs/MIGRATION_TZ.md, раздел 2.
+Golden tests для reader.py — ТЗ миграции, история git, раздел 2.
 
 Пишутся ДО любого рефакторинга структуры (Фаза 0), на текущем reader.py,
 с моками YOLOInferer/CRNNInferer/CNNInferer (см. tests/conftest.py).
@@ -10,7 +10,7 @@ Golden tests для reader.py — docs/MIGRATION_TZ.md, раздел 2.
 наблюдаемым поведением (это и есть цель golden test: контракт поведения,
 не контракт реализации).
 
-Нумерация кейсов 1-16 соответствует таблице в MIGRATION_TZ.md §2.
+Нумерация кейсов 1-16 соответствует таблице в ТЗ миграции (история git) §2.
 """
 from tests._fixtures import (
     FakeDigitDetector, FakeDigitOCR, FakeMeterDetector, FakeSerialOCR, process_photo,
@@ -281,7 +281,7 @@ def test_case16_digit_detector_found_nothing():
 
 
 # ─── 17-19: NO_METER / NO_SERIAL — до этого 0% покрытия ──────────────────────
-# Найдено по расхождению с production-отчётом (docs/audit/baseline_1111.txt):
+# Найдено по расхождению с production-отчётом (docs/audit/baseline_run_2026-09-28.txt):
 # NO_METER+NO_SERIAL = 127/1111 фото (11.5%) реального трафика, а Outcome-кейсы
 # для них отсутствовали в golden tests (были покрыты только 7 из 9 значений
 # Outcome). Три разных условия внутри process_photo (reader.py:736-756) дают
@@ -317,7 +317,7 @@ def test_case19_no_serial_class_missing(base_config):
 
 
 # ─── 20-25: вариант Г — какие фото из лога перечитываются ─────────────────────
-# Решение владельца 2026-09-29 (docs/MIGRATION_STATUS.md). Шаг 0 process_photo:
+# Решение владельца 2026-09-29 (журнал миграции, история git). Шаг 0 process_photo:
 # разобранное оператором или успешно прочитанное фото сразу REPEAT, модели не
 # запускаются; фото только с авто-ошибками в логе обрабатывается заново.
 
@@ -406,7 +406,7 @@ def test_case25_auto_repeat_counts_as_done(base_config):
 
 
 # ─── 26-28: фото узнаётся по отпечатку, старые строки — по имени ──────────────
-# Решение владельца 2026-09-29 ("хеш + подпапка", docs/MIGRATION_STATUS.md).
+# Решение владельца 2026-09-29 ("хеш + подпапка", журнал миграции, история git).
 
 def _hashed_row(fname, outcome, photo_hash):
     return _log_row(fname, outcome) | {"photo_hash": photo_hash}

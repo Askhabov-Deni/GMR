@@ -1,6 +1,6 @@
 """
 tools/inspect_model.py — посмотреть, что делает с изображением одна модель
-(Фаза 4, docs/MIGRATION_TZ.md). Запускать из папки проекта:
+(Фаза 4, ТЗ миграции, история git). Запускать из папки проекта:
 
   python -m tools.inspect_model meter  <фото|папка>   рамки meter/serial/account + кропы
   python -m tools.inspect_model digits <фото|папка>   рамки цифр на кропе счётчика + кропы цифр

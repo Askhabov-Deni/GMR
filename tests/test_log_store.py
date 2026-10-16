@@ -1,5 +1,5 @@
 """
-Тесты storage-слоя processing log (Фаза 2b, docs/MIGRATION_TZ.md).
+Тесты storage-слоя processing log (Фаза 2b, ТЗ миграции, история git).
 
 1. CsvLogStore пишет файл байт-в-байт как старый _save_log из reader.py
    (эталон скопирован ниже из коммита 92199d2 как есть) — так же устроена

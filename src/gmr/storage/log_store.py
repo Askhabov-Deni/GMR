@@ -24,7 +24,7 @@ LOG_COLUMNS = [
     "reading", "last_reading", "delta", "outcome", "source", "processed_by",
     "processed_at", "verified_by", "verified_at", "model_serial_conf",
     "model_reading_str", "notes",
-    # добавлены 2026-09-29 (идентичность фото, см. MIGRATION_STATUS.md):
+    # добавлены 2026-09-29 (идентичность фото, см. журнал миграции (история git)):
     # отпечаток содержимого исходного фото и подпапка, из которой оно пришло.
     # Всегда в конце — порядок прежних столбцов не меняется.
     "photo_hash", "source_folder",

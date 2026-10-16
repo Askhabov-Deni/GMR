@@ -56,7 +56,7 @@ SEED        = 67
 # Порог "хорошего" предсказания в infer_cnn.py (CLI --min_conf по умолчанию).
 # Равен прод-порогу PipelineConfig.digit_conf_thresh (src/gmr/domain/config.py):
 # standalone-инструмент должен судить о модели по тому же порогу, что и
-# reader.py. Было 0.8 — расходилось с продом (MIGRATION_TZ.md, 3bis, находка 1).
+# reader.py. Было 0.8 — расходилось с продом (ТЗ миграции (история git), 3bis, находка 1).
 # Равенство проверяет tests/test_models_tools.py.
 MIN_CONFIDENCE = 0.6
 

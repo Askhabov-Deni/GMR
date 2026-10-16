@@ -1,6 +1,6 @@
 """
 tests/_fixtures.py — fake-модели и билдеры данных для тестов reader.py
-(golden tests — docs/MIGRATION_TZ.md, раздел 2).
+(golden tests — ТЗ миграции, история git, раздел 2).
 
 Тесты не грузят веса и не создают настоящие YOLOInferer/CRNNInferer/
 CNNInferer. Вместо них — лёгкие классы с тем же интерфейсом
