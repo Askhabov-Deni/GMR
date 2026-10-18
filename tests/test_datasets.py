@@ -197,6 +197,7 @@ def test_check_cnn_and_crnn(tmp_path):
     assert "не картинки в папках цифр: 1" in c and "лишние папки (обучение их не читает): 1" in c
     assert "new/ (исправил оператор): 1 — 2026-10: 1" in c and "по цифрам: 0: 0, 1: 0, 2: 0, 3: 0, 4: 1" in c
     s = out.split("serials_crnn —")[1].split("etalon —")[0]
+    assert "etalon_archive — эталон архива (etalon from-table)\n  файлов: 0" in out
     assert "кропов: 4, с годным номером в имени: 1" in s and "длина номера: 7 цифр — 1" in s
     assert "  ⚠ имя не по стандарту (<фото>__serial1__<номер>.jpg) — в обучение не пойдёт: 2" in s
     assert "  ⚠ номер в имени не годится (не 4–10 цифр) — в обучение не пойдёт: 1" in s

@@ -239,6 +239,7 @@ python gmr.py datasets --collect D:\GMR\Октябрь_2026
 | `serials_crnn\` | серийник (CRNN) | `images\<фото>__serial1__<номер>.jpg` — номер в имени; `new\<месяц>\images\` — серийники, исправленные оператором |
 | `accounts_crnn\` | лицевой счёт по надписи маркером (CRNN, 5.6) | `images\<счёт>__account1.jpg` — разметка не нужна |
 | `etalon\` | эталон для сравнения моделей | в обучение не идёт |
+| `etalon_archive\` | эталон архива: обычные фото, ответ из таблицы | в обучение не идёт (`docs\DATASETS.md`) |
 
 - **Имена кропов — по стандарту** (`docs\DATASETS.md`): ответ виден в имени
   файла или в папке, файлов разметки нет.
@@ -247,7 +248,8 @@ python gmr.py datasets --collect D:\GMR\Октябрь_2026
   не согласна с ответом или не уверена; исправили — `--review-done serials`.
 - **Новые кропы из фото и таблицы:** `python gmr.py datasets --build <папка
   фото> --table <таблица>` (фото названы по лицевому счёту; номер — из
-  таблицы, цифры — «Текущие показания»). Подробно — `docs\DATASETS.md`.
+  таблицы, цифры — «Текущие показания»). Прервалась — та же команда
+  продолжает. Подробно — `docs\DATASETS.md`.
 - Датасет — **одна папка без train/val**: новые файлы просто докладываются.
 - Обучение само делит датасет при запуске — **по фото**: кропы одного
   фото (`<фото>__…`) всегда в одной части. Часть определяется
@@ -300,8 +302,8 @@ python gmr.py datasets
 # 2) обучение заново (результат — serial_id_ocr\runs\crnn\<дата-время>\): кроп — с пропорциями,
 #    край номера не срезается (этап 6c)
 python models\crnn\train_crnn.py
-#    дообучить прежнюю модель её же способом (растяжение, как до 6c):
-python models\crnn\train_crnn.py --finetune serial_id_ocr\runs\crnn\2026-06-05_01-09\best.pt --input stretch --lr 1e-4
+#    дообучить модель, которая в работе (новыми кропами, с малым шагом):
+python models\crnn\train_crnn.py --finetune serial_id_ocr\runs\crnn\2026-10-17_01-44\best.pt --lr 1e-4
 
 # 3) отчёт: точность всего номера, точность по позициям, ошибки
 python models\crnn\evaluate_crnn.py --run_dir serial_id_ocr\runs\crnn\<дата-время>
@@ -373,6 +375,9 @@ python gmr.py etalon check
 # то же с другим файлом весов или с запасом вокруг рамки серийника
 python gmr.py etalon check --serial-weights serial_id_ocr\runs\crnn\<дата-время>\best.pt
 python gmr.py etalon check --serial-pad 0.05
+# эталон архива: обычные фото + заполненная таблица (docs\DATASETS.md)
+python gmr.py etalon from-table D:\архив\фото --table D:\архив\реестр.xls   # переносит 5% счетов (--percent)
+python gmr.py etalon check --etalon database\datasets\etalon_archive --table D:\архив\реестр.xls
 ```
 
 `check` выводит таблицу по причинам: сколько фото модель прочитала бы

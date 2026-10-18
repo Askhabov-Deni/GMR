@@ -72,6 +72,9 @@ def test_save_crnn_markup(tmp_path):
     assert sorted(p.name for p in new.rglob("*.*")) == [
         "1300000001-2__serial1__0234567.jpg", "1300000001__serial1__0234567.jpg", "h2__serial1__1234567.jpg"]
     assert all(p.parent.name == "images" for p in new.rglob("*.*"))
+    (new / "images" / "h3__SERIAL1__1234567.JPG").write_bytes(b"x")   # в Windows регистр имени не важен
+    program2.save_crnn_markup(tmp_path, "h3", crop, "1234567", None)
+    assert (new / "images" / "h3-2__serial1__1234567.jpg").is_file()
 
 
 def test_save_cnn_markup_only_changed_digits(tmp_path):

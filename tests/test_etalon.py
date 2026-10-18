@@ -351,3 +351,135 @@ def test_check_with_real_pipeline_code(tmp_path, fake_models):  # noqa: F811
     assert res["p2"]["serial_wrong_sure"] == "True" and res["p2"]["model_serial"] == "99999"
     assert res["p4"]["meter_found"] == "False"
     assert [ln for ln in text.splitlines() if ln.startswith("ВСЕГО")][0].split()[1] == "4"
+
+
+# ─── Эталон архива: обычные фото с ответом из таблицы (from-table) ───────────
+
+def _register(tmp_path) -> Path:
+    t = tmp_path / "реестр.csv"
+    t.write_text("Лицевой счет;Номер счетчика;Последние показания;Текущие показания\n"
+                 "1300000005;0070351;2300;2353\n"
+                 "1300000043;12345;99,0;100\n"
+                 "1300000059;;1;2\n"                        # номера нет
+                 "1300000081;777777;1;123456\n"             # показание длиннее 5 цифр
+                 "1300000087;555555;10;20\n"
+                 "1300000001;111111;1;2\n", encoding="utf-8")
+    return t
+
+
+def _archive(tmp_path) -> Path:
+    photos = tmp_path / "архив"
+    img(photos / "плюс" / "1300000005.jpeg", 10)
+    img(photos / "минус" / "1300000043.jpg", 20)
+    img(photos / "плюс" / "1300000043 (2).jpg", 30)          # тот же счёт ещё раз
+    img(photos / "плюс" / "1300000059.jpg", 40)
+    img(photos / "плюс" / "1300000081.jpg", 50)
+    img(photos / "плюс" / "1300000087.jpg", 55)
+    img(photos / "плюс" / "1300000001.jpg", 60)              # не счёт эталона архива
+    img(photos / "IMG_1.jpg", 70)                            # без счёта в имени
+    return photos
+
+
+def test_archive_accounts():
+    from src.gmr.domain.datasets import in_archive_etalon
+    assert [a for a in (f"13000000{i:02d}" for i in range(100)) if in_archive_etalon(a)] == [
+        "1300000005", "1300000043", "1300000059", "1300000081", "1300000087", "1300000094"]
+    import random
+    rnd = random.Random(1)
+    accounts = [str(1300000000 + rnd.randrange(10 ** 6)) for _ in range(20000)]
+    for percent in (5, 10):
+        share = sum(in_archive_etalon(a, percent) for a in accounts) / len(accounts)
+        assert percent / 100 - 0.006 < share < percent / 100 + 0.006
+    # с бо́льшим процентом прежние счета остаются в эталоне
+    assert all(in_archive_etalon(a, 10) for a in accounts if in_archive_etalon(a, 5))
+
+
+def test_from_table_moves_photos(tmp_path):
+    photos, table, et = _archive(tmp_path), _register(tmp_path), tmp_path / "et"
+    ds = tmp_path / "ds"
+    img(ds / "serials_crnn" / "images" / "1300000043-2__serial1__12345.jpg")   # эти счётчики обучение видело
+    img(ds / "meter_yolo" / "images" / "1300000005-2.jpg")
+    img(ds / "etalon" / "photos" / "1300000087.jpg")                           # эталон — не датасет
+    first = (photos / "плюс" / "1300000005.jpeg").read_bytes()
+    h = photo_fingerprint(str(photos / "плюс" / "1300000005.jpeg"))
+    text = etalon.from_table(photos, table, et, dataset_root=ds)
+    assert text.splitlines() == [
+        f"Эталон архива: {et.resolve()}",
+        "Фото в папке: 8; из них счетов эталона архива (5%): 6",
+        "  перенесено в эталон: 4",
+        "  без ответа в таблице (остались в папке) — нет номера счётчика (или их несколько): 1",
+        "  без ответа в таблице (остались в папке) — нет показания (или их несколько, или не число из ≤5 цифр): 1",
+        "  ⚠ счетов, которые уже есть в датасетах (обучение их видело — по ним результат лучше настоящего): 2",
+        f"Проверка: python gmr.py etalon check --etalon {et} --table {table}"]
+    # перенесены: в папке их больше нет — сборка датасета их не увидит
+    assert sorted(p.relative_to(photos).as_posix() for p in photos.rglob("*.jp*g")) == [
+        "IMG_1.jpg", "плюс/1300000001.jpg", "плюс/1300000059.jpg", "плюс/1300000081.jpg"]
+    got = {a["file"]: a for a in _answers(et)}
+    a = got[f"{h}.jpeg"]
+    assert (a["photo_hash"], a["serial"], a["reading"], a["last_reading"], a["reason"], a["source"]) == (
+        h, "0070351", "2353", "2300", "ARCHIVE", "архив")              # номер — с нулями, как в таблице
+    assert (et / "photos" / a["file"]).read_bytes() == first
+    assert sorted((r["serial"], r["reading"], r["last_reading"]) for r in got.values()) == [
+        ("0070351", "2353", "2300"), ("12345", "100", "99"), ("12345", "100", "99"), ("555555", "20", "10")]
+    assert "1300000043" not in "".join(p.name for p in (et / "photos").iterdir())   # в эталоне — без счетов
+    # в выгрузке реестра прошлые показания — «Последние показания значение»
+    table.write_text(table.read_text(encoding="utf-8").replace("Последние показания;", "Последние показания значение;"),
+                     encoding="utf-8")
+    from tools.dataset_build import read_answers as table_answers
+    assert table_answers(table, PipelineConfig())[2]["1300000005"] == {"2300"}
+    # копия уже перенесённого фото снова в папке — удаляется, в эталоне не дублируется
+    (photos / "копия").mkdir()
+    (photos / "копия" / "1300000005.jpeg").write_bytes(first)
+    again = etalon.from_table(photos, table, et, dataset_root=ds)
+    assert "  перенесено в эталон: 0; копий фото, уже бывших в эталоне (удалены из папки): 1" in again
+    assert not (photos / "копия" / "1300000005.jpeg").exists() and len(_answers(et)) == 4
+    assert "Архив (обычные фото): 4" in etalon.status(et)
+    # процент больше — добавляются новые счета, прежние остаются
+    img(photos / "плюс" / "1300000020.jpg", 80)
+    table.write_text(table.read_text(encoding="utf-8") + "1300000020;222222;1;2\n", encoding="utf-8")
+    from src.gmr.domain.datasets import in_archive_etalon
+    assert in_archive_etalon("1300000020", 10) and not in_archive_etalon("1300000020", 5)
+    assert "перенесено в эталон: 1" in etalon.from_table(photos, table, et, dataset_root=ds, percent=10)
+    with pytest.raises(ValueError, match="больше 0 и не больше 50"):
+        etalon.from_table(photos, table, et, percent=0)
+
+
+def test_from_table_command(tmp_path, monkeypatch, capsys):
+    photos, table = _archive(tmp_path), _register(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert gmr.main(["etalon", "from-table", str(photos), "--table", str(table)]) == 0
+    assert "перенесено в эталон: 4" in capsys.readouterr().out
+    assert len(_answers(tmp_path / "database" / "datasets" / "etalon_archive")) == 4   # отдельно от трудных
+    assert not (tmp_path / "database" / "datasets" / "etalon").exists()
+    assert gmr.main(["etalon", "from-table", str(photos), "--table", str(table), "--percent", "60"]) == 1
+    assert "ОШИБКА: --percent 60" in capsys.readouterr().out
+    assert gmr.main(["etalon", "from-table", str(tmp_path / "нет"), "--table", str(table)]) == 1
+    assert "ОШИБКА: нет папки" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        gmr.main(["etalon", "from-table", str(photos)])                  # без таблицы
+
+
+def test_check_archive_with_register_serials(tmp_path, monkeypatch, capsys):
+    from src.gmr.domain import SerialTableMatch
+    et = _etalon_with(tmp_path, [("a", "0070351", "2353", "ARCHIVE"), ("b", "12345", "100", "ARCHIVE")])
+    seen = []
+
+    class Serial:
+        def match_table(self, crop, groups):
+            seen.append(groups)
+            return SerialTableMatch("70351", "0070351", 0.95)
+    from src.gmr.ml import loader
+    monkeypatch.setattr(loader, "load_models", lambda cfg: SimpleNamespace(serial_recognizer=Serial()))
+    import src.gmr.application as app
+    recs = {"a": _rec("7035", conf=0.3, number=2353), "b": _rec("12345", number=100)}
+    recs["a"].serial = {"crop": "c"}                          # неуверенный номер — ищется в таблице
+    monkeypatch.setattr(app, "recognize_photo", lambda models, path, cfg, **kw: recs[Path(path).stem])
+    assert gmr.main(["etalon", "check", "--etalon", str(et), "--serial-by-table",
+                     "--table", str(_register(tmp_path))]) == 0
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if ln.startswith("Архив (обычные фото)"))
+    # фото 2, счётчик найден 2, серийник верно 2: неуверенный «7035» найден в таблице как 0070351
+    assert line.split()[3:8] == ["2", "2", "(100%)", "2", "(100%)"]
+    assert len(seen) == 1 and set(seen[0]) == {"0070351", "12345", "777777", "555555", "111111"}
+    assert gmr.main(["etalon", "check", "--etalon", str(et), "--serial-by-table"]) == 1
+    assert "укажите --month или --table" in capsys.readouterr().out

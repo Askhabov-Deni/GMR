@@ -55,7 +55,7 @@ def test_make_names():
     assert photo_id("Фото-1.2") == "Фото-1.2"
     with pytest.raises(ValueError):
         crop_name("1", "meter", 1)
-    taken = ["1300__serial1__1.jpg", "1300-2__SERIAL1__1.JPG"]
+    taken = {"1300__serial1__1.jpg", "1300-2__serial1__1.jpg"}           # имена — в нижнем регистре
     assert free_crop_name(taken, "1300", "serial", 1, "1") == "1300-3__serial1__1.jpg"
     assert free_crop_name(taken, "1300", "serial", 2, "1") == "1300__serial2__1.jpg"
 

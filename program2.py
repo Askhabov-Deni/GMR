@@ -713,7 +713,7 @@ def now_iso() -> str:
 # нему), тот же счёт ещё раз — «-2». Месяц — в папке: `gmr.py datasets
 # --collect <месяц>` копирует это в database/datasets/<датасет>/new/<ГГГГ-ММ>/.
 def _free_name(folder: Path, photo: str, kind: str, n: int, answer: str = "") -> Path:
-    taken = [p.name for p in folder.iterdir()] if folder.is_dir() else []
+    taken = {p.name.lower() for p in folder.iterdir()} if folder.is_dir() else set()
     return folder / free_crop_name(taken, photo, kind, n, answer)
 
 def save_crnn_markup(

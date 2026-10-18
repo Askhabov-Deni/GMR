@@ -9,6 +9,16 @@ tools/etalon.py — эталон: трудные фото с правильны�
                              [--meter-weights …] [--digit-detect-weights …]
                              [--digit-weights …] [--serial-weights …]
   python gmr.py etalon                 сколько фото в эталоне, по причинам
+  python gmr.py etalon from-table <папка фото> --table <таблица> [--percent 5]   эталон архива
+
+Эталон архива (from-table, 2026-10-20) — обычные фото месяца, названные по
+лицевому счёту, с ответом из заполненной таблицы (номер счётчика, текущее
+показание, прошлое). Фото --percent счетов (in_archive_etalon: по отпечатку
+счёта, всегда одни и те же) ПЕРЕНОСЯТСЯ из папки в эталон: сборка датасета
+(datasets --build) после этого их не видит. Лежит отдельно
+(database/datasets/etalon_archive): `etalon check --etalon <эта папка>
+[--table <таблица>]` показывает точность «как в работе», не смешиваясь с
+трудными фото. --table у check — номера для серийника по таблице.
 
 Трудное фото — модель не справилась (авто-ошибка: нет счётчика, нет или не
 найден серийник, ошибка цифр, подозрительно, номер у нескольких абонентов),
@@ -38,18 +48,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from models.datasets import DATASETS_DIR, IMAGE_EXTS, to_etalon
+from models.datasets import DATASETS_DIR, IMAGE_EXTS, photo_key, to_etalon
 from src.gmr.application.operator import CORRECTED_NOTE
 from src.gmr.domain import PipelineConfig
+from src.gmr.domain.datasets import ARCHIVE_PERCENT, in_archive_etalon
 from src.gmr.domain.models import QUESTION_REASONS
 from src.gmr.domain.serial_match import build_serial_groups, lookup_variants, normalize_serial
 
 ETALON_DIR = DATASETS_DIR / "etalon"
+ARCHIVE_DIR = DATASETS_DIR / "etalon_archive"
 # авто-исходы «модель не справилась»; ERROR — сбой программы, а не модели
 FAILED = ("NO_METER", "NO_SERIAL", "SERIAL_LOW_CONF", "SERIAL_NOT_FOUND", "SERIAL_AMBIGUOUS",
           "DIGITS_ERROR", "SUSPICIOUS")
 CORRECTED = "CORRECTED"
-REASON_NAMES = {o: QUESTION_REASONS[o.lower()] for o in FAILED} | {CORRECTED: "Исправлено на «Проверке»"}
+ARCHIVE = "ARCHIVE"          # эталон архива: обычное фото, ответ — из таблицы
+REASON_NAMES = {o: QUESTION_REASONS[o.lower()] for o in FAILED} | {
+    CORRECTED: "Исправлено на «Проверке»", ARCHIVE: "Архив (обычные фото)"}
 ANSWER_COLUMNS = ["photo_hash", "file", "serial", "reading", "reason", "source", "added_at", "last_reading"]
 
 
@@ -208,13 +222,96 @@ def add(source: Path, photos: Optional[Path] = None, etalon: Path = ETALON_DIR) 
                          "last_reading": a.last_reading})
         rep.added += 1
     if new_rows or rep.filled:
-        # файл переписывается целиком: так в старом эталоне появляется колонка last_reading
-        etalon.mkdir(parents=True, exist_ok=True)
-        with open(etalon / "answers.csv", "w", encoding="utf-8-sig", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=ANSWER_COLUMNS, extrasaction="ignore")
-            w.writeheader()
-            w.writerows(old_rows + new_rows)
+        _write_answers(etalon, old_rows + new_rows)
     return rep
+
+
+def _write_answers(etalon: Path, rows: list[dict]) -> None:
+    """answers.csv переписывается целиком: так в старом эталоне появляется
+    колонка last_reading."""
+    etalon.mkdir(parents=True, exist_ok=True)
+    with open(etalon / "answers.csv", "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=ANSWER_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+
+
+# ─── Эталон архива: обычные фото с ответом из таблицы ────────────────────────
+
+def _accounts_in_datasets(root: Path) -> set:
+    """Лицевые счета, кропы или фото которых уже лежат в датасетах (кроме эталонов)."""
+    root, out = Path(root), set()
+    if not root.is_dir():
+        return out
+    for p in root.rglob("*"):
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTS and not p.relative_to(root).parts[0].startswith("etalon"):
+            key = photo_key(p.name)
+            head = key.split("-", 1)[0]                   # 1300000375-2 — тот же счёт
+            out.add(head if head.isdigit() else key)
+    return out
+
+
+def from_table(photos: Path, table: Path, etalon: Path = ARCHIVE_DIR, dataset_root: Path = DATASETS_DIR,
+               percent: float = ARCHIVE_PERCENT) -> str:
+    """Фото percent% счетов (in_archive_etalon) переносятся из папки в
+    эталон; ответ — номер, текущее и прошлое показание из таблицы. Фото без
+    ответа остаются на месте. Повторный запуск ничего не дублирует: перенесённых
+    фото в папке уже нет, а копия уже бывшего в эталоне фото удаляется."""
+    if not 0 < percent <= 50:
+        raise ValueError(f"--percent {percent}: нужно больше 0 и не больше 50")
+    from src.gmr.storage import photo_fingerprint
+    from tools.dataset_build import account_of_photo, only_one, photos_in, reading_digits
+    from tools.dataset_build import read_answers as table_answers
+    photos, etalon = Path(photos), Path(etalon)
+    if not photos.is_dir():
+        raise ValueError(f"нет папки {photos}")
+    paths = photos_in(photos)
+    if not paths:
+        raise ValueError(f"в {photos} нет фото")
+    config = PipelineConfig()
+    serials, readings, lasts = table_answers(Path(table), config)
+    old_rows = read_answers(etalon)
+    have = {r["photo_hash"] for r in old_rows}
+    new_rows, accounts, skipped = [], set(), Counter()
+    picked = already = 0
+    for p in paths:
+        account = account_of_photo(p)
+        if account is None or not in_archive_etalon(account, percent):
+            continue
+        picked += 1
+        serial = only_one(serials.get(account, set()))
+        reading = reading_digits(only_one(readings.get(account, set())) or "", config.expected_digits)
+        if serial is None or reading is None:
+            skipped["нет номера счётчика (или их несколько)" if serial is None else
+                    f"нет показания (или их несколько, или не число из ≤{config.expected_digits} цифр)"] += 1
+            continue
+        accounts.add(account)
+        h = photo_fingerprint(str(p))
+        if h in have:                     # то же фото (копия) уже в эталоне — в датасет не должно попасть
+            p.unlink()
+            already += 1
+            continue
+        have.add(h)
+        name = f"{h}{p.suffix.lower()}"
+        (etalon / "photos").mkdir(parents=True, exist_ok=True)
+        shutil.move(str(p), str(etalon / "photos" / name))
+        new_rows.append({"photo_hash": h, "file": name, "serial": serial, "reading": str(int(reading)),
+                         "reason": ARCHIVE, "source": photos.name,
+                         "added_at": datetime.now().isoformat(timespec="seconds"),
+                         "last_reading": _reading(only_one(lasts.get(account, set())) or "")})
+    if new_rows:
+        _write_answers(etalon, old_rows + new_rows)
+    seen = len(accounts & _accounts_in_datasets(dataset_root))
+    lines = [f"Эталон архива: {etalon.resolve()}",
+             f"Фото в папке: {len(paths)}; из них счетов эталона архива ({percent:g}%): {picked}",
+             f"  перенесено в эталон: {len(new_rows)}"
+             + (f"; копий фото, уже бывших в эталоне (удалены из папки): {already}" if already else "")]
+    lines += [f"  без ответа в таблице (остались в папке) — {why}: {n}" for why, n in skipped.most_common()]
+    if seen:
+        lines.append(f"  ⚠ счетов, которые уже есть в датасетах (обучение их видело — по ним результат "
+                     f"лучше настоящего): {seen}")
+    lines.append(f"Проверка: python gmr.py etalon check --etalon {etalon} --table {table}")
+    return "\n".join(lines)
 
 
 # ─── Проверка моделей на эталоне ─────────────────────────────────────────────
@@ -339,7 +436,7 @@ def summary(results: list[PhotoCheck], title: str) -> str:
     by_reason = Counter(r.reason for r in results)
     table = [["причина", *cols]]
     table += [row(REASON_NAMES.get(reason, reason), [r for r in results if r.reason == reason])
-              for reason in [o for o in (*FAILED, CORRECTED) if o in by_reason]]
+              for reason in [o for o in (*FAILED, CORRECTED, ARCHIVE) if o in by_reason]]
     table.append(row("ВСЕГО", results))
     widths = [max(len(t[i]) for t in table) for i in range(len(table[0]))]
     lines = [title, ""] + ["  ".join(c.ljust(w) for c, w in zip(t, widths)).rstrip() for t in table]
@@ -358,7 +455,7 @@ def check(config: PipelineConfig, etalon: Path = ETALON_DIR, models=None, title:
     if not answers:
         raise ValueError(f"эталон пуст: {etalon} — сначала `python gmr.py etalon add <папка месяца>`")
     if config.serial_by_table and not serial_groups:
-        raise ValueError("серийник по таблице: укажите --month — номера берутся из таблицы месяца")
+        raise ValueError("серийник по таблице: укажите --month или --table — оттуда берутся номера")
     if models is None:
         from src.gmr.ml.loader import load_models
         models = load_models(config)
@@ -429,10 +526,18 @@ def table_serials(month) -> dict:
         return build_serial_groups(a.serial for a in db.abonents(only_in_table=True).values())
 
 
+def register_serials(table) -> dict:
+    """То же из таблицы (реестра) — для эталона архива."""
+    from tools.dataset_build import read_answers as table_answers
+    serials = table_answers(Path(table), PipelineConfig())[0]
+    return build_serial_groups(s for vs in serials.values() for s in vs)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python gmr.py etalon",
                                 description="Эталон трудных фото: пополнить и проверить на нём модели.")
-    p.add_argument("--etalon", default=str(ETALON_DIR), help=f"папка эталона (по умолчанию {ETALON_DIR})")
+    p.add_argument("--etalon", default=None,
+                   help=f"папка эталона (по умолчанию {ETALON_DIR}, у from-table — {ARCHIVE_DIR})")
     sub = p.add_subparsers(dest="cmd")
     # --etalon можно писать и до, и после add/check
     either = argparse.ArgumentParser(add_help=False)
@@ -453,22 +558,35 @@ def main(argv=None) -> int:
     c.add_argument("--first-from-last", action="store_true",
                    help="неуверенную старшую цифру брать из прошлого показания")
     c.add_argument("--serial-by-table", action="store_true",
-                   help="неуверенный серийник — ближайший номер таблицы месяца (нужна --month)")
+                   help="неуверенный серийник — ближайший номер таблицы (нужна --month или --table)")
+    c.add_argument("--table", default=None, help="таблица с номерами для серийника по таблице (эталон архива)")
     c.add_argument("--turn-photo", action="store_true",
                    help="на фото ничего не найдено — повернуть на 90/180/270°")
     for name in ("meter", "digit-detect", "digit", "serial"):
         c.add_argument(f"--{name}-weights", default=None, help="другой файл весов")
+    t = sub.add_parser("from-table", parents=[either],
+                       help="эталон архива: фото, названные по счёту, + заполненная таблица")
+    t.add_argument("photos", help="папка с фото (имя фото — лицевой счёт)")
+    t.add_argument("--table", required=True, help="таблица: номер счётчика, текущие и прошлые показания")
+    t.add_argument("--percent", type=float, default=ARCHIVE_PERCENT,
+                   help=f"какой процент счетов перенести в эталон (по умолчанию {ARCHIVE_PERCENT})")
     args = p.parse_args(argv)
+    etalon = Path(args.etalon) if args.etalon else ARCHIVE_DIR if args.cmd == "from-table" else ETALON_DIR
     try:
         if args.cmd == "add":
-            print(add(Path(args.source), Path(args.photos) if args.photos else None, Path(args.etalon)).text())
+            print(add(Path(args.source), Path(args.photos) if args.photos else None, etalon).text())
         elif args.cmd == "check":
             cfg, notes = _config(args)
             title = "Модели: " + ("; ".join(notes) if notes else "как в работе (PipelineConfig)")
-            groups = table_serials(args.month) if cfg.serial_by_table and args.month else None
-            print(check(cfg, Path(args.etalon), title=title, serial_groups=groups)[0])
+            groups = None
+            if cfg.serial_by_table:
+                groups = register_serials(args.table) if args.table else \
+                    table_serials(args.month) if args.month else None
+            print(check(cfg, etalon, title=title, serial_groups=groups)[0])
+        elif args.cmd == "from-table":
+            print(from_table(Path(args.photos), Path(args.table), etalon, percent=args.percent))
         else:
-            print(status(Path(args.etalon)))
+            print(status(etalon))
     except ValueError as e:
         print(f"ОШИБКА: {e}")
         return 1

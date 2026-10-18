@@ -39,7 +39,7 @@
 | Детектор счётчика и серийника | `meter_detect/runs/detect/gas_meter_all_classes_s_v1` | YOLOv8s, 640px, 200 эпох | лучшая эпоха 184: mAP50 0.967, mAP50-95 0.786, precision 0.970, recall 0.949 (`results.csv`) |
 | Детектор цифр | `meter_ocr/runs/yolo/digits_detect_v4` | YOLOv8n, 480px, 50 эпох | лучшая эпоха 41: mAP50 0.995, mAP50-95 0.796, precision 0.994, recall 0.994 (`results.csv`) |
 | Распознавание цифры | `meter_ocr/runs/cnn/runs/v3_platinum` | DigitCNN (`models/cnn/model_cnn.py`), 10 классов | лучшая val_acc 0.973 (эпоха 24), test_acc 0.974 (`history.json`) |
-| Распознавание серийника | `serial_id_ocr/runs/crnn/2026-06-05_01-09` | CRNN + CTC (`models/crnn/model_crnn.py`) | best val_acc 0.927, test accuracy 0.914 (весь номер целиком), CER 0.023; длины в тесте: 5–8 и 10 символов (`history.json`, `eval/metrics.json`) |
+| Распознавание серийника | `serial_id_ocr/runs/crnn/2026-10-17_01-44` (с 2026-10-20; прежняя — `2026-06-05_01-09`) | CRNN + CTC (`models/crnn/model_crnn.py`), вход с сохранением пропорций | test accuracy 0.953 (весь номер целиком, 492 из 516), CER 0.012; длины в тесте: 6–8 и 10 символов (`eval/metrics.json`) |
 | Лицевой счёт по надписи маркером | — (ещё не обучена; `account_ocr_model = ""` — выключена) | CRNN + CTC (`models/account/model_account.py`) + выбор счёта по таблице (`models/ctc_lexicon.py`) | — (`docs/GUIDE.md`, 5.6) |
 
 Прочие прогоны в репозитории (`meter_ocr/runs/cnn/runs/v1`, `v2_gold`,

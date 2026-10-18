@@ -13,14 +13,26 @@ from typing import Optional
 
 DATASETS_DIR = Path("database") / "datasets"
 ETALON_SHARE = 1 / 3
+ARCHIVE_PERCENT = 5
+
+
+def _share(key: str) -> float:
+    """Число 0…1 по отпечатку key: одно и то же при каждом запуске."""
+    return int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:12], 16) / 16 ** 12
 
 
 def to_etalon(photo_hash: str) -> bool:
     """Трудное фото — в эталон или в обучение: каждое третье по отпечатку
     фото. Одно и то же фото — всегда в одно место: эталон (tools/etalon.py)
     и папки new/ (окно оператора) не пересекаются."""
-    x = int(hashlib.sha256(f"etalon:{photo_hash}".encode("utf-8")).hexdigest()[:12], 16) / 16 ** 12
-    return x < ETALON_SHARE
+    return _share(f"etalon:{photo_hash}") < ETALON_SHARE
+
+
+def in_archive_etalon(account: str, percent: float = ARCHIVE_PERCENT) -> bool:
+    """Лицевой счёт — в эталоне архива (etalon from-table --percent): отбор
+    по отпечатку счёта, всегда одни и те же счета; с бо́льшим процентом
+    прежние остаются и добавляются новые."""
+    return _share(f"archive:{account}") < percent / 100
 
 
 # ── Имена кропов (стандарт датасетов, docs/DATASETS.md) ──────────────────────
@@ -90,10 +102,9 @@ def crop_name(photo: str, kind: str, n: int, answer: str = "", ext: str = ".jpg"
     return f"{photo_id(photo)}__{kind}{n}" + (f"__{answer}" if answer else "") + ext
 
 
-def free_crop_name(taken, photo: str, kind: str, n: int, answer: str = "", ext: str = ".jpg") -> str:
-    """Имя, которого ещё нет среди taken (имена файлов): если занято — фото
-    «-2», «-3», … (тот же счёт ещё раз, другой месяц)."""
-    taken = {t.lower() for t in taken}
+def free_crop_name(taken: set, photo: str, kind: str, n: int, answer: str = "", ext: str = ".jpg") -> str:
+    """Имя, которого ещё нет среди taken (имена файлов в нижнем регистре):
+    если занято — фото «-2», «-3», … (тот же счёт ещё раз, другой месяц)."""
     base, k = photo_id(photo), 1
     while True:
         name = crop_name(base if k == 1 else f"{base}-{k}", kind, n, answer, ext)

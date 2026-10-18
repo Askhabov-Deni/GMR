@@ -25,7 +25,7 @@ class PipelineConfig:
     meter_detect_model:       str   = "meter_detect/runs/detect/gas_meter_all_classes_s_v1/weights/best.pt"
     digit_detect_model:       str   = "meter_ocr/runs/yolo/digits_detect_v4/weights/best.pt"
     digit_ocr_model:          str   = "meter_ocr/runs/cnn/runs/v3_platinum/best.pth"
-    serial_ocr_model:         str   = "serial_id_ocr/runs/crnn/2026-06-05_01-09/best.pt"
+    serial_ocr_model:         str   = "serial_id_ocr/runs/crnn/2026-10-17_01-44/best.pt"
     # Лицевой счёт по надписи маркером (models/account, правила —
     # src/gmr/domain/account_match.py). "" — модели нет, всё как раньше.
     # Путь к best.pt включает правила: надпись против серийника → SUSPICIOUS,

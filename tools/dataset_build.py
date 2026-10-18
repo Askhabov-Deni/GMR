@@ -13,13 +13,18 @@ tools/dataset_build.py — сборка кропов для датасетов �
                                                        (5 знаков, с нулями слева).
 Кроп не делается, если ответа нет или он неоднозначен (счёта нет в таблице,
 номеров или показаний у счёта несколько, показаний нет), детектор не нашёл
-нужное или нашёл не 5 цифр. Тот же счёт ещё раз — «-2»: имена не совпадают
-ни между собой, ни с кропами в датасетах. По каждому фото — <папка>/сборка.csv.
-Результат — в отдельной папке (раскладка как в database/datasets): просмотрите
-и перенесите в датасеты сами. Работу программы не меняет.
+нужное или нашёл не 5 цифр. Эталон архива (etalon from-table) — раньше
+сборки: он забирает свои фото из папки. Тот же счёт ещё раз — «-2»: имена не
+совпадают ни между собой, ни с кропами в датасетах. По каждому фото — <папка>/сборка.csv (пишется сразу:
+прерванную сборку тот же запуск с той же --out продолжает с места обрыва).
+Фото, на котором программа упала, пропускается (кропов от него нет) — при
+продолжении обрабатывается снова. Результат — в отдельной папке (раскладка как
+в database/datasets): просмотрите и перенесите в датасеты сами. Работу
+программы не меняет.
 """
 import csv
 import re
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
@@ -34,16 +39,22 @@ KINDS = {"serials": SERIAL, "accounts": ACCOUNT, "digits": DIGIT}
 _FOLDER = {SERIAL: "serials_crnn", ACCOUNT: "accounts_crnn", DIGIT: "digits_cnn"}
 _ACCOUNT_IN_NAME = re.compile(r"^\d{3,}")
 _MIN_SERIAL, _MAX_SERIAL = 4, 10                        # как models/crnn/config_crnn.py
+REPORT = "сборка.csv"
+COLUMNS = ["фото", "счёт", "номер", "надпись", "цифры"]
 
 
-def read_answers(table: Path, config: PipelineConfig) -> tuple[dict, dict]:
-    """({счёт: номера счётчика}, {счёт: показания}) из таблицы — текстом, как в Excel."""
+def read_answers(table: Path, config: PipelineConfig) -> tuple[dict, dict, dict]:
+    """({счёт: номера счётчика}, {счёт: показания}, {счёт: прошлые показания})
+    из таблицы — текстом, как в Excel. Прошлые показания — столбец
+    «Последние показания» (в выгрузке реестра — «… значение»); его может не быть."""
     from src.gmr.storage.register import clean_serial, read_register
     reg = read_register(str(table))
     missing = [c for c in (config.col_account_id, config.col_serial) if c not in reg.columns]
     if missing:
         raise ValueError(f"в таблице {table} нет столбцов: {', '.join(missing)}")
-    serials, readings = defaultdict(set), defaultdict(set)
+    last_col = next((c for c in (config.col_last_reading, f"{config.col_last_reading} значение")
+                     if c in reg.columns), "")
+    serials, readings, lasts = defaultdict(set), defaultdict(set), defaultdict(set)
     for row in reg.rows:
         account = row[config.col_account_id]
         if not account:
@@ -52,7 +63,9 @@ def read_answers(table: Path, config: PipelineConfig) -> tuple[dict, dict]:
             serials[account].add(serial)
         if reading := row.get(config.col_new_reading, "").strip():
             readings[account].add(reading)
-    return serials, readings
+        if last := row.get(last_col, "").strip():
+            lasts[account].add(last)
+    return serials, readings, lasts
 
 
 def reading_digits(text: str, expected: int) -> Optional[str]:
@@ -70,7 +83,13 @@ def photos_in(folder: Path) -> list[Path]:
     return sorted(p for p in Path(folder).rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
 
 
-def _only_one(values: set) -> Optional[str]:
+def account_of_photo(path: Path) -> Optional[str]:
+    """Лицевой счёт из имени фото: цифры в начале («1300000375 (2).jpg»)."""
+    m = _ACCOUNT_IN_NAME.match(Path(path).stem)
+    return m.group() if m else None
+
+
+def only_one(values: set) -> Optional[str]:
     return next(iter(values)) if len(values) == 1 else None
 
 
@@ -78,13 +97,13 @@ class Builder:
     def __init__(self, out: Path, taken: set, only: set):
         self.out, self.taken, self.only = Path(out), taken, only
         self.stat = {k: Counter() for k in (SERIAL, ACCOUNT, DIGIT)}
+        self.pending: list[tuple[Path, object]] = []
 
     def save(self, kind: str, account: str, crop, n: int = 1, answer: str = "", digit: str = "") -> str:
+        """Имя занято сразу, файл пишется, когда фото обработано целиком."""
         name = free_crop_name(self.taken, account, kind, n, answer)
         self.taken.add(name.lower())
-        folder = self.out / _FOLDER[kind] / (digit if kind == DIGIT else "images")
-        folder.mkdir(parents=True, exist_ok=True)
-        write_image(folder / name, crop)
+        self.pending.append((self.out / _FOLDER[kind] / (digit if kind == DIGIT else "images") / name, crop))
         return name
 
     def note(self, kind: str, what: str) -> str:
@@ -92,14 +111,32 @@ class Builder:
         return what
 
     def photo(self, path: Path, models, serials: dict, readings: dict, config: PipelineConfig) -> dict:
-        row = {"фото": path.name, "счёт": "", "номер": "", "надпись": "", "цифры": ""}
-        m = _ACCOUNT_IN_NAME.match(path.stem)
-        if m is None:
+        """Кропы одного фото и строка сборка.csv. Упало — ни кропов, ни
+        счётчиков от этого фото (ошибка уходит дальше)."""
+        stat = {k: Counter(c) for k, c in self.stat.items()}
+        self.pending = []
+        try:
+            row = self._photo(path, models, serials, readings, config)
+        except Exception:
+            for dst, _ in self.pending:
+                self.taken.discard(dst.name.lower())
+            self.stat, self.pending = stat, []
+            raise
+        for dst, crop in self.pending:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            write_image(dst, crop)
+        self.pending = []
+        return row
+
+    def _photo(self, path: Path, models, serials: dict, readings: dict, config: PipelineConfig) -> dict:
+        row = dict.fromkeys(COLUMNS, "")
+        account = account_of_photo(path)
+        row["счёт"] = account or ""
+        if account is None:
             for kind, col in ((SERIAL, "номер"), (ACCOUNT, "надпись"), (DIGIT, "цифры")):
                 if kind in self.only:
                     row[col] = self.note(kind, "в имени фото нет лицевого счёта")
             return row
-        account = row["счёт"] = m.group()
         found = models.meter_detector.detect(str(path)) or []
         if SERIAL in self.only:
             row["номер"] = self._serial(account, find_detection(found, SERIAL), serials)
@@ -118,7 +155,7 @@ class Builder:
     def _serial(self, account: str, det, serials: dict) -> str:
         if account not in serials:
             return self.note(SERIAL, "счёта нет в таблице (или номер пустой)")
-        serial = _only_one(serials[account])
+        serial = only_one(serials[account])
         if serial is None:
             return self.note(SERIAL, "у счёта несколько номеров")
         if not serial.isdigit() or not _MIN_SERIAL <= len(serial) <= _MAX_SERIAL:
@@ -132,7 +169,7 @@ class Builder:
         values = readings.get(account, set())
         if not values:
             return self.note(DIGIT, "показаний в таблице нет")
-        text = _only_one(values)
+        text = only_one(values)
         if text is None:
             return self.note(DIGIT, "у счёта несколько показаний")
         reading = reading_digits(text, config.expected_digits)
@@ -157,38 +194,81 @@ def _load_detectors(config: PipelineConfig):
                            digit_detector=load_digit_detector(config))
 
 
+_COLUMN = {"serials": "номер", "accounts": "надпись", "digits": "цифры"}
+
+
+def _done_before(out: Path, only) -> set:
+    """Фото, уже записанные в сборка.csv прошлого запуска (путь от папки фото).
+    Продолжать — тем же набором кропов: иначе у части фото их не будет."""
+    with open(out / REPORT, encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter=";"))
+    before = {k for k, col in _COLUMN.items() if any(r.get(col) for r in rows)}
+    if rows and before != set(only):
+        raise ValueError(f"в {out} собирались кропы: {' '.join(sorted(before))} — продолжайте с тем же "
+                         f"--only или укажите другую --out")
+    return {r["фото"] for r in rows}
+
+
+def _left(started: float, done: int, total: int) -> str:
+    """«, осталось ~12 мин» — по скорости с начала запуска."""
+    if not done or done >= total:
+        return ""
+    minutes = (time.monotonic() - started) / done * (total - done) / 60
+    return f", осталось ~{minutes:.0f} мин" if minutes >= 1 else ", осталось меньше минуты"
+
+
 def run(photos: Path, table: Path, out: Optional[Path] = None, only=("serials", "accounts", "digits"),
         dataset_root: Optional[Path] = None, models=None) -> str:
     photos = Path(photos)
     if not photos.is_dir():
         raise ValueError(f"нет папки {photos}")
     out = Path(out) if out else photos.parent / f"{photos.name}_датасет"
-    if out.exists() and any(out.iterdir()):
-        raise ValueError(f"папка {out} уже есть и не пустая — укажите другую (--out) или удалите её")
+    resume = (out / REPORT).is_file()
+    if out.exists() and any(out.iterdir()) and not resume:
+        raise ValueError(f"папка {out} уже есть и не пустая (и в ней нет {REPORT}) — "
+                         f"укажите другую (--out) или удалите её")
     paths = photos_in(photos)
     if not paths:
         raise ValueError(f"в {photos} нет фото")
     config = PipelineConfig()
-    serials, readings = read_answers(Path(table), config)
+    serials, readings, _ = read_answers(Path(table), config)
     taken = {p.name.lower() for p in Path(dataset_root).rglob("*") if p.is_file()} \
         if dataset_root and Path(dataset_root).is_dir() else set()
-    models = models or _load_detectors(config)
+    done = set()
+    if resume:
+        done = _done_before(out, only)
+        taken |= {p.name.lower() for p in out.rglob("*") if p.is_file()}
+    todo = [p for p in paths if p.relative_to(photos).as_posix() not in done]
     builder = Builder(out, taken, {KINDS[k] for k in only})
-    rows = []
-    for i, p in enumerate(paths, 1):
-        rows.append(builder.photo(p, models, serials, readings, config))
-        if i % 25 == 0 or i == len(paths):
-            print(f"Фото {i} из {len(paths)}", flush=True)
-    out.mkdir(parents=True, exist_ok=True)
-    report = out / "сборка.csv"
-    with open(report, "w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter=";")
-        w.writeheader()
-        w.writerows(rows)
+    errors: list[str] = []
+    if todo:
+        models = models or _load_detectors(config)
+        out.mkdir(parents=True, exist_ok=True)
+        started = time.monotonic()
+        with open(out / REPORT, "a", encoding="utf-8-sig", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=COLUMNS, delimiter=";")
+            if not resume:
+                w.writeheader()
+            for i, p in enumerate(todo, 1):
+                try:
+                    row = builder.photo(p, models, serials, readings, config)
+                except Exception as e:                     # битое фото не останавливает сборку
+                    errors.append(f"{p.relative_to(photos).as_posix()}: {type(e).__name__}: {e}")
+                else:
+                    row["фото"] = p.relative_to(photos).as_posix()
+                    w.writerow(row)
+                    fh.flush()
+                if i % 25 == 0 or i == len(todo):
+                    print(f"Фото {i} из {len(todo)}{_left(started, i, len(todo))}", flush=True)
     lines = [f"Сборка датасета: {len(paths)} фото ({photos}) → {out}"]
+    if resume:
+        lines.append(f"Продолжение: уже были в {REPORT} — {len(paths) - len(todo)}, сейчас — {len(todo)}")
     for kind in (SERIAL, ACCOUNT, DIGIT):
-        if kind in builder.stat and builder.stat[kind]:
+        if builder.stat[kind]:
             lines.append(f"{_FOLDER[kind]}: " + ", ".join(f"{k} — {n}" for k, n in builder.stat[kind].most_common()))
-    lines.append(f"По каждому фото: {report}")
+    if errors:
+        lines.append(f"⚠ программа упала на фото: {len(errors)} (кропов от них нет; при продолжении — "
+                     f"снова), первое: {errors[0]}")
+    lines.append(f"По каждому фото: {out / REPORT}")
     lines.append("Просмотрите кропы и перенесите в database\\datasets\\ (раскладка та же).")
     return "\n".join(lines)
