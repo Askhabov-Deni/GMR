@@ -36,6 +36,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
@@ -112,6 +113,14 @@ def require_parts(parts: dict[str, list], needed: Iterable[str]) -> None:
     if any(not parts[p] for p in needed):
         raise ValueError("фото слишком мало для деления: " + ", ".join(
             f"{names[p]} {len(parts[p])}" for p in needed) + " — добавьте фото в датасет")
+
+
+def time_left(started: float, done: int, total: int) -> str:
+    """«, осталось ~12 мин» — по скорости с начала запуска (time.monotonic())."""
+    if not done or done >= total:
+        return ""
+    minutes = (time.monotonic() - started) / done * (total - done) / 60
+    return f", осталось ~{minutes:.0f} мин" if minutes >= 1 else ", осталось меньше минуты"
 
 
 def images_in(folder: Path) -> list[Path]:

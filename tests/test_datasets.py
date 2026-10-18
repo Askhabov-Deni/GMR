@@ -329,7 +329,7 @@ def test_train_yolo_main_dataset_error(tmp_path, fake_ultralytics, capsys):
 
 # ─── Предразметка ────────────────────────────────────────────────────────────
 
-def test_prelabel_writes_only_missing(tmp_path):
+def test_prelabel_writes_only_missing(tmp_path, capsys):
     images = tmp_path / "meter_yolo" / "images"
     for n in ("a", "b", "empty"):
         touch(images / f"{n}.jpg")
@@ -351,6 +351,7 @@ def test_prelabel_writes_only_missing(tmp_path):
     for folder in (labels, tmp_path / "meter_yolo"):
         assert (folder / "classes.txt").read_text(encoding="utf-8") == "display\nserial\naccount\n"
     assert prelabel.labels_dir_for(tmp_path / "new") == tmp_path / "new"
+    assert capsys.readouterr().out == "Фото 2 из 2\n"                    # прогресс — только по новым фото
 
 
 def test_prelabel_writes_classes_in_one_word(tmp_path, monkeypatch, capsys):

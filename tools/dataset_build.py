@@ -29,7 +29,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
-from models.datasets import IMAGE_EXTS
+from models.datasets import IMAGE_EXTS, time_left
 from src.gmr.application.recognition import find_detection
 from src.gmr.domain import PipelineConfig
 from src.gmr.domain.datasets import ACCOUNT, DIGIT, METER, SERIAL, free_crop_name
@@ -209,14 +209,6 @@ def _done_before(out: Path, only) -> set:
     return {r["фото"] for r in rows}
 
 
-def _left(started: float, done: int, total: int) -> str:
-    """«, осталось ~12 мин» — по скорости с начала запуска."""
-    if not done or done >= total:
-        return ""
-    minutes = (time.monotonic() - started) / done * (total - done) / 60
-    return f", осталось ~{minutes:.0f} мин" if minutes >= 1 else ", осталось меньше минуты"
-
-
 def run(photos: Path, table: Path, out: Optional[Path] = None, only=("serials", "accounts", "digits"),
         dataset_root: Optional[Path] = None, models=None) -> str:
     photos = Path(photos)
@@ -259,7 +251,7 @@ def run(photos: Path, table: Path, out: Optional[Path] = None, only=("serials", 
                     w.writerow(row)
                     fh.flush()
                 if i % 25 == 0 or i == len(todo):
-                    print(f"Фото {i} из {len(todo)}{_left(started, i, len(todo))}", flush=True)
+                    print(f"Фото {i} из {len(todo)}{time_left(started, i, len(todo))}", flush=True)
     lines = [f"Сборка датасета: {len(paths)} фото ({photos}) → {out}"]
     if resume:
         lines.append(f"Продолжение: уже были в {REPORT} — {len(paths) - len(todo)}, сейчас — {len(todo)}")

@@ -18,16 +18,18 @@
   marker_id → account; номера классов — как у модели.
 - По умолчанию веса — детектор счётчика из PipelineConfig, порог — 0.25:
   ниже, чем в reader.py (0.7), чтобы человек видел и неуверенные рамки.
+- Каждые 25 фото — «Фото N из M, осталось ~X мин».
 """
 import argparse
 import sys
+import time
 from pathlib import Path
 
 try:
-    from ..datasets import images_in
+    from ..datasets import images_in, time_left
 except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from models.datasets import images_in
+    from models.datasets import images_in, time_left
 from src.gmr.domain.datasets import standard_class
 
 
@@ -54,18 +56,20 @@ def prelabel(images: Path, labels: Path, predict, names: list[str]) -> dict:
     """predict(path) → (классы, рамки xywhn). Возвращает счётчики."""
     labels.mkdir(parents=True, exist_ok=True)
     stats = {"written": 0, "had_labels": 0, "nothing_found": 0}
-    for img in images_in(images):
-        out = labels / (img.stem + ".txt")
-        if out.exists():
-            stats["had_labels"] += 1
-            continue
+    photos = images_in(images)
+    todo = [p for p in photos if not (labels / (p.stem + ".txt")).exists()]
+    stats["had_labels"] = len(photos) - len(todo)
+    started = time.monotonic()
+    for i, img in enumerate(todo, 1):
         classes, boxes = predict(img)
         lines = yolo_lines(classes, boxes)
-        if not lines:
+        if lines:
+            (labels / (img.stem + ".txt")).write_text("\n".join(lines) + "\n", encoding="utf-8")
+            stats["written"] += 1
+        else:
             stats["nothing_found"] += 1
-            continue
-        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        stats["written"] += 1
+        if i % 25 == 0 or i == len(todo):
+            print(f"Фото {i} из {len(todo)}{time_left(started, i, len(todo))}", flush=True)
     write_classes(labels, names)
     if images.name == "images":
         write_classes(images.parent, names)

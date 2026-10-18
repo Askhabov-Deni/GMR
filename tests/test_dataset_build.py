@@ -176,10 +176,11 @@ def test_build_resume_after_crash_and_failed_photo(tmp_path):
 
 
 def test_left_time(monkeypatch):
-    monkeypatch.setattr(build.time, "monotonic", lambda: 600.0)
-    assert build._left(0.0, 100, 300) == ", осталось ~20 мин"
-    assert build._left(590.0, 100, 101) == ", осталось меньше минуты"
-    assert build._left(0.0, 0, 5) == "" and build._left(0.0, 5, 5) == ""
+    from models import datasets as ds
+    monkeypatch.setattr(ds.time, "monotonic", lambda: 600.0)
+    assert ds.time_left(0.0, 100, 300) == ", осталось ~20 мин"
+    assert ds.time_left(590.0, 100, 101) == ", осталось меньше минуты"
+    assert ds.time_left(0.0, 0, 5) == "" and ds.time_left(0.0, 5, 5) == ""
 
 
 def test_build_only_serials(tmp_path):
