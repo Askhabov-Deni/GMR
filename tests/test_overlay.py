@@ -122,12 +122,60 @@ def test_line_sure_by_margin():
     assert not overlay.Line("1", overlay.MARGIN - 0.001, (0, 0, 1, 1), crop).sure
 
 
-def test_bank_margin_low_for_ambiguous_glyph():
+def test_bank_margin_and_similarity():
     zero = _glyph("0", 0, 100)
-    c, m = BANK.read(zero, 1.0)
-    assert c == "0" and m >= overlay.MARGIN
-    blob = np.ones((100, 70), bool)                                          # сплошное пятно — ни на что не похоже
-    assert BANK.read(blob, 1.0)[1] < 0.2
+    c, m, sim = BANK.read(zero, 1.0)
+    assert c == "0" and m >= overlay.MARGIN and sim > 0.95
+    assert BANK.read(np.ones((100, 70), bool), 1.0)[1] < 0.2              # сплошное пятно — без запаса
+
+
+def _row(img, shape, color, y=500, n=4):
+    for k in range(n):
+        x0 = 80 + k * 150
+        img[y:y + shape.shape[0], x0:x0 + shape.shape[1]][shape] = color
+
+
+def test_uneven_stroke_line_is_not_text():
+    """Пятно с тонким хвостом (тень, трос у пломбы): одного цвета, в ряд, но
+    толщина «штриха» скачет — не буквы."""
+    shape = np.zeros((120, 90), np.uint8)
+    cv2.circle(shape, (45, 85), 30, 1, -1)
+    cv2.line(shape, (45, 5), (45, 60), 1, 4)
+    a, b = overlay._stroke(shape > 0)
+    assert b > overlay.STROKE_CV_MAX
+    img = _background(11)
+    _row(img, shape > 0, (250, 199, 52))
+    assert overlay.read(_jpeg(img, 90), BANK) == []
+
+
+def test_even_strokes_rule():
+    def line(*strokes, h=100):
+        return [(0, 0, 50, h, i, st) for i, st in enumerate(strokes)]
+    ok, thick, uneven = (0.15, 0.2), (0.4, 0.2), (0.15, 0.8)
+    assert overlay._even_strokes(line(ok, ok, ok))
+    assert not overlay._even_strokes(line(ok, ok, uneven))          # одна неровная — вся строка не надпись
+    assert not overlay._even_strokes(line(ok, thick, ok))
+    low = [(0, 0, 50, 70, 9, (0.4, 0.2))]                            # строчная: 0.4 своей высоты = 0.28 строки
+    assert overlay._even_strokes(line(ok, ok) + low)
+    assert overlay._stroke(np.eye(3, dtype=bool)) == (0.0, 0.0)      # тоньше пикселя — не судим
+
+
+def test_line_of_non_characters_is_not_text():
+    """Ровные штрихи, но фигура ни на один символ не похожа (клин с вырезом)."""
+    wedge = np.zeros((120, 90), np.uint8)
+    cv2.fillPoly(wedge, [np.array([[5, 115], [85, 115], [45, 5]])], 1)
+    cv2.fillPoly(wedge, [np.array([[30, 115], [60, 115], [45, 60]])], 0)
+    assert BANK.read(wedge > 0, 1.0)[2] < overlay.SIM_MIN
+    img = _background(12)
+    _row(img, wedge > 0, (250, 199, 52))
+    assert overlay.read(_jpeg(img, 90), BANK) == []
+
+
+def test_thick_letters_measured_by_line_height():
+    """Строчные буквы ниже цифр: их штрих относительно своей высоты толще, но
+    относительно строки — обычный; такая строка — надпись."""
+    img = _photo([("лсок52", (250, 199, 52), 600, 3)], seed=13)
+    assert [ln.text for ln in overlay.read(img, BANK)] == ["лсок52"]
 
 
 @pytest.mark.parametrize("text, tokens", [

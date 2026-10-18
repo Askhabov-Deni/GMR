@@ -5,8 +5,11 @@ src/gmr/overlay.py — надпись контролёра поверх фото
 
 Найти. Буквы надписи залиты одним ярким цветом: на живом фото такого почти
 не бывает. Для каждого яркого цвета на фото — пятна этого цвета; «буква» —
-пятно разумного размера, в котором почти весь цвет — один; строка — не меньше
-3 «букв» одной высоты подряд. Пломбы, бирки, изолента строку не образуют.
+пятно разумного размера, в котором почти весь цвет — один и штрих ровной
+толщины; строка — не меньше 3 «букв» одной высоты подряд, и каждая похожа
+на какой-то символ (SIM_MIN). Пломбы, бирки, изолента, тени и трубы строку
+не образуют (замер на эталоне архива 2026-10-21: лишние находки — пятна
+неровной толщины, ни на какой символ не похожие).
 Белый и чёрный текст, текст на плашке не ищутся (владелец: запретить).
 
 Прочитать. Каждая буква сравнивается с образцами символов 12 свободных
@@ -30,6 +33,11 @@ CHARS = "0123456789покслПОКЛС"
 GLYPH_H, GLYPH_W = 48, 36
 MAX_SIDE = 1280             # ищется на уменьшенном фото: надпись крупная
 MARGIN = 0.05               # запас уверенности символа (проверено на синтетике, 2026-10-21)
+# Буква или пятно (вырезки замера 2026-10-21): у набранной буквы толщина
+# штриха 0.10–0.25 высоты и ровная (разброс ≤ 0.4), похожесть на образец ≥ 0.84
+# (на синтетике с незнакомыми шрифтами — ≥ 0.66 у 99% строк);
+# у теней, труб, стен — толщина 0.45–0.9 или разброс 0.7–1.1, похожесть 0.24–0.79.
+STROKE_W_MAX, STROKE_CV_MAX, SIM_MIN = 0.35, 0.6, 0.6
 
 _HUE_BINS, _MIN_COLOR_PX = 30, 200
 _NEAR, _CORE = 35, 18       # расстояние в Lab: пиксель того же цвета / «чистый» цвет надписи
@@ -84,16 +92,17 @@ class GlyphBank:
         d = np.load(path)
         return cls(d["chars"], d["glyphs"].astype(np.float32) / 255, d["aspect"], d["rel_h"])
 
-    def read(self, mask: np.ndarray, rel_h: float) -> tuple[str, float]:
-        """(символ, запас до лучшего другого символа)."""
+    def read(self, mask: np.ndarray, rel_h: float) -> tuple[str, float, float]:
+        """(символ, запас до лучшего другого символа, похожесть формы на
+        самый похожий образец — 1.0 совпадает, у пятна-мусора меньше SIM_MIN)."""
         ys, xs = np.nonzero(mask)
         aspect = (np.ptp(ys) + 1) / (np.ptp(xs) + 1)
-        score = (self.vectors @ _vector(_norm(mask))
-                 - 0.3 * np.abs(np.log(aspect / self.aspect)) - 0.8 * np.abs(rel_h - self.rel_h))
+        sim = self.vectors @ _vector(_norm(mask))
+        score = sim - 0.3 * np.abs(np.log(aspect / self.aspect)) - 0.8 * np.abs(rel_h - self.rel_h)
         order = np.argsort(score)[::-1]
         best = self.chars[order[0]]
         other = next(i for i in order if self.chars[i] != best)
-        return str(best), float(score[order[0]] - score[other])
+        return str(best), float(score[order[0]] - score[other]), float(sim.max())
 
 
 def make_bank(fonts, path: Path = BANK_PATH, size: int = 120) -> int:
@@ -126,6 +135,24 @@ def make_bank(fonts, path: Path = BANK_PATH, size: int = 120) -> int:
     return len(chars)
 
 
+def _stroke(mask: np.ndarray) -> tuple[float, float]:
+    """(толщина штриха / высота, разброс толщины) — по середине штриха."""
+    dt = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 3)
+    ridge = dt[(dt >= cv2.dilate(dt, np.ones((3, 3), np.uint8))) & (dt >= 1)]
+    if not ridge.size:                                  # слишком мелко, чтобы судить
+        return 0.0, 0.0
+    return float(2 * ridge.mean() / mask.shape[0]), float(ridge.std() / ridge.mean())
+
+
+def _even_strokes(line: list) -> bool:
+    """Штрихи всех «букв» строки — ровной толщины и не толще STROKE_W_MAX
+    высоты строки (строчные буквы ниже — толщина меряется по строке). Хоть
+    одна не такая — строка целиком не надпись: обрезанная строка опаснее."""
+    top = max(b[3] for b in line)
+    return all(width * h / top <= STROKE_W_MAX and spread <= STROKE_CV_MAX
+               for _, _, _, h, _, (width, spread) in line)
+
+
 def _lines(chars: list) -> list[list]:
     """«Буквы» → строки: одна высота, один уровень, рядом друг с другом, ≥3."""
     groups: list[list] = []
@@ -154,7 +181,7 @@ def _lines(chars: list) -> list[list]:
 
 
 def find(img: np.ndarray) -> Optional[tuple[np.ndarray, list[list]]]:
-    """(номера пятен, строки — списки (x, y, w, h, номер пятна) слева направо)
+    """(номера пятен, строки — списки (x, y, w, h, номер пятна, (толщина, разброс) штриха) слева направо)
     для цвета, у которого больше всего «букв» в строках; None — надписи нет.
     img — BGR, уже уменьшенное до MAX_SIDE."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -180,8 +207,8 @@ def find(img: np.ndarray) -> Optional[tuple[np.ndarray, list[list]]]:
             comp = lbl[y:y + h, x:x + w] == i
             if (dist[y:y + h, x:x + w][comp] < _CORE).mean() < 0.35:       # почти весь цвет — один
                 continue
-            chars.append((x, y, w, h, i))
-        lines = _lines(chars)
+            chars.append((x, y, w, h, i, _stroke(comp)))
+        lines = [g for g in _lines(chars) if _even_strokes(g)]
         score = sum(len(g) for g in lines)
         if lines and (best is None or score > best[0]):
             best = (score, lbl, lines)
@@ -202,11 +229,13 @@ def read(img: np.ndarray, bank: GlyphBank) -> list[Line]:
     out = []
     for g in lines:
         digit_h = float(max(b[3] for b in g))                          # цифры — самые высокие
-        text, margin = "", 1.0
-        for x, y, w, h, i in g:
-            c, m = bank.read(lbl[y:y + h, x:x + w] == i, h / digit_h)
+        text, margin, sim = "", 1.0, 1.0
+        for x, y, w, h, i, _ in g:
+            c, m, s = bank.read(lbl[y:y + h, x:x + w] == i, h / digit_h)
             text += c
-            margin = min(margin, m)
+            margin, sim = min(margin, m), min(sim, s)
+        if sim < SIM_MIN:                                   # какая-то «буква» ни на что не похожа — не надпись
+            continue
         x0, y0 = min(b[0] for b in g), min(b[1] for b in g)
         x1, y1 = max(b[0] + b[2] for b in g), max(b[1] + b[3] for b in g)
         ink = np.isin(lbl[y0:y1, x0:x1], [b[4] for b in g])
