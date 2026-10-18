@@ -124,8 +124,10 @@ def test_line_sure_by_margin():
 
 def test_bank_margin_and_similarity():
     zero = _glyph("0", 0, 100)
-    c, m, sim = BANK.read(zero, 1.0)
-    assert c == "0" and m >= overlay.MARGIN and sim > 0.95
+    c, m, sim, dev = BANK.read(zero, 1.0)
+    assert c == "0" and m >= overlay.MARGIN and sim > 0.95 and dev < 0.05
+    thin = cv2.resize(zero.astype(np.uint8), (zero.shape[1] // 2, zero.shape[0])) > 0
+    assert BANK.read(thin, 1.0)[3] > overlay.ASPECT_DEV_MAX                # «0» вдвое уже любого образца
     assert BANK.read(np.ones((100, 70), bool), 1.0)[1] < 0.2              # сплошное пятно — без запаса
 
 
@@ -160,6 +162,23 @@ def test_even_strokes_rule():
     assert overlay._stroke(np.eye(3, dtype=bool)) == (0.0, 0.0)      # тоньше пикселя — не судим
 
 
+def test_grille_is_not_ones():
+    """Решётка, радиатор: ровные наклонные палки одного цвета в ряд — похожи на
+    «1», но вдвое уже любой «1» из образцов."""
+    img = _background(15)
+    for k in range(7):
+        cv2.line(img, (100 + k * 40, 500), (110 + k * 40, 640), (250, 199, 52), 7)
+    assert overlay.read(_jpeg(img, 85), BANK) == []
+
+
+def test_finger_handwriting_is_not_text():
+    """Рукопись (пальцем в редакторе): буквы на образцы шрифтов похожи плохо —
+    в среднем меньше MEAN_SIM_MIN; иначе «16 65» читалось бы уверенно как «7665»."""
+    img = _background(14)
+    cv2.putText(img, "16 65", (60, 650), cv2.FONT_HERSHEY_SCRIPT_COMPLEX, 5, (250, 199, 52), 9, cv2.LINE_AA)
+    assert overlay.read(_jpeg(img, 85), BANK) == []
+
+
 def test_line_of_non_characters_is_not_text():
     """Ровные штрихи, но фигура ни на один символ не похожа (клин с вырезом)."""
     wedge = np.zeros((120, 90), np.uint8)
@@ -176,6 +195,15 @@ def test_thick_letters_measured_by_line_height():
     относительно строки — обычный; такая строка — надпись."""
     img = _photo([("лсок52", (250, 199, 52), 600, 3)], seed=13)
     assert [ln.text for ln in overlay.read(img, BANK)] == ["лсок52"]
+
+
+def test_wrapped():
+    assert overlay.wrapped("лс04290", "05357") and overlay.wrapped("пк3", "4567")
+    assert not overlay.wrapped("лс17777", "пок51234") and not overlay.wrapped("24317", "")
+    assert not overlay.wrapped("пок", "123")
+    assert notes.readings_of(["лс04290", "05357", "пок7"], 0) == ["лс04290", "лс0429005357"]
+    assert notes.readings_of(["лс04290", "05357", "пок7"], 1) == ["05357", "лс0429005357"]
+    assert notes.readings_of(["лс04290", "05357", "пок7"], 2) == ["пок7"]
 
 
 @pytest.mark.parametrize("text, tokens", [
@@ -259,6 +287,16 @@ def test_notes_run_on_archive_folder(tmp_path, capsys):
     (photos / "плюс" / "0429005357.jpg").unlink()
     notes.run(photos, _table(tmp_path))
     assert not (out / "не_совпало").exists()
+
+
+def test_notes_number_wrapped_to_next_line(tmp_path):
+    photos = tmp_path / "ф"
+    blue = (250, 199, 52)
+    _write(photos / "0429005357.jpg", _photo([("лс04290", blue, 450, 0), ("05357", blue, 650, 0)]))
+    notes.run(photos, _table(tmp_path), tmp_path / "o")
+    with open(tmp_path / "o" / notes.REPORT, encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter=";"))
+    assert [(r["текст"], r["итог"]) for r in rows] == [("лс04290", "верно"), ("05357", "верно")]
 
 
 def test_notes_on_archive_etalon(tmp_path):

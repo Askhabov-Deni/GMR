@@ -12,7 +12,8 @@ tools/notes.py — замер: надписи контролёров повер�
 
 Строка надписи «верно», если каждое число в ней — запись правильного счёта
 (без нулей, хвост из ≥4 последних цифр) или правильное показание; приписка
-«лс» требует счёт, «пок»/«пк» — показание. «Не уверен» — какой-то символ
+«лс» требует счёт, «пок»/«пк» — показание. Число, перенесённое на
+следующую строку («лс04290» / «05357»), сверяется и вместе. «Не уверен» — какой-то символ
 почти одинаково похож на два (в работе такое фото пошло бы оператору).
 
 Вывод — только числа. Вырезки строк — <out>\\верно\\, не_совпало\\,
@@ -64,6 +65,18 @@ def agrees(tokens: list, accounts: set, reading: Optional[str]) -> bool:
     return bool(tokens)
 
 
+def readings_of(texts: list, n: int) -> list[str]:
+    """Как можно понять строку n: сама по себе или вместе с соседней, если
+    число перенесено на следующую строку (overlay.wrapped)."""
+    from src.gmr.overlay import wrapped
+    out = [texts[n]]
+    if n + 1 < len(texts) and wrapped(texts[n], texts[n + 1]):
+        out.append(texts[n] + texts[n + 1])
+    if n > 0 and wrapped(texts[n - 1], texts[n]):
+        out.append(texts[n - 1] + texts[n])
+    return out
+
+
 def truths(folder: Path, table: Path) -> tuple[list[Path], dict]:
     """(фото, {фото: (счета, показание)}) — правильные ответы из таблицы."""
     from tools.dataset_build import account_of_photo, only_one, photos_in, read_answers
@@ -110,13 +123,15 @@ def run(folder: Path, table: Path, out: Optional[Path] = None, bank=None) -> str
             continue
         lines = read(img, bank)
         with_note += bool(lines)
+        texts = [ln.text for ln in lines]
         for n, line in enumerate(lines, 1):
             if not line.sure:
                 status = "неуверенно"
             elif p not in truth:
                 status = "нет_ответа"
             else:
-                status = "верно" if agrees(parse(line.text), *truth[p]) else "не_совпало"
+                status = "верно" if any(agrees(parse(t), *truth[p]) for t in readings_of(texts, n - 1)) \
+                    else "не_совпало"
             stat[status] += 1
             name = f"{p.stem}__{n}.png"
             (out / status).mkdir(parents=True, exist_ok=True)

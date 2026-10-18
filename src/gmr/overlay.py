@@ -38,6 +38,12 @@ MARGIN = 0.05               # запас уверенности символа (
 # (на синтетике с незнакомыми шрифтами — ≥ 0.66 у 99% строк);
 # у теней, труб, стен — толщина 0.45–0.9 или разброс 0.7–1.1, похожесть 0.24–0.79.
 STROKE_W_MAX, STROKE_CV_MAX, SIM_MIN = 0.35, 0.6, 0.6
+# Строка в целом (второй замер 2026-10-22): набранный текст похож на образцы
+# в среднем на ≥ 0.87 (синтетика, 99.5% строк; ваши фото — 0.95–0.99), пропорции
+# каждой буквы — как у образца её символа (отклонение ≤ 0.21). Рукопись пальцем
+# («16 65» → «7666») — средняя похожесть 0.79; решётка («11111…») — «единицы»
+# в 1.3–2 раза уже настоящей (отклонение 0.26–0.7).
+MEAN_SIM_MIN, ASPECT_DEV_MAX = 0.85, 0.4
 
 _HUE_BINS, _MIN_COLOR_PX = 30, 200
 _NEAR, _CORE = 35, 18       # расстояние в Lab: пиксель того же цвета / «чистый» цвет надписи
@@ -92,9 +98,10 @@ class GlyphBank:
         d = np.load(path)
         return cls(d["chars"], d["glyphs"].astype(np.float32) / 255, d["aspect"], d["rel_h"])
 
-    def read(self, mask: np.ndarray, rel_h: float) -> tuple[str, float, float]:
+    def read(self, mask: np.ndarray, rel_h: float) -> tuple[str, float, float, float]:
         """(символ, запас до лучшего другого символа, похожесть формы на
-        самый похожий образец — 1.0 совпадает, у пятна-мусора меньше SIM_MIN)."""
+        самый похожий образец — 1.0 совпадает, у пятна-мусора меньше SIM_MIN,
+        отклонение пропорций от ближайшего образца этого символа — |ln|)."""
         ys, xs = np.nonzero(mask)
         aspect = (np.ptp(ys) + 1) / (np.ptp(xs) + 1)
         sim = self.vectors @ _vector(_norm(mask))
@@ -102,7 +109,8 @@ class GlyphBank:
         order = np.argsort(score)[::-1]
         best = self.chars[order[0]]
         other = next(i for i in order if self.chars[i] != best)
-        return str(best), float(score[order[0]] - score[other]), float(sim.max())
+        aspect_dev = float(np.min(np.abs(np.log(aspect / self.aspect[self.chars == best]))))
+        return str(best), float(score[order[0]] - score[other]), float(sim.max()), aspect_dev
 
 
 def make_bank(fonts, path: Path = BANK_PATH, size: int = 120) -> int:
@@ -229,12 +237,15 @@ def read(img: np.ndarray, bank: GlyphBank) -> list[Line]:
     out = []
     for g in lines:
         digit_h = float(max(b[3] for b in g))                          # цифры — самые высокие
-        text, margin, sim = "", 1.0, 1.0
+        text, margin, sims, dev = "", 1.0, [], 0.0
         for x, y, w, h, i, _ in g:
-            c, m, s = bank.read(lbl[y:y + h, x:x + w] == i, h / digit_h)
+            c, m, s, d = bank.read(lbl[y:y + h, x:x + w] == i, h / digit_h)
             text += c
-            margin, sim = min(margin, m), min(sim, s)
-        if sim < SIM_MIN:                                   # какая-то «буква» ни на что не похожа — не надпись
+            margin, dev = min(margin, m), max(dev, d)
+            sims.append(s)
+        # какая-то «буква» ни на что не похожа, строка в целом — не набранный
+        # текст (рукопись) или пропорции не те (решётка) — не надпись
+        if min(sims) < SIM_MIN or np.mean(sims) < MEAN_SIM_MIN or dev > ASPECT_DEV_MAX:
             continue
         x0, y0 = min(b[0] for b in g), min(b[1] for b in g)
         x1, y1 = max(b[0] + b[2] for b in g), max(b[1] + b[3] for b in g)
@@ -245,6 +256,12 @@ def read(img: np.ndarray, bank: GlyphBank) -> list[Line]:
 
 ACCOUNT, READING = "account", "reading"
 _TOKEN = re.compile(r"(\D*)(\d+)")
+
+
+def wrapped(upper: str, lower: str) -> bool:
+    """Число перенесено на следующую строку: верхняя кончается цифрой, нижняя
+    начинается цифрой («лс04290» / «12345» — счёт 0429012345)."""
+    return upper[-1:].isdigit() and lower[:1].isdigit()
 
 
 def parse(text: str) -> list[tuple[str, str]]:
