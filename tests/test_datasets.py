@@ -486,3 +486,10 @@ def test_collect_month_without_markup(tmp_path):
     from tests._month import make_month
     f = make_month(tmp_path, [("100000", "A1", "1", "")])
     assert check_ds.collect(f.root, tmp_path / "ds").endswith("новых нет")
+
+
+def test_check_prints_progress(tmp_path, capsys):
+    check_ds.run(tmp_path / "ds")
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == f"Проверка 1 из {len(check_ds.TITLES)}: meter_yolo…"
+    assert out[-1] == f"Проверка {len(check_ds.TITLES)} из {len(check_ds.TITLES)}: вне_обучения…"

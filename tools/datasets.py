@@ -252,7 +252,9 @@ def run(root: Path, list_problems: bool = False) -> str:
     rep.add(f"Датасеты: {root.resolve()}")
     if created:
         rep.add(f"Создано: {len(created)} (папки раскладки)")
-    for name, title in TITLES.items():
+    for k, (name, title) in enumerate(TITLES.items(), 1):
+        # проверка читает каждый файл (одинаковые кропы) — на десятках тысяч это минуты
+        print(f"Проверка {k} из {len(TITLES)}: {name}…", flush=True)
         rep.add("")
         rep.add(f"{name} — {title}")
         if name in CHECKS:
