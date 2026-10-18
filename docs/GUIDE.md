@@ -377,6 +377,7 @@ python gmr.py etalon check --serial-weights serial_id_ocr\runs\crnn\<дата-в
 python gmr.py etalon check --serial-pad 0.05
 # эталон архива: обычные фото + заполненная таблица (docs\DATASETS.md)
 python gmr.py etalon from-table D:\архив\фото --table D:\архив\реестр.xls   # переносит 5% счетов (--percent)
+python gmr.py etalon exclude                         # старые кропы тех же счетов — вне обучения
 python gmr.py etalon check --etalon database\datasets\etalon_archive --table D:\архив\реестр.xls
 ```
 

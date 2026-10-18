@@ -10,6 +10,7 @@ tools/etalon.py — эталон: трудные фото с правильны�
                              [--digit-weights …] [--serial-weights …]
   python gmr.py etalon                 сколько фото в эталоне, по причинам
   python gmr.py etalon from-table <папка фото> --table <таблица> [--percent 5]   эталон архива
+  python gmr.py etalon exclude [--percent 5]   кропы счетов эталона архива — вне обучения
 
 Эталон архива (from-table, 2026-10-20) — обычные фото месяца, названные по
 лицевому счёту, с ответом из заполненной таблицы (номер счётчика, текущее
@@ -19,6 +20,9 @@ tools/etalon.py — эталон: трудные фото с правильны�
 (database/datasets/etalon_archive): `etalon check --etalon <эта папка>
 [--table <таблица>]` показывает точность «как в работе», не смешиваясь с
 трудными фото. --table у check — номера для серийника по таблице.
+exclude переносит из датасетов кропы и фото тех же счетов (старые, из прошлых
+месяцев) в database/datasets/вне_обучения/ — обучение их не читает, эталон
+честный. Повторный запуск переносит только новые.
 
 Трудное фото — модель не справилась (авто-ошибка: нет счётчика, нет или не
 найден серийник, ошибка цифр, подозрительно, номер у нескольких абонентов),
@@ -48,7 +52,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from models.datasets import DATASETS_DIR, IMAGE_EXTS, photo_key, to_etalon
+from models.datasets import DATASETS_DIR, IMAGE_EXTS, LAYOUT, photo_key, to_etalon
 from src.gmr.application.operator import CORRECTED_NOTE
 from src.gmr.domain import PipelineConfig
 from src.gmr.domain.datasets import ARCHIVE_PERCENT, in_archive_etalon
@@ -57,6 +61,7 @@ from src.gmr.domain.serial_match import build_serial_groups, lookup_variants, no
 
 ETALON_DIR = DATASETS_DIR / "etalon"
 ARCHIVE_DIR = DATASETS_DIR / "etalon_archive"
+APART = "вне_обучения"           # кропы счетов эталона архива, убранные из датасетов
 # авто-исходы «модель не справилась»; ERROR — сбой программы, а не модели
 FAILED = ("NO_METER", "NO_SERIAL", "SERIAL_LOW_CONF", "SERIAL_NOT_FOUND", "SERIAL_AMBIGUOUS",
           "DIGITS_ERROR", "SUSPICIOUS")
@@ -238,17 +243,57 @@ def _write_answers(etalon: Path, rows: list[dict]) -> None:
 
 # ─── Эталон архива: обычные фото с ответом из таблицы ────────────────────────
 
+def _account_of(name: str) -> str:
+    """Лицевой счёт кропа или фото датасета по имени файла (не счёт — имя фото)."""
+    key = photo_key(name)
+    head = key.split("-", 1)[0]                           # 1300000375-2 — тот же счёт
+    return head if head.isdigit() else key
+
+
+def _dataset_images(root: Path):
+    """Картинки датасетов (без эталонов и убранного из обучения)."""
+    for ds in (d for d in LAYOUT if not d.startswith("etalon")):
+        for p in sorted((Path(root) / ds).rglob("*")):
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS:
+                yield ds, p
+
+
 def _accounts_in_datasets(root: Path) -> set:
-    """Лицевые счета, кропы или фото которых уже лежат в датасетах (кроме эталонов)."""
-    root, out = Path(root), set()
-    if not root.is_dir():
-        return out
-    for p in root.rglob("*"):
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS and not p.relative_to(root).parts[0].startswith("etalon"):
-            key = photo_key(p.name)
-            head = key.split("-", 1)[0]                   # 1300000375-2 — тот же счёт
-            out.add(head if head.isdigit() else key)
-    return out
+    """Лицевые счета, кропы или фото которых уже лежат в датасетах."""
+    return {_account_of(p.name) for _, p in _dataset_images(root)}
+
+
+def exclude(root: Path = DATASETS_DIR, percent: float = ARCHIVE_PERCENT) -> str:
+    """Кропы и фото счетов эталона архива — из датасетов в <root>/вне_обучения/
+    (тот же путь внутри; у фото детектора — и его labels/*.txt)."""
+    if not 0 < percent <= 50:
+        raise ValueError(f"--percent {percent}: нужно больше 0 и не больше 50")
+    root = Path(root)
+    out = root / APART
+    moved, accounts, left = Counter(), set(), 0
+    for ds, p in list(_dataset_images(root)):
+        account = _account_of(p.name)
+        if not account.isdigit() or not in_archive_etalon(account, percent):
+            continue
+        files = [p]
+        label = p.parent.parent / "labels" / f"{p.stem}.txt"
+        if p.parent.name == "images" and label.is_file():
+            files.append(label)
+        if any((out / f.relative_to(root)).exists() for f in files):
+            left += 1
+            continue
+        for f in files:
+            dst = out / f.relative_to(root)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(f), str(dst))
+        moved[ds] += 1
+        accounts.add(account)
+    lines = [f"Счета эталона архива ({percent:g}%) — вне обучения: {out.resolve()}",
+             f"  перенесено картинок: {sum(moved.values())}, счетов: {len(accounts)}"
+             + ("" if not moved else " (" + ", ".join(f"{d} — {n}" for d, n in sorted(moved.items())) + ")")]
+    if left:
+        lines.append(f"  ⚠ не перенесено (такое имя уже есть в {APART}): {left}")
+    return "\n".join(lines)
 
 
 def from_table(photos: Path, table: Path, etalon: Path = ARCHIVE_DIR, dataset_root: Path = DATASETS_DIR,
@@ -309,7 +354,8 @@ def from_table(photos: Path, table: Path, etalon: Path = ARCHIVE_DIR, dataset_ro
     lines += [f"  без ответа в таблице (остались в папке) — {why}: {n}" for why, n in skipped.most_common()]
     if seen:
         lines.append(f"  ⚠ счетов, которые уже есть в датасетах (обучение их видело — по ним результат "
-                     f"лучше настоящего): {seen}")
+                     f"лучше настоящего): {seen}; убрать их из обучения: python gmr.py etalon exclude"
+                     + (f" --percent {percent:g}" if percent != ARCHIVE_PERCENT else ""))
     lines.append(f"Проверка: python gmr.py etalon check --etalon {etalon} --table {table}")
     return "\n".join(lines)
 
@@ -570,6 +616,10 @@ def main(argv=None) -> int:
     t.add_argument("--table", required=True, help="таблица: номер счётчика, текущие и прошлые показания")
     t.add_argument("--percent", type=float, default=ARCHIVE_PERCENT,
                    help=f"какой процент счетов перенести в эталон (по умолчанию {ARCHIVE_PERCENT})")
+    x = sub.add_parser("exclude", help="кропы счетов эталона архива — из датасетов в вне_обучения/")
+    x.add_argument("--percent", type=float, default=ARCHIVE_PERCENT,
+                   help=f"тот же процент, что у from-table (по умолчанию {ARCHIVE_PERCENT})")
+    x.add_argument("--root", default=str(DATASETS_DIR), help=f"папка датасетов (по умолчанию {DATASETS_DIR})")
     args = p.parse_args(argv)
     etalon = Path(args.etalon) if args.etalon else ARCHIVE_DIR if args.cmd == "from-table" else ETALON_DIR
     try:
@@ -583,6 +633,8 @@ def main(argv=None) -> int:
                 groups = register_serials(args.table) if args.table else \
                     table_serials(args.month) if args.month else None
             print(check(cfg, etalon, title=title, serial_groups=groups)[0])
+        elif args.cmd == "exclude":
+            print(exclude(Path(args.root), args.percent))
         elif args.cmd == "from-table":
             print(from_table(Path(args.photos), Path(args.table), etalon, percent=args.percent))
         else:

@@ -241,7 +241,8 @@ CHECKS = {"meter_yolo": check_yolo, "digits_yolo": check_yolo, "digits_cnn": che
 TITLES = {"meter_yolo": "детектор счётчика (YOLO)", "digits_yolo": "детектор цифр (YOLO)",
           "digits_cnn": "цифры (CNN)", "serials_crnn": "серийники (CRNN)",
           "accounts_crnn": "лицевой счёт маркером (CRNN)", "etalon": "эталон",
-          "etalon_archive": "эталон архива (etalon from-table)"}
+          "etalon_archive": "эталон архива (etalon from-table)",
+          "вне_обучения": "счета эталона архива, убранные из датасетов (etalon exclude)"}
 
 
 def run(root: Path, list_problems: bool = False) -> str:

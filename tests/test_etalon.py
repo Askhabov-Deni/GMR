@@ -409,7 +409,8 @@ def test_from_table_moves_photos(tmp_path):
         "  перенесено в эталон: 4",
         "  без ответа в таблице (остались в папке) — нет номера счётчика (или их несколько): 1",
         "  без ответа в таблице (остались в папке) — нет показания (или их несколько, или не число из ≤5 цифр): 1",
-        "  ⚠ счетов, которые уже есть в датасетах (обучение их видело — по ним результат лучше настоящего): 2",
+        "  ⚠ счетов, которые уже есть в датасетах (обучение их видело — по ним результат лучше настоящего): 2; "
+        "убрать их из обучения: python gmr.py etalon exclude",
         f"Проверка: python gmr.py etalon check --etalon {et} --table {table}"]
     # перенесены: в папке их больше нет — сборка датасета их не увидит
     assert sorted(p.relative_to(photos).as_posix() for p in photos.rglob("*.jp*g")) == [
@@ -457,6 +458,41 @@ def test_from_table_command(tmp_path, monkeypatch, capsys):
     assert "ОШИБКА: нет папки" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         gmr.main(["etalon", "from-table", str(photos)])                  # без таблицы
+
+
+def test_exclude_moves_etalon_accounts_out_of_training(tmp_path, capsys):
+    root = tmp_path / "ds"
+    keep = [img(root / "serials_crnn" / "images" / "1300000001__serial1__111111.jpg"),
+            img(root / "digits_cnn" / "3" / "1300000001__digit1.jpg"),
+            img(root / "meter_yolo" / "images" / "IMG_1.jpg")]
+    gone = [img(root / "serials_crnn" / "images" / "1300000043-2__serial1__12345.jpg"),   # счёт эталона (5%)
+            img(root / "serials_crnn" / "new" / "2026-10" / "images" / "1300000005__serial1__0070351.jpg"),
+            img(root / "digits_cnn" / "7" / "1300000005__digit2.jpg"),
+            img(root / "accounts_crnn" / "images" / "1300000087__account1.jpg"),
+            img(root / "meter_yolo" / "images" / "1300000043.jpg")]
+    (root / "meter_yolo" / "labels").mkdir()
+    (root / "meter_yolo" / "labels" / "1300000043.txt").write_text("0 0.5 0.5 0.1 0.1\n", encoding="utf-8")
+    eta = img(root / "etalon_archive" / "photos" / "1300000005.jpg")                     # эталон — не трогается
+    out = etalon.exclude(root)
+    apart = root / "вне_обучения"
+    assert out.splitlines() == [
+        f"Счета эталона архива (5%) — вне обучения: {apart.resolve()}",
+        "  перенесено картинок: 5, счетов: 3 (accounts_crnn — 1, digits_cnn — 1, meter_yolo — 1, serials_crnn — 2)"]
+    assert all(p.is_file() for p in keep) and eta.is_file() and not any(p.exists() for p in gone)
+    assert (apart / "digits_cnn" / "7" / "1300000005__digit2.jpg").is_file()                # тот же путь внутри
+    assert (apart / "serials_crnn" / "new" / "2026-10" / "images" / "1300000005__serial1__0070351.jpg").is_file()
+    assert (apart / "meter_yolo" / "labels" / "1300000043.txt").is_file()                   # фото детектора — с рамками
+    assert not (root / "meter_yolo" / "labels" / "1300000043.txt").exists()
+    assert etalon._accounts_in_datasets(root) == {"1300000001", "IMG_1"}                   # вне_обучения — не датасет
+    assert "перенесено картинок: 0, счетов: 0" in etalon.exclude(root)                      # повторно — ничего
+    img(root / "digits_cnn" / "7" / "1300000005__digit2.jpg")                                  # такое имя уже убрано
+    assert "⚠ не перенесено (такое имя уже есть в вне_обучения): 1" in etalon.exclude(root)
+    img(root / "digits_cnn" / "4" / "1300000020__digit1.jpg")                                  # счёт эталона при 10%
+    assert "перенесено картинок: 1, счетов: 1" in etalon.exclude(root, percent=10)
+    assert gmr.main(["etalon", "exclude", "--root", str(root), "--percent", "0"]) == 1
+    assert "ОШИБКА: --percent 0" in capsys.readouterr().out
+    assert gmr.main(["etalon", "exclude", "--root", str(root)]) == 0
+    assert "вне обучения" in capsys.readouterr().out
 
 
 def test_check_archive_with_register_serials(tmp_path, monkeypatch, capsys):
