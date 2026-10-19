@@ -12,15 +12,22 @@ src/gmr/overlay.py — надпись контролёра поверх фото
 неровной толщины, ни на какой символ не похожие).
 Белый и чёрный текст, текст на плашке не ищутся (владелец: запретить).
 
+Обрывок или испорченная строка опаснее, чем ничего. Строка не принимается,
+если рядом с ней на её уровне — пятно того же цвета ростом с букву, но не
+буква, или она касается края фото (обрывок: _loose_ink); если в «букве»
+толстое место (слилась с пятном того же цвета: THICK_MAX); если цифры
+разной высоты (DIGIT_H_DEV). Такая строка похожа на часть надписи
+(Dropped.text_like): надпись тогда понята не целиком и не используется.
+
 Прочитать. Каждая буква сравнивается с образцами символов 12 свободных
 шрифтов телефонных редакторов (Android, iPhone, WhatsApp — models/overlay/
 glyphs.npz, make_bank). Ответ — самый похожий образец; запас до лучшего
-другого символа — уверенность (меньше MARGIN — «не уверен»).
+другого символа — уверенность: хоть у одного символа меньше MARGIN —
+строку не разобрать (угадывать по таблице опасно: для показания подходит
+слишком многое).
 
-Разобрать. «пок…», «пк…» — показание, «лс…» — лицевой счёт, без приписки —
-не известно (решает таблица: число без приписки обычно лицевой счёт).
+Что значит надпись (счёт, показание) — src/gmr/domain/note_match.py.
 """
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -29,7 +36,7 @@ import cv2
 import numpy as np
 
 BANK_PATH = Path(__file__).resolve().parents[2] / "models" / "overlay" / "glyphs.npz"
-CHARS = "0123456789покслПОКЛС"
+CHARS = "0123456789покслПОКЛС/"         # «/» — в «л/с»
 GLYPH_H, GLYPH_W = 48, 36
 MAX_SIDE = 1280             # ищется на уменьшенном фото: надпись крупная
 MARGIN = 0.05               # запас уверенности символа (проверено на синтетике, 2026-10-21)
@@ -38,12 +45,25 @@ MARGIN = 0.05               # запас уверенности символа (
 # (на синтетике с незнакомыми шрифтами — ≥ 0.66 у 99% строк);
 # у теней, труб, стен — толщина 0.45–0.9 или разброс 0.7–1.1, похожесть 0.24–0.79.
 STROKE_W_MAX, STROKE_CV_MAX, SIM_MIN = 0.35, 0.6, 0.6
+# Самое толстое место буквы — до 0.33 высоты строки (17 шрифтов, и жирный),
+# в набранной строке после JPEG — до 0.47 (синтетика, 380 строк); у буквы,
+# слипшейся с пятном того же цвета, — 0.65: уже не буква.
+THICK_MAX = 0.5
 # Строка в целом (второй замер 2026-10-22): набранный текст похож на образцы
 # в среднем на ≥ 0.87 (синтетика, 99.5% строк; ваши фото — 0.95–0.99), пропорции
 # каждой буквы — как у образца её символа (отклонение ≤ 0.21). Рукопись пальцем
 # («16 65» → «7666») — средняя похожесть 0.79; решётка («11111…») — «единицы»
 # в 1.3–2 раза уже настоящей (отклонение 0.26–0.7).
 MEAN_SIM_MIN, ASPECT_DEV_MAX = 0.85, 0.4
+WIDE = 0.9                  # «буква» шире 0.9 высоты строки — может быть двумя слипшимися
+WIDEST = 8                  # пятно шире 8 своих высот — не слипшиеся буквы
+# Цифры одного шрифта — одной высоты: в прочитанных строках отличаются до 5%
+# (синтетика, 194 строки). Больше 15% — цифра слилась с фоном того же цвета
+# или строчная буква прочитана цифрой («к» как «4»): строка испорчена.
+DIGIT_H_DEV = 0.15
+EDGE = 0.3                  # у края фото кусок того же цвета от 0.3 высоты строки — срезанная буква
+
+FRAGMENT, UNSURE, DIGITS = "обрывок", "не разобрать символы", "цифры разной высоты"   # Dropped.why
 
 _HUE_BINS, _MIN_COLOR_PX = 30, 200
 _NEAR, _CORE = 35, 18       # расстояние в Lab: пиксель того же цвета / «чистый» цвет надписи
@@ -55,10 +75,6 @@ class Line:
     margin: float           # наименьший запас уверенности среди символов
     box: tuple              # x, y, w, h на уменьшенном фото
     crop: np.ndarray = field(repr=False)   # строка: чёрный текст на белом
-
-    @property
-    def sure(self) -> bool:
-        return self.margin >= MARGIN
 
 
 def _norm(mask: np.ndarray) -> np.ndarray:
@@ -143,152 +159,253 @@ def make_bank(fonts, path: Path = BANK_PATH, size: int = 120) -> int:
     return len(chars)
 
 
-def _stroke(mask: np.ndarray) -> tuple[float, float]:
-    """(толщина штриха / высота, разброс толщины) — по середине штриха."""
+def _stroke(mask: np.ndarray) -> tuple[float, float, float]:
+    """(толщина штриха / высота, разброс толщины, самое толстое место / высота)
+    — по середине штриха."""
     dt = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 3)
     ridge = dt[(dt >= cv2.dilate(dt, np.ones((3, 3), np.uint8))) & (dt >= 1)]
     if not ridge.size:                                  # слишком мелко, чтобы судить
-        return 0.0, 0.0
-    return float(2 * ridge.mean() / mask.shape[0]), float(ridge.std() / ridge.mean())
+        return 0.0, 0.0, 0.0
+    h = mask.shape[0]
+    return float(2 * ridge.mean() / h), float(ridge.std() / ridge.mean()), float(2 * ridge.max() / h)
+
+
+@dataclass
+class _Glyph:
+    """«Буква»: пятно одного цвета на уменьшенном фото."""
+    x: int
+    y: int
+    w: int
+    h: int
+    mask: np.ndarray = field(repr=False)     # h×w, True — штрих
+    stroke: tuple = (0.0, 0.0, 0.0)          # _stroke(mask)
+    label: int = 0                           # номер пятна в разметке цвета (_glyphs)
 
 
 def _even_strokes(line: list) -> bool:
-    """Штрихи всех «букв» строки — ровной толщины и не толще STROKE_W_MAX
-    высоты строки (строчные буквы ниже — толщина меряется по строке). Хоть
-    одна не такая — строка целиком не надпись: обрезанная строка опаснее."""
-    top = max(b[3] for b in line)
-    return all(width * h / top <= STROKE_W_MAX and spread <= STROKE_CV_MAX
-               for _, _, _, h, _, (width, spread) in line)
+    """Штрихи всех «букв» строки — ровной толщины, не толще STROKE_W_MAX
+    высоты строки и без толстых мест (THICK_MAX: буква на пятне того же
+    цвета); строчные буквы ниже — толщина меряется по строке. Хоть одна не
+    такая — строка целиком не надпись: обрезанная строка опаснее."""
+    top = max(g.h for g in line)
+    return all(g.stroke[0] * g.h / top <= STROKE_W_MAX and g.stroke[1] <= STROKE_CV_MAX
+               and g.stroke[2] * g.h / top <= THICK_MAX for g in line)
 
 
-def _lines(chars: list) -> list[list]:
-    """«Буквы» → строки: одна высота, один уровень, рядом друг с другом, ≥3."""
+def _count(run: list) -> int:
+    """Сколько букв в строке: слипшиеся — по ширине."""
+    return sum(max(1, round(g.w / (0.62 * g.h))) for g in run)
+
+
+def _runs(glyphs: list, min_len: int) -> list[list]:
+    """«Буквы» → строки: одна высота, один уровень, рядом друг с другом; не
+    меньше min_len букв (слипшиеся — по ширине, но пятен — хотя бы два)."""
     groups: list[list] = []
-    for b in sorted(chars, key=lambda b: b[0]):
-        cy, h = b[1] + b[3] / 2, b[3]
-        for g in groups:
-            gy, gh = np.median([x[1] + x[3] / 2 for x in g]), max(x[3] for x in g)
-            if abs(cy - gy) < 0.35 * gh and 0.45 < h / gh < 1.6:
-                g.append(b)
+    for g in sorted(glyphs, key=lambda g: g.x):
+        cy = g.y + g.h / 2
+        for grp in groups:
+            gy, gh = np.median([x.y + x.h / 2 for x in grp]), max(x.h for x in grp)
+            if abs(cy - gy) < 0.35 * gh and 0.45 < g.h / gh < 1.6:
+                grp.append(g)
                 break
         else:
-            groups.append([b])
+            groups.append([g])
+    runs = []
+    for grp in groups:
+        run = [grp[0]]
+        for g in grp[1:]:
+            if g.x - (run[-1].x + run[-1].w) <= 1.5 * max(x.h for x in run):
+                run.append(g)
+            else:
+                runs.append(run)
+                run = [g]
+        runs.append(run)
+    return [r for r in runs if _count(r) >= min_len and len(r) >= min(2, min_len)]
+
+
+def _tails(lines: list, glyphs: list) -> list[list]:
+    """Короткий хвост перенесённого числа (1–2 цифры): строка под строкой
+    надписи того же цвета, той же высоты, начинается в её пределах."""
+    used = {id(g) for ln in lines for g in ln}
+    rest = [g for g in glyphs if id(g) not in used]
     out = []
-    for g in groups:
-        run = [g[0]]
-        for b in g[1:]:
-            if b[0] - (run[-1][0] + run[-1][2]) <= 1.5 * max(x[3] for x in run):
-                run.append(b)
-                continue
-            if len(run) >= 3:
-                out.append(run)
-            run = [b]
-        if len(run) >= 3:
-            out.append(run)
+    for ln in lines:
+        top = max(g.h for g in ln)
+        x0, x1, bottom = min(g.x for g in ln), max(g.x + g.w for g in ln), max(g.y + g.h for g in ln)
+        near = [g for g in rest if 0.75 <= g.h / top <= 1.3 and bottom < g.y < bottom + 1.2 * top
+                and x0 - top <= g.x <= x1]
+        out += [r for r in _runs(near, 1) if _count(r) <= 2]
     return out
 
 
-def find(img: np.ndarray) -> Optional[tuple[np.ndarray, list[list]]]:
-    """(номера пятен, строки — списки (x, y, w, h, номер пятна, (толщина, разброс) штриха) слева направо)
-    для цвета, у которого больше всего «букв» в строках; None — надписи нет.
-    img — BGR, уже уменьшенное до MAX_SIDE."""
+def _box(line: list) -> tuple:
+    x0, y0 = min(g.x for g in line), min(g.y for g in line)
+    return x0, y0, max(g.x + g.w for g in line) - x0, max(g.y + g.h for g in line) - y0
+
+
+def _overlap(a: tuple, b: tuple) -> float:
+    """Доля меньшей рамки, закрытая другой."""
+    w = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    h = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    return max(0, w) * max(0, h) / max(1, min(a[2] * a[3], b[2] * b[3]))
+
+
+def _glyphs(lab: np.ndarray, sel: np.ndarray) -> tuple[list[_Glyph], np.ndarray, np.ndarray]:
+    """(«буквы», разметка пятен, их рамки) одного цвета — среднего у пикселей sel."""
+    dist = np.linalg.norm(lab - np.median(lab[sel], axis=0), axis=2)
+    mask = cv2.morphologyEx((dist < _NEAR).astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    n, lbl, st, _ = cv2.connectedComponentsWithStats(mask)
+    height, out = lab.shape[0], []
+    for i in range(1, n):
+        x, y, w, h, a = st[i]
+        if a < 60 or not 0.025 * height <= h <= 0.35 * height or w > WIDEST * h + 10:
+            continue
+        if not 0.12 < a / (w * h) < 0.8:                              # штрих, а не сплошное пятно
+            continue
+        comp = lbl[y:y + h, x:x + w] == i
+        if (dist[y:y + h, x:x + w][comp] < _CORE).mean() < 0.35:       # почти весь цвет — один
+            continue
+        out.append(_Glyph(int(x), int(y), int(w), int(h), comp, _stroke(comp), i))
+    return out, lbl, st
+
+
+def _loose_ink(line: list, lbl: np.ndarray, st: np.ndarray) -> bool:
+    """Строка — обрывок: на её уровне, между буквами или до высоты строки
+    слева и справа — пятно того же цвета ростом с букву, не вошедшее в
+    строку (слипшиеся буквы, буква на пятне того же цвета), или срезанный
+    краем фото кусок буквы; или сама строка касается края (остальное — за
+    ним). Точки, двоеточие, черта ниже половины строки — не в счёт."""
+    top = max(g.h for g in line)
+    x0, y0, w, h = _box(line)
+    height, width = lbl.shape
+    if min(x0, y0) <= 1 or x0 + w >= width - 1 or y0 + h >= height - 1:
+        return True
+    band = lbl[y0 + h // 5:y0 + h - h // 5, max(0, x0 - top):x0 + w + top]
+    mine = {g.label for g in line}
+    area = float(np.median([g.mask.sum() for g in line]))
+    ids, counts = np.unique(band[band > 0], return_counts=True)
+    for i, c in zip(ids, counts):
+        x, _, cw, ch, _ = st[i]
+        at_edge = x <= 1 or x + cw >= width - 1
+        if i not in mine and (ch >= 0.5 * top and c >= 0.1 * area or at_edge and ch >= EDGE * top):
+            return True
+    return False
+
+
+def find(img: np.ndarray) -> tuple[list, list]:
+    """(строки, [(отброшенная строка, почему)]) — строка — список «букв»
+    слева направо, строки сверху вниз. Каждый яркий цвет — отдельно: надпись
+    бывает в два цвета («лс» синим, «пок» красным); одна и та же строка из
+    соседних цветов — один раз. Отброшены — «буквы» в строку, но штрих
+    неровный или строка — обрывок (_loose_ink). img — BGR, уже уменьшенное
+    до MAX_SIDE."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
     bright = (hsv[..., 1] >= 110) & (hsv[..., 2] >= 90)
     hue = hsv[..., 0].astype(int) // (180 // _HUE_BINS)
-    height = img.shape[0]
-    best = None
+    good, bad = [], []
     for b in range(_HUE_BINS):
         sel = bright & (hue == b)
         if sel.sum() < _MIN_COLOR_PX:
             continue
-        dist = np.linalg.norm(lab - np.median(lab[sel], axis=0), axis=2)
-        mask = cv2.morphologyEx((dist < _NEAR).astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-        n, lbl, st, _ = cv2.connectedComponentsWithStats(mask)
-        chars = []
-        for i in range(1, n):
-            x, y, w, h, a = st[i]
-            if a < 60 or not 0.025 * height <= h <= 0.35 * height or w > 1.5 * h + 10:
-                continue
-            if not 0.12 < a / (w * h) < 0.8:                              # штрих, а не сплошное пятно
-                continue
-            comp = lbl[y:y + h, x:x + w] == i
-            if (dist[y:y + h, x:x + w][comp] < _CORE).mean() < 0.35:       # почти весь цвет — один
-                continue
-            chars.append((x, y, w, h, i, _stroke(comp)))
-        lines = [g for g in _lines(chars) if _even_strokes(g)]
-        score = sum(len(g) for g in lines)
-        if lines and (best is None or score > best[0]):
-            best = (score, lbl, lines)
-    if best is None:
-        return None
-    return best[1], sorted(best[2], key=lambda g: min(b[1] for b in g))
+        glyphs, lbl, st = _glyphs(lab, sel)
+        lines = _runs(glyphs, 3)
+        for ln in lines + _tails(lines, glyphs):
+            why = "неровный штрих" if not _even_strokes(ln) else FRAGMENT if _loose_ink(ln, lbl, st) else ""
+            (bad if why else good).append((ln, why))
+    kept: list = []
+    for ln, _ in sorted(good, key=lambda x: len(x[0]), reverse=True):  # длинная строка важнее своего куска
+        if all(_overlap(_box(ln), _box(k)) < 0.5 for k in kept):
+            kept.append(ln)
+    dropped: list = []
+    for ln, why in bad:                                               # и отброшенная — один раз
+        if all(_overlap(_box(ln), _box(k)) < 0.5 for k in kept + [d for d, _ in dropped]):
+            dropped.append((ln, why))
+    order = lambda ln: (_box(ln)[1], _box(ln)[0])                     # noqa: E731
+    return sorted(kept, key=order), sorted(dropped, key=lambda x: order(x[0]))
 
 
-def read(img: np.ndarray, bank: GlyphBank) -> list[Line]:
-    """Строки надписи на фото (BGR), сверху вниз. Пусто — надписи нет."""
-    s = MAX_SIDE / max(img.shape[:2])
-    if s < 1:
-        img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-    found = find(img)
-    if found is None:
-        return []
-    lbl, lines = found
-    out = []
-    for g in lines:
-        digit_h = float(max(b[3] for b in g))                          # цифры — самые высокие
-        text, margin, sims, dev = "", 1.0, [], 0.0
-        for x, y, w, h, i, _ in g:
-            c, m, s, d = bank.read(lbl[y:y + h, x:x + w] == i, h / digit_h)
-            text += c
-            margin, dev = min(margin, m), max(dev, d)
-            sims.append(s)
-        # какая-то «буква» ни на что не похожа, строка в целом — не набранный
-        # текст (рукопись) или пропорции не те (решётка) — не надпись
-        if min(sims) < SIM_MIN or np.mean(sims) < MEAN_SIM_MIN or dev > ASPECT_DEV_MAX:
-            continue
-        x0, y0 = min(b[0] for b in g), min(b[1] for b in g)
-        x1, y1 = max(b[0] + b[2] for b in g), max(b[1] + b[3] for b in g)
-        ink = np.isin(lbl[y0:y1, x0:x1], [b[4] for b in g])
-        out.append(Line(text, margin, (x0, y0, x1 - x0, y1 - y0), np.where(ink, 0, 255).astype(np.uint8)))
+def _parts(mask: np.ndarray, top: float) -> list[np.ndarray]:
+    """Слипшиеся буквы («00» одним пятном): разрезать там, где штриха меньше всего."""
+    h, w = mask.shape
+    n = round(w / (0.62 * top))
+    if n < 2:
+        return [mask]
+    ink = mask.sum(axis=0).astype(float)
+    cuts = [0]
+    for i in range(1, n):
+        c, r = int(w * i / n), max(2, int(0.18 * w / n))
+        lo, hi = max(cuts[-1] + 2, c - r), min(w - 2, c + r)
+        cuts.append(lo + int(np.argmin(ink[lo:hi])) if hi > lo else c)
+    cuts.append(w)
+    return [p for p in (mask[:, a:b] for a, b in zip(cuts, cuts[1:])) if p.any()]
+
+
+def _read_glyph(bank: GlyphBank, g: _Glyph, top: float) -> list[tuple]:
+    """[(символ, запас, похожесть, отклонение пропорций, высота)] — обычно
+    один; широкое пятно, которое лучше читается кусками, — по куску на символ."""
+    one = bank.read(g.mask, g.h / top) + (g.h,)
+    if g.w <= WIDE * top:
+        return [one]
+    heights = [np.ptp(np.nonzero(p)[0]) + 1 for p in _parts(g.mask, top)]
+    reads = [bank.read(p, h / top) + (h,) for p, h in zip(_parts(g.mask, top), heights)]
+    if len(reads) > 1 and all(r[2] >= SIM_MIN and r[3] <= ASPECT_DEV_MAX for r in reads) \
+            and np.mean([r[2] for r in reads]) > one[2]:
+        return reads
+    return [one]
+
+
+@dataclass
+class Dropped:
+    """Строка, которую поиск нашёл, но не принял (для разбора замера)."""
+    text: str
+    why: str
+    box: tuple
+    crop: np.ndarray = field(repr=False)
+
+    @property
+    def text_like(self) -> bool:
+        """Похоже на часть надписи, но не прочитано (обрывок, неуверенные
+        символы, цифры разной высоты) — надпись тогда понята не целиком.
+        Остальное — не текст."""
+        return self.why in (FRAGMENT, UNSURE, DIGITS)
+
+
+def _crop(line: list) -> np.ndarray:
+    x0, y0, w, h = _box(line)
+    out = np.full((h, w), 255, np.uint8)
+    for g in line:
+        out[g.y - y0:g.y - y0 + g.h, g.x - x0:g.x - x0 + g.w][g.mask] = 0
     return out
 
 
-ACCOUNT, READING = "account", "reading"
-_RUNS = re.compile(r"\d+|\D+")
-
-
-def wrapped(upper: str, lower: str) -> bool:
-    """Число перенесено на следующую строку: верхняя кончается цифрой, нижняя
-    начинается цифрой («лс04290» / «12345» — счёт 0429012345)."""
-    return upper[-1:].isdigit() and lower[:1].isdigit()
-
-
-_ZE = re.compile(r"(?<=[пк])3")
-
-
-def spellings(text: str) -> list[str]:
-    """Как ещё могла быть написана строка: «З» и «3» в шрифте почти одинаковы,
-    и «ПКЗ» (показания) читается как «пк3». Вариант с «з» вместо «3» сразу
-    после «п»/«к» — какой верный, решает таблица."""
-    alt = _ZE.sub("з", text)
-    return [text] if alt == text else [text, alt]
-
-
-def _kind(letters: str) -> str:
-    return ACCOUNT if set(letters) & set("лс") else READING if set(letters) & set("пок") else ""
-
-
-def parse(text: str) -> list[tuple[str, str]]:
-    """Строка → [(что, число)]: что — ACCOUNT («лс»), READING («пок», «пк»)
-    или "" (приписки нет: решает таблица). Приписка обычно перед числом;
-    в конце строки после числа без своей приписки — его («17743пок»)."""
-    runs = _RUNS.findall(text.lower())
+def read(img: np.ndarray, bank: GlyphBank, dropped: Optional[list] = None) -> list[Line]:
+    """Строки надписи на фото (BGR), сверху вниз. Пусто — надписи нет.
+    dropped — список: туда — найденные, но не принятые строки и почему."""
+    s = MAX_SIDE / max(img.shape[:2])
+    if s < 1:
+        img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    lines, rejected = find(img)
     out = []
-    for n, run in enumerate(runs):
-        if not run.isdigit():
+    for ln, why in [(ln, "") for ln in lines] + rejected:
+        top = float(max(g.h for g in ln))                             # цифры — самые высокие
+        reads = [r for g in ln for r in _read_glyph(bank, g, top)]
+        text = "".join(r[0] for r in reads)
+        sims, margin, dev = [r[2] for r in reads], min(r[1] for r in reads), max(r[3] for r in reads)
+        # какая-то «буква» ни на что не похожа, строка в целом — не набранный
+        # текст (рукопись) или пропорции не те (решётка) — не надпись; обрывок
+        # — не надпись, только если и большинство букв ни на что не похожи
+        # (срезанная краем буква сама по себе «не похожа»)
+        unlike = ("не похоже на буквы" if min(sims) < SIM_MIN else "как рукопись" if np.mean(sims) < MEAN_SIM_MIN
+                  else "пропорции не те" if dev > ASPECT_DEV_MAX else "")
+        if why == FRAGMENT and unlike and np.median(sims) < MEAN_SIM_MIN:
+            why = unlike
+        digits = [r[4] for r in reads if r[0].isdigit()]
+        uneven = digits and max(abs(h / np.median(digits) - 1) for h in digits) > DIGIT_H_DEV
+        why = why or unlike or (DIGITS if uneven else "") or (UNSURE if margin < MARGIN else "")
+        if why:
+            if dropped is not None:
+                dropped.append(Dropped(text, why, _box(ln), _crop(ln)))
             continue
-        before = runs[n - 1] if n else ""
-        after = runs[n + 1] if n + 2 == len(runs) else ""
-        out.append((_kind(before) or (_kind(after) if not before else ""), run))
+        out.append(Line(text, margin, _box(ln), _crop(ln)))
     return out

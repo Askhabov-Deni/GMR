@@ -1,7 +1,8 @@
 """
-Надписи контролёров поверх фото (src/gmr/overlay.py, gmr.py notes —
-tools/notes.py). Надпись рисуется образцами символов из models/overlay/
-glyphs.npz поверх «фото»: шум, градиент, цветные пломбы и бирки; потом JPEG.
+Надписи контролёров поверх фото: найти и прочитать (src/gmr/overlay.py),
+замер gmr.py notes (tools/notes.py). Надпись рисуется образцами символов из
+models/overlay/glyphs.npz поверх «фото»: шум, градиент, цветные пломбы и
+бирки; потом JPEG. Что значит надпись — tests/test_note_match.py.
 """
 import csv
 from pathlib import Path
@@ -42,13 +43,16 @@ def _background(seed: int = 0, h: int = 1280, w: int = 960) -> np.ndarray:
     return img
 
 
-def _paint(img, text: str, color, x: int, y: int, height: int, font: int = 0) -> None:
-    """Текст — образцами набора, по одной линии низа, с промежутком 0.12 высоты."""
+def _paint(img, text: str, color, x: int, y: int, height: int, font: int = 0, gap=None) -> int:
+    """Текст — образцами набора, по одной линии низа, с промежутком gap
+    (по умолчанию 0.12 высоты). Возвращает x правого края."""
+    gap = round(0.12 * height) if gap is None else gap
     for c in text:
         g = _glyph(c, font, height)
         top = y + height - g.shape[0]
         img[top:top + g.shape[0], x:x + g.shape[1]][g] = color
-        x += g.shape[1] + round(0.12 * height)
+        x += g.shape[1] + gap
+    return x - gap
 
 
 def _jpeg(img, q: int = 70) -> np.ndarray:
@@ -64,22 +68,59 @@ def _photo(lines, seed=0, q=70):
 
 # ─── Поиск и чтение ──────────────────────────────────────────────────────────
 
+BLUE, RED = (250, 199, 52), (40, 40, 245)
+
+
+def _found(img):
+    dropped = []
+    return [ln.text for ln in overlay.read(img, BANK, dropped)], [(d.text, d.why, d.text_like) for d in dropped]
+
+
 @pytest.mark.parametrize("font", [0, 3, 6])
 def test_reads_two_lines_in_blue(font):
-    img = _photo([("пок51234", (250, 199, 52), 500, font), ("лс17777", (250, 199, 52), 700, font)])
+    img = _photo([("пок51234", BLUE, 500, font), ("лс17777", BLUE, 700, font)])
     got = overlay.read(img, BANK)
     assert [ln.text for ln in got] == ["пок51234", "лс17777"]                 # сверху вниз
-    assert all(ln.sure for ln in got)
+    assert all(ln.margin >= overlay.MARGIN for ln in got)
     assert got[0].crop.dtype == np.uint8 and set(np.unique(got[0].crop)) <= {0, 255}   # чёрное на белом
 
 
 def test_reads_red_text():
-    img = _photo([("9005357", (40, 40, 245), 600, 0)], seed=1)
+    img = _photo([("9005357", RED, 600, 0)], seed=1)
     assert [ln.text for ln in overlay.read(img, BANK)] == ["9005357"]
 
 
+def test_two_colors():
+    """«лс» одним цветом, «пок» — другим: обе строки."""
+    assert _found(_photo([("лс17777", BLUE, 500, 0), ("пок51234", RED, 700, 0)])) == (["лс17777", "пок51234"], [])
+
+
+def test_short_tail_under_line():
+    """Конец числа (1–2 цифры) перенесён под строку — тоже строка; такие же 2
+    цифры не под строкой — не надпись."""
+    img = _background(9)
+    _paint(img, "лс04290", BLUE, 60, 450, 110)
+    _paint(img, "57", BLUE, 60, 600, 110)
+    _paint(img, "85", BLUE, 600, 1000, 110)
+    assert _found(_jpeg(img)) == (["лс04290", "57"], [])
+
+
+def test_slash_in_ls():
+    assert _found(_photo([("л/с17777", BLUE, 600, 3)])) == (["л/с17777"], [])
+
+
+@pytest.mark.parametrize("font", [3, 6])
+@pytest.mark.parametrize("text", ["24317", "9005357"])
+def test_touching_letters(font, text):
+    """Буквы слиплись (тесный шрифт) — пятно режется на буквы; и длинное,
+    шире 2.5 своих высот."""
+    img = _background(9)
+    _paint(img, text, BLUE, 60, 500, 110, font, gap=-4)
+    assert _found(_jpeg(img)) == ([text], [])
+
+
 def test_big_photo_is_scaled_down():
-    img = _photo([("24317", (250, 199, 52), 600, 1)], seed=2)
+    img = _photo([("24317", BLUE, 600, 1)], seed=2)
     big = cv2.resize(img, (img.shape[1] * 3, img.shape[0] * 3))
     got = overlay.read(big, BANK)
     assert [ln.text for ln in got] == ["24317"] and max(got[0].box) <= overlay.MAX_SIDE
@@ -87,9 +128,9 @@ def test_big_photo_is_scaled_down():
 
 def test_lines_top_to_bottom_and_gap_splits_line():
     img = _background(9)
-    _paint(img, "2431", (250, 199, 52), 500, 400, 110)
-    _paint(img, "лс5", (250, 199, 52), 20, 700, 110)             # нижняя строка левее верхней
-    _paint(img, "85", (250, 199, 52), 60, 400, 110)              # «85» далеко слева от «2431» — не та же строка
+    _paint(img, "2431", BLUE, 500, 400, 110)
+    _paint(img, "лс5", BLUE, 20, 700, 110)                       # нижняя строка левее верхней
+    _paint(img, "85", BLUE, 60, 400, 110)                        # «85» далеко слева от «2431» — не та же строка
     assert [ln.text for ln in overlay.read(_jpeg(img), BANK)] == ["2431", "лс5"]
 
 
@@ -103,23 +144,17 @@ def test_not_one_color_is_not_text():
 
 
 def test_no_overlay_nothing_found():
-    assert overlay.read(_jpeg(_background(3)), BANK) == []                  # пломбы, бирки, пятна в ряд — не текст
+    assert _found(_jpeg(_background(3))) == ([], [])                      # пломбы, бирки, пятна в ряд — не текст
 
 
 def test_two_glyphs_are_not_a_line():
-    img = _photo([("85", (250, 199, 52), 600, 0)], seed=4)
+    img = _photo([("85", BLUE, 600, 0)], seed=4)
     assert overlay.read(img, BANK) == []
 
 
 def test_height_tells_letter_from_digit():
     zero = _glyph("0", 0, 100)                               # «0» Roboto: по форме — почти «о»
     assert BANK.read(zero, 1.0)[0] == "0" and BANK.read(zero, 0.7)[0] == "о"
-
-
-def test_line_sure_by_margin():
-    crop = np.zeros((2, 2), np.uint8)
-    assert overlay.Line("1", overlay.MARGIN, (0, 0, 1, 1), crop).sure
-    assert not overlay.Line("1", overlay.MARGIN - 0.001, (0, 0, 1, 1), crop).sure
 
 
 def test_bank_margin_and_similarity():
@@ -131,35 +166,122 @@ def test_bank_margin_and_similarity():
     assert BANK.read(np.ones((100, 70), bool), 1.0)[1] < 0.2              # сплошное пятно — без запаса
 
 
+def test_unsure_symbol_line_is_not_read(monkeypatch):
+    """Хоть один символ неуверенный — строка не прочитана, но похожа на часть
+    надписи (надпись тогда понята не целиком)."""
+    monkeypatch.setattr(overlay, "MARGIN", 1.0)
+    assert _found(_photo([("24317", BLUE, 600, 0)])) == ([], [("24317", overlay.UNSURE, True)])
+
+
+def test_line_next_to_same_color_spot_is_fragment():
+    """Рядом со строкой, на её уровне, — пятно того же цвета ростом с букву
+    (буква не прочиталась, слиплась): строка — обрывок. Точка и черта — нет."""
+    img = _background(9)
+    x = _paint(img, "24317", BLUE, 60, 500, 110)
+    cv2.rectangle(img, (x + 30, 520), (x + 90, 600), BLUE, -1)
+    assert _found(_jpeg(img)) == ([], [("24317", overlay.FRAGMENT, True)])
+    img = _background(9)
+    x = _paint(img, "24317", BLUE, 60, 500, 110)
+    cv2.rectangle(img, (x + 15, 572), (x + 45, 610), BLUE, -1)            # жирная точка — треть строки
+    cv2.rectangle(img, (40, 545), (55, 553), BLUE, -1)                    # черта
+    assert _found(_jpeg(img)) == (["24317"], [])
+
+
+def test_letter_on_same_color_spot_is_not_text():
+    """Пятно того же цвета касается буквы: у «буквы» толстое место — не буква."""
+    img = _background(9)
+    x = _paint(img, "24317", BLUE, 60, 500, 110)
+    cv2.ellipse(img, (x + 25, 555), (35, 50), 0, 0, 360, BLUE, -1)
+    assert _found(_jpeg(img))[0] == []
+
+
+def test_digits_of_different_height_spoil_line():
+    """Цифры одного шрифта — одной высоты; одна выше на треть (слилась с
+    фоном того же цвета) — строка испорчена, часть надписи не прочитана."""
+    img = _background(9)
+    x = _paint(img, "2431", BLUE, 60, 500, 110)
+    _paint(img, "7", BLUE, x + 13, 460, 150)
+    assert _found(_jpeg(img)) == ([], [("24317", overlay.DIGITS, True)])
+
+
+def _paint_cut(img, text: str, keep: int) -> None:
+    """Текст у правого края: от последней буквы видно keep пикселей."""
+    widths = [_glyph(c, 0, 110).shape[1] for c in text]
+    x = img.shape[1] - (sum(widths) + 13 * (len(text) - 1) - widths[-1] + keep)
+    for c, w in zip(text, widths):
+        g = _glyph(c, 0, 110)
+        visible = max(0, min(w, img.shape[1] - x))
+        img[610 - g.shape[0]:610, x:x + visible][g[:, :visible]] = BLUE
+        x += w + 13
+
+
+def test_line_at_photo_edge_is_fragment():
+    img = _background(9)
+    _paint(img, "24317", BLUE, 0, 500, 110)                              # дальше — за краем фото
+    assert _found(_jpeg(img)) == ([], [("24317", overlay.FRAGMENT, True)])
+    img = _background(9)
+    _paint_cut(img, "243170", 8)                                          # от «0» — узкая дуга у края
+    assert _found(_jpeg(img))[1] == [("243171", overlay.FRAGMENT, True)]
+    img = _background(9)
+    _paint(img, "24317", BLUE, 555, 500, 110)                             # до края 21 пиксель…
+    cv2.rectangle(img, (954, 535), (959, 575), BLUE, -1)                  # …а там срезанный кусок буквы
+    assert _found(_jpeg(img)) == ([], [("24317", overlay.FRAGMENT, True)])
+    img = _background(9)
+    _paint(img, "24317", BLUE, 20, 500, 110)                             # близко к краю — можно
+    assert _found(_jpeg(img)) == (["24317"], [])
+
+
+def test_dropped_text_like():
+    crop = np.zeros((1, 1), np.uint8)
+    assert overlay.Dropped("1", overlay.FRAGMENT, (0, 0, 1, 1), crop).text_like
+    assert overlay.Dropped("1", overlay.UNSURE, (0, 0, 1, 1), crop).text_like
+    assert overlay.Dropped("1", overlay.DIGITS, (0, 0, 1, 1), crop).text_like
+    assert not overlay.Dropped("1", "неровный штрих", (0, 0, 1, 1), crop).text_like
+
+
 def _row(img, shape, color, y=500, n=4):
     for k in range(n):
         x0 = 80 + k * 150
         img[y:y + shape.shape[0], x0:x0 + shape.shape[1]][shape] = color
 
 
-def test_uneven_stroke_line_is_not_text():
-    """Пятно с тонким хвостом (тень, трос у пломбы): одного цвета, в ряд, но
-    толщина «штриха» скачет — не буквы."""
+def _uneven():
     shape = np.zeros((120, 90), np.uint8)
     cv2.circle(shape, (45, 85), 30, 1, -1)
     cv2.line(shape, (45, 5), (45, 60), 1, 4)
-    a, b = overlay._stroke(shape > 0)
-    assert b > overlay.STROKE_CV_MAX
+    return shape > 0
+
+
+def test_uneven_stroke_line_is_not_text():
+    """Пятно с тонким хвостом (тень, трос у пломбы): одного цвета, в ряд, но
+    толщина «штриха» скачет — не буквы и не часть надписи."""
+    assert overlay._stroke(_uneven())[1] > overlay.STROKE_CV_MAX
     img = _background(11)
-    _row(img, shape > 0, (250, 199, 52))
-    assert overlay.read(_jpeg(img, 90), BANK) == []
+    _row(img, _uneven(), BLUE)
+    texts, dropped = _found(_jpeg(img, 90))
+    assert texts == [] and dropped and all(d[1] == "неровный штрих" and not d[2] for d in dropped)
 
 
 def test_even_strokes_rule():
     def line(*strokes, h=100):
-        return [(0, 0, 50, h, i, st) for i, st in enumerate(strokes)]
-    ok, thick, uneven = (0.15, 0.2), (0.4, 0.2), (0.15, 0.8)
+        return [overlay._Glyph(0, 0, 50, h, np.ones((1, 1), bool), st) for st in strokes]
+    ok, thick, uneven, blob = (0.15, 0.2, 0.3), (0.4, 0.2, 0.45), (0.15, 0.8, 0.3), (0.2, 0.5, 0.6)
     assert overlay._even_strokes(line(ok, ok, ok))
     assert not overlay._even_strokes(line(ok, ok, uneven))          # одна неровная — вся строка не надпись
     assert not overlay._even_strokes(line(ok, thick, ok))
-    low = [(0, 0, 50, 70, 9, (0.4, 0.2))]                            # строчная: 0.4 своей высоты = 0.28 строки
+    assert not overlay._even_strokes(line(ok, blob, ok))            # толстое место — пятно, не буква
+    low = line((0.4, 0.2, 0.6), h=70)                               # строчная: 0.4 своей высоты = 0.28 строки
     assert overlay._even_strokes(line(ok, ok) + low)
-    assert overlay._stroke(np.eye(3, dtype=bool)) == (0.0, 0.0)      # тоньше пикселя — не судим
+    assert overlay._stroke(np.eye(3, dtype=bool)) == (0.0, 0.0, 0.0)  # тоньше пикселя — не судим
+
+
+def test_runs_count_wide_spots_as_letters():
+    def g(x, w, h=100):
+        return overlay._Glyph(x, 0, w, h, np.ones((1, 1), bool))
+    assert len(overlay._runs([g(0, 60), g(80, 130)], 3)) == 1      # вторая — две слипшиеся буквы
+    assert overlay._runs([g(0, 60), g(80, 60)], 3) == []
+    assert overlay._runs([g(0, 190)], 3) == []                     # одно пятно — не строка
+    assert overlay._runs([g(0, 190), g(800, 60)], 3) == []
 
 
 def test_grille_is_not_ones():
@@ -167,7 +289,7 @@ def test_grille_is_not_ones():
     «1», но вдвое уже любой «1» из образцов."""
     img = _background(15)
     for k in range(7):
-        cv2.line(img, (100 + k * 40, 500), (110 + k * 40, 640), (250, 199, 52), 7)
+        cv2.line(img, (100 + k * 40, 500), (110 + k * 40, 640), BLUE, 7)
     assert overlay.read(_jpeg(img, 85), BANK) == []
 
 
@@ -175,7 +297,7 @@ def test_finger_handwriting_is_not_text():
     """Рукопись (пальцем в редакторе): буквы на образцы шрифтов похожи плохо —
     в среднем меньше MEAN_SIM_MIN; иначе «16 65» читалось бы уверенно как «7665»."""
     img = _background(14)
-    cv2.putText(img, "16 65", (60, 650), cv2.FONT_HERSHEY_SCRIPT_COMPLEX, 5, (250, 199, 52), 9, cv2.LINE_AA)
+    cv2.putText(img, "16 65", (60, 650), cv2.FONT_HERSHEY_SCRIPT_COMPLEX, 5, BLUE, 9, cv2.LINE_AA)
     assert overlay.read(_jpeg(img, 85), BANK) == []
 
 
@@ -186,46 +308,21 @@ def test_line_of_non_characters_is_not_text():
     cv2.fillPoly(wedge, [np.array([[30, 115], [60, 115], [45, 60]])], 0)
     assert BANK.read(wedge > 0, 1.0)[2] < overlay.SIM_MIN
     img = _background(12)
-    _row(img, wedge > 0, (250, 199, 52))
+    _row(img, wedge > 0, BLUE)
     assert overlay.read(_jpeg(img, 90), BANK) == []
+    ys, xs = np.nonzero(wedge)
+    wedge = wedge[ys.min():ys.max() + 1, xs.min():xs.max() + 1] > 0
+    img = _background(12)
+    for k in range(4):                                                    # касается края фото — всё равно не текст
+        img[500:500 + wedge.shape[0], k * 150:k * 150 + wedge.shape[1]][wedge] = BLUE
+    assert _found(_jpeg(img, 90)) == ([], [("4444", "не похоже на буквы", False)])
 
 
 def test_thick_letters_measured_by_line_height():
     """Строчные буквы ниже цифр: их штрих относительно своей высоты толще, но
     относительно строки — обычный; такая строка — надпись."""
-    img = _photo([("лсок52", (250, 199, 52), 600, 3)], seed=13)
+    img = _photo([("лсок52", BLUE, 600, 3)], seed=13)
     assert [ln.text for ln in overlay.read(img, BANK)] == ["лсок52"]
-
-
-def test_wrapped():
-    assert overlay.wrapped("лс04290", "05357") and overlay.wrapped("пк3", "4567")
-    assert not overlay.wrapped("лс17777", "пок51234") and not overlay.wrapped("24317", "")
-    assert not overlay.wrapped("пок", "123")
-    assert notes.readings_of(["лс04290", "05357", "пок7"], 0) == ["лс04290", "лс0429005357"]
-    assert notes.readings_of(["лс04290", "05357", "пок7"], 1) == ["05357", "лс0429005357"]
-    assert notes.readings_of(["лс04290", "05357", "пок7"], 2) == ["пок7"]
-
-
-def test_ze_read_as_three():
-    """«ПКЗ12345» читается как «пк312345»: проверяется и вариант с «З»."""
-    assert overlay.spellings("пк312345") == ["пк312345", "пкз12345"]
-    assert overlay.spellings("24317") == ["24317"] and overlay.spellings("лс3") == ["лс3"]
-    assert overlay.parse("пкз12345") == [("reading", "12345")]
-    assert notes.readings_of(["пк3", "12345"], 0) == ["пк3", "пкз", "пк312345", "пкз12345"]
-    acc = {"1300017777"}
-    assert any(notes.agrees(overlay.parse(t), acc, "12345") for t in notes.readings_of(["пк3", "12345"], 0))
-
-
-@pytest.mark.parametrize("text, tokens", [
-    ("пок51234", [("reading", "51234")]), ("лс17777", [("account", "17777")]),
-    ("24317", [("", "24317")]), ("пк123лс45", [("reading", "123"), ("account", "45")]),
-    ("ПОК7", [("reading", "7")]), ("лсок", []), ("с0042", [("account", "0042")]),
-    ("17743пок", [("reading", "17743")]), ("17743лс", [("account", "17743")]),        # приписка после числа
-    ("123пок456", [("", "123"), ("reading", "456")]),                                 # «пок» — к числу после
-    ("лс5пок", [("account", "5")]),
-])
-def test_parse(text, tokens):
-    assert overlay.parse(text) == tokens
 
 
 def test_make_bank(tmp_path):
@@ -237,37 +334,17 @@ def test_make_bank(tmp_path):
     assert n == len(overlay.CHARS) and "".join(d["chars"]) == overlay.CHARS.lower()
     assert d["glyphs"].shape == (n, overlay.GLYPH_H, overlay.GLYPH_W)
     assert d["rel_h"][0] == 1.0 and d["rel_h"][list(d["chars"]).index("о")] < 0.85   # строчная ниже цифры
-    assert BANK.chars.size >= 200                                             # набор проекта: 12 шрифтов
+    assert BANK.chars.size >= 200 and "/" in BANK.chars                       # набор проекта: 12 шрифтов
 
 
 # ─── Замер: gmr.py notes ─────────────────────────────────────────────────────
-
-def test_account_forms():
-    assert notes.is_account_form("24317", "1300024317") and notes.is_account_form("9005357", "0429005357")
-    assert notes.is_account_form("0024317", "1300024317")
-    assert not notes.is_account_form("314", "1300024317")                     # меньше 4 цифр хвоста
-    assert not notes.is_account_form("24315", "1300024317")
-    assert notes.is_account_form("042900013", "0429000013")                   # «0429» + «00013»
-    assert notes.is_account_form("13000017", "1300000017") and notes.is_account_form("130017", "1300000017")
-    assert not notes.is_account_form("042900014", "0429000013")
-    assert not notes.is_account_form("0013", "0429000013")                    # 2 значащие цифры — мало
-    assert not notes.is_account_form("04290", "0429000000")                   # остаток счёта — нули
-
-
-def test_agrees():
-    acc = {"1300017777"}
-    assert notes.agrees([("account", "17777"), ("reading", "51234")], acc, "51234")
-    assert notes.agrees([("", "17777")], acc, None) and notes.agrees([("", "51234")], acc, "51234,0")
-    assert not notes.agrees([("account", "51234")], acc, "51234")             # «лс» — только счёт
-    assert not notes.agrees([("reading", "17777")], acc, "51234")
-    assert not notes.agrees([], acc, "1") and not notes.agrees([("", "777")], acc, "51234")
-
 
 def _table(tmp_path) -> Path:
     t = tmp_path / "реестр.csv"
     t.write_text("Лицевой счет;Номер счетчика;Последние показания;Текущие показания\n"
                  "1300017777;095011111;51000;51234\n1300024317;1260001;4300;5100\n"
-                 "0429005357;2250001;1;2\n1300000001;111111;1;2\n", encoding="utf-8")
+                 "0429005357;2250001;1;2\n1300000001;111111;1;2\n1300055555;3330001;51000;51300\n",
+                 encoding="utf-8")
     return t
 
 
@@ -277,69 +354,106 @@ def _write(path: Path, img) -> Path:
     return path
 
 
-def test_notes_run_on_archive_folder(tmp_path, capsys):
-    blue = (250, 199, 52)
-    photos = tmp_path / "фото"
-    _write(photos / "плюс" / "1300017777.jpg", _photo([("пок51234", blue, 500, 0), ("лс17777", blue, 700, 0)]))
-    _write(photos / "минус" / "1300024317.jpg", _photo([("24317", blue, 600, 2)], seed=5))
-    _write(photos / "плюс" / "0429005357.jpg", _photo([("9005358", (40, 40, 245), 600, 4)], seed=6))   # не тот счёт
-    _write(photos / "плюс" / "1300000001.jpg", _jpeg(_background(7)))                                  # без надписи
-    _write(photos / "плюс" / "1399999999.jpg", _photo([("12345", blue, 600, 0)], seed=8))           # счёта нет в таблице
-    (photos / "битое.jpg").write_bytes(b"x")
-    text = notes.run(photos, _table(tmp_path))
-    out = tmp_path / "фото_надписи"
-    assert text.splitlines()[:4] == [
-        f"Надписи: {photos} — фото 6",
-        "  с надписью: 4 (67%), строк: 5",
-        "  уверенно прочитано и сверено с таблицей: 4 — верно 3, не совпало 1",
-        "  не уверен (пошло бы оператору): 0"]
-    assert "  уверенно, но ответа в таблице нет: 1" in text and "  не открылись как картинка: 1" in text
-    assert sorted(p.relative_to(out).as_posix() for p in out.rglob("*.png")) == [
-        "верно/1300017777__1.png", "верно/1300017777__2.png", "верно/1300024317__1.png",
-        "не_совпало/0429005357__1.png", "нет_ответа/1399999999__1.png"]
+def _report(out: Path) -> list[dict]:
     with open(out / notes.REPORT, encoding="utf-8-sig", newline="") as fh:
-        rows = list(csv.DictReader(fh, delimiter=";"))
-    assert rows[0]["фото"] == "минус/1300024317.jpg" and rows[0]["текст"] == "24317" and rows[0]["итог"] == "верно"
-    assert "Фото 6 из 6" in capsys.readouterr().out
-    # повторный замер — прошлые вырезки заменяются
-    (photos / "плюс" / "0429005357.jpg").unlink()
-    notes.run(photos, _table(tmp_path))
+        return list(csv.DictReader(fh, delimiter=";"))
+
+
+def test_notes_run_on_archive_folder(tmp_path, capsys):
+    photos = tmp_path / "фото"
+    _write(photos / "плюс" / "1300017777.jpg", _photo([("пок51234", BLUE, 500, 0), ("лс17777", BLUE, 700, 0)]))
+    _write(photos / "минус" / "1300024317.jpg", _photo([("24317", BLUE, 600, 2)], seed=5))
+    _write(photos / "плюс" / "0429005357.jpg", _photo([("9005358", RED, 600, 4)], seed=6))       # нет такого счёта
+    # чужой счёт: показание фото (51300) подходит и ему — без таблички это опасно
+    _write(photos / "плюс" / "1300055555.jpg", _photo([("лс17777", BLUE, 600, 1)], seed=9))
+    _write(photos / "минус" / "1300024317 (2).jpg", _photo([("лс17777", BLUE, 600, 1)], seed=10))  # спор
+    _write(photos / "плюс" / "1300000001.jpg", _jpeg(_background(7)))                            # без надписи
+    shadows = _background(11)
+    _row(shadows, _uneven(), BLUE)
+    _write(photos / "плюс" / "1300000001 (2).jpg", _jpeg(shadows, 90))                            # не текст
+    _write(photos / "плюс" / "1399999999.jpg", _photo([("12345", BLUE, 600, 0)], seed=8))         # счёта нет в таблице
+    cut = _background(12)
+    _paint(cut, "24317", BLUE, 0, 500, 110)
+    _write(photos / "минус" / "1300024317 (3).jpg", _jpeg(cut))                                  # обрывок у края
+    (photos / "битое.jpg").write_bytes(b"x")
+    out = tmp_path / "фото_надписи"
+    (out / "не_совпало").mkdir(parents=True)                                     # папка прошлой версии замера
+    text = notes.run(photos, _table(tmp_path))
+    assert text.splitlines()[:5] == [
+        f"Надписи: {photos} — фото 10",
+        "  надпись есть: 7 (70%)",
+        "  по фото с ответом в таблице (6): верно 2, опасно 1, спор (к оператору) 1, "
+        "не понять (надпись не используется) 2",
+        "    счёт по надписи (как без таблички): верно 2, опасно 1, спор 0",
+        "    показание по надписи (как без барабана): верно 1, опасно 0, спор 2"]
+    assert "  надпись есть, но ответа в таблице нет: 1" in text and "  не открылись как картинка: 1" in text
+    assert "  найдено только не-текст (тени, трубы — отброшено): 1" in text
+    assert sorted(p.relative_to(out).as_posix() for p in out.rglob("*.jpg")) == [
+        "верно/минус__1300024317.jpg", "верно/плюс__1300017777.jpg", "не_понять/минус__1300024317 (3).jpg",
+        "не_понять/плюс__0429005357.jpg",
+        "не_текст/плюс__1300000001 (2).jpg", "нет_ответа/плюс__1399999999.jpg",
+        "опасно/плюс__1300055555.jpg", "спор/минус__1300024317 (2).jpg"]
     assert not (out / "не_совпало").exists()
+    rows = {r["фото"]: r for r in _report(out)}
+    assert rows["плюс/1300017777.jpg"]["показание по надписи"] == "51234"
+    assert rows["плюс/1300055555.jpg"]["счёт по надписи"] == "1300017777"
+    assert rows["минус/1300024317 (2).jpg"]["итог"] == "спор"
+    assert rows["плюс/0429005357.jpg"]["почему"].startswith("без таблички: не запись счёта: 9005358")
+    assert rows["минус/1300024317 (3).jpg"]["отброшено"] == "24317 (обрывок)"
+    assert "Фото 10 из 10" in capsys.readouterr().out
+    # повторный замер — прошлые картинки заменяются
+    (photos / "плюс" / "1300055555.jpg").unlink()
+    notes.run(photos, _table(tmp_path))
+    assert not (out / "опасно").exists()
 
 
 def test_notes_number_wrapped_to_next_line(tmp_path):
     photos = tmp_path / "ф"
-    blue = (250, 199, 52)
-    _write(photos / "0429005357.jpg", _photo([("лс04290", blue, 450, 0), ("05357", blue, 650, 0)]))
+    _write(photos / "0429005357.jpg", _photo([("лс04290", BLUE, 450, 0), ("05357", BLUE, 650, 0)]))
     notes.run(photos, _table(tmp_path), tmp_path / "o")
-    with open(tmp_path / "o" / notes.REPORT, encoding="utf-8-sig", newline="") as fh:
-        rows = list(csv.DictReader(fh, delimiter=";"))
-    assert [(r["текст"], r["итог"]) for r in rows] == [("лс04290", "верно"), ("05357", "верно")]
+    row, = _report(tmp_path / "o")
+    assert (row["строки"], row["итог"], row["счёт по надписи"]) == ("лс04290 / 05357", "верно", "0429005357")
 
 
 def test_notes_on_archive_etalon(tmp_path):
     et = tmp_path / "etalon_archive"
-    blue = (250, 199, 52)
-    _write(et / "photos" / "aaa.jpg", _photo([("24317", blue, 600, 0)]))             # счёт — по номеру 1260001
-    _write(et / "photos" / "bbb.jpg", _photo([("лс17777", blue, 600, 0)], seed=2))   # в таблице номер с нулём
-    _write(et / "photos" / "ccc.jpg", _photo([("пок99999", blue, 600, 2)], seed=3))
+    _write(et / "photos" / "aaa.jpg", _photo([("24317", BLUE, 600, 0)]))             # счёт — по номеру 1260001
+    _write(et / "photos" / "bbb.jpg", _photo([("лс17777", BLUE, 600, 0)], seed=2))   # в таблице номер с нулём
+    _write(et / "photos" / "ccc.jpg", _photo([("пок99999", BLUE, 600, 2)], seed=3))  # не подходит к прошлому
+    _write(et / "photos" / "ddd.jpg", _photo([("лс17777", BLUE, 600, 0)], seed=4))   # номера нет в таблице
     with open(et / "answers.csv", "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["photo_hash", "file", "serial", "reading"])
         w.writeheader()
         w.writerows([{"photo_hash": "a", "file": "aaa.jpg", "serial": "1260001", "reading": "5100"},
                      {"photo_hash": "b", "file": "bbb.jpg", "serial": "095011111", "reading": "51234"},
-                     {"photo_hash": "c", "file": "ccc.jpg", "serial": "95011111", "reading": "51234"}])
+                     {"photo_hash": "c", "file": "ccc.jpg", "serial": "95011111", "reading": "51234"},
+                     {"photo_hash": "d", "file": "ddd.jpg", "serial": "999", "reading": "51234"}])
     text = notes.run(et, _table(tmp_path))
-    assert "фото 3" in text and "верно 2, не совпало 1" in text
-    assert (tmp_path / "etalon_archive_надписи" / "не_совпало" / "ccc__1.png").is_file()
+    assert "фото 4" in text and "верно 2, опасно 0, спор (к оператору) 0, не понять (надпись не используется) 1" in text
+    assert "ответа в таблице нет: 1" in text
+    out = tmp_path / "etalon_archive_надписи"
+    assert (out / "не_понять" / "ccc.jpg").is_file() and (out / "нет_ответа" / "ddd.jpg").is_file()
+
+
+def test_picture_shows_lines_and_answer():
+    img = _photo([("лс17777", BLUE, 600, 0)])
+    dropped = []
+    lines = overlay.read(img, BANK, dropped)
+    dropped = [overlay.Dropped("4", "неровный штрих", (10, 10, 30, 40), None),
+               overlay.Dropped("5", overlay.FRAGMENT, (100, 10, 30, 40), None)]
+    pic = notes.picture(img, lines, dropped, {"итог": "верно", "почему": "л/с 1300017777 по надписи"})
+    x, y, w, h = lines[0].box
+    assert tuple(pic[y - 3, x + w // 2]) == notes.GREEN and tuple(pic[7, 20]) == notes.RED
+    assert tuple(pic[7, 110]) == notes.ORANGE
+    assert pic.shape[0] > img.shape[0] if notes._font(22) else pic.shape == img.shape
 
 
 def test_notes_command(tmp_path, capsys):
     photos = tmp_path / "ф"
-    _write(photos / "1300024317.jpg", _photo([("24317", (250, 199, 52), 600, 0)]))
+    _write(photos / "1300024317.jpg", _photo([("24317", BLUE, 600, 0)]))
     assert gmr.main(["notes", str(photos), "--table", str(_table(tmp_path)), "--out", str(tmp_path / "o")]) == 0
-    assert "верно 1, не совпало 0" in capsys.readouterr().out
-    assert (tmp_path / "o" / "верно" / "1300024317__1.png").is_file()
+    assert "по фото с ответом в таблице (1): верно 1, опасно 0" in capsys.readouterr().out
+    assert (tmp_path / "o" / "верно" / "1300024317.jpg").is_file()
     assert gmr.main(["notes", str(tmp_path / "нет"), "--table", str(_table(tmp_path))]) == 1
     assert "ОШИБКА: нет папки" in capsys.readouterr().out
     with pytest.raises(SystemExit):
