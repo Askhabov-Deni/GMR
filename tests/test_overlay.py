@@ -206,10 +206,23 @@ def test_wrapped():
     assert notes.readings_of(["лс04290", "05357", "пок7"], 2) == ["пок7"]
 
 
+def test_ze_read_as_three():
+    """«ПКЗ12345» читается как «пк312345»: проверяется и вариант с «З»."""
+    assert overlay.spellings("пк312345") == ["пк312345", "пкз12345"]
+    assert overlay.spellings("24317") == ["24317"] and overlay.spellings("лс3") == ["лс3"]
+    assert overlay.parse("пкз12345") == [("reading", "12345")]
+    assert notes.readings_of(["пк3", "12345"], 0) == ["пк3", "пкз", "пк312345", "пкз12345"]
+    acc = {"1300017777"}
+    assert any(notes.agrees(overlay.parse(t), acc, "12345") for t in notes.readings_of(["пк3", "12345"], 0))
+
+
 @pytest.mark.parametrize("text, tokens", [
     ("пок51234", [("reading", "51234")]), ("лс17777", [("account", "17777")]),
     ("24317", [("", "24317")]), ("пк123лс45", [("reading", "123"), ("account", "45")]),
     ("ПОК7", [("reading", "7")]), ("лсок", []), ("с0042", [("account", "0042")]),
+    ("17743пок", [("reading", "17743")]), ("17743лс", [("account", "17743")]),        # приписка после числа
+    ("123пок456", [("", "123"), ("reading", "456")]),                                 # «пок» — к числу после
+    ("лс5пок", [("account", "5")]),
 ])
 def test_parse(text, tokens):
     assert overlay.parse(text) == tokens
@@ -234,6 +247,11 @@ def test_account_forms():
     assert notes.is_account_form("0024317", "1300024317")
     assert not notes.is_account_form("314", "1300024317")                     # меньше 4 цифр хвоста
     assert not notes.is_account_form("24315", "1300024317")
+    assert notes.is_account_form("042900013", "0429000013")                   # «0429» + «00013»
+    assert notes.is_account_form("13000017", "1300000017") and notes.is_account_form("130017", "1300000017")
+    assert not notes.is_account_form("042900014", "0429000013")
+    assert not notes.is_account_form("0013", "0429000013")                    # 2 значащие цифры — мало
+    assert not notes.is_account_form("04290", "0429000000")                   # остаток счёта — нули
 
 
 def test_agrees():

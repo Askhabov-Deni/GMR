@@ -255,7 +255,7 @@ def read(img: np.ndarray, bank: GlyphBank) -> list[Line]:
 
 
 ACCOUNT, READING = "account", "reading"
-_TOKEN = re.compile(r"(\D*)(\d+)")
+_RUNS = re.compile(r"\d+|\D+")
 
 
 def wrapped(upper: str, lower: str) -> bool:
@@ -264,11 +264,31 @@ def wrapped(upper: str, lower: str) -> bool:
     return upper[-1:].isdigit() and lower[:1].isdigit()
 
 
+_ZE = re.compile(r"(?<=[пк])3")
+
+
+def spellings(text: str) -> list[str]:
+    """Как ещё могла быть написана строка: «З» и «3» в шрифте почти одинаковы,
+    и «ПКЗ» (показания) читается как «пк3». Вариант с «з» вместо «3» сразу
+    после «п»/«к» — какой верный, решает таблица."""
+    alt = _ZE.sub("з", text)
+    return [text] if alt == text else [text, alt]
+
+
+def _kind(letters: str) -> str:
+    return ACCOUNT if set(letters) & set("лс") else READING if set(letters) & set("пок") else ""
+
+
 def parse(text: str) -> list[tuple[str, str]]:
     """Строка → [(что, число)]: что — ACCOUNT («лс»), READING («пок», «пк»)
-    или "" (приписки нет: решает таблица)."""
+    или "" (приписки нет: решает таблица). Приписка обычно перед числом;
+    в конце строки после числа без своей приписки — его («17743пок»)."""
+    runs = _RUNS.findall(text.lower())
     out = []
-    for prefix, number in _TOKEN.findall(text.lower()):
-        kind = ACCOUNT if set(prefix) & set("лс") else READING if set(prefix) & set("пок") else ""
-        out.append((kind, number))
+    for n, run in enumerate(runs):
+        if not run.isdigit():
+            continue
+        before = runs[n - 1] if n else ""
+        after = runs[n + 1] if n + 2 == len(runs) else ""
+        out.append((_kind(before) or (_kind(after) if not before else ""), run))
     return out

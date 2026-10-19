@@ -11,7 +11,8 @@ tools/notes.py — замер: надписи контролёров повер�
 показание из answers.csv, счёт — владелец этого номера по таблице.
 
 Строка надписи «верно», если каждое число в ней — запись правильного счёта
-(без нулей, хвост из ≥4 последних цифр) или правильное показание; приписка
+(is_account_form: без нулей, начало счёта + остаток, хвост из ≥4 значащих
+цифр) или правильное показание; приписка
 «лс» требует счёт, «пок»/«пк» — показание. Число, перенесённое на
 следующую строку («лс04290» / «05357»), сверяется и вместе. «Не уверен» — какой-то символ
 почти одинаково похож на два (в работе такое фото пошло бы оператору).
@@ -41,9 +42,21 @@ _MIN_TAIL = 4
 
 
 def is_account_form(number: str, account: str) -> bool:
-    """Так можно записать счёт: без нулей (account_variants) или его
-    последние ≥4 цифры («9005357» — счёт 0429005357)."""
-    return number in account_variants(account) or (len(number) >= _MIN_TAIL and account.endswith(number))
+    """Так можно записать счёт (контролёры пишут как придётся):
+    - без нулей, как на корпусе маркером (account_variants: «17777»);
+    - начало счёта как есть, остаток — с другим числом нулей
+      («0429» + «00013» — счёт 0429000013);
+    - конец счёта с ≥4 значащими цифрами («9005357» — счёт 0429005357)."""
+    if number in account_variants(account):
+        return True
+    if not (number.isdigit() and account.isdigit()):
+        return False
+    for k in range(1, len(account)):
+        head, rest = account[:k], account[k:]
+        if number.startswith(head) and len(number) > k and int(rest) and int(number[k:]) == int(rest):
+            return True
+    return len(number.lstrip("0")) >= _MIN_TAIL and any(
+        int(number) == int(account[k:]) for k in range(len(account)))
 
 
 def _int(text) -> Optional[int]:
@@ -67,14 +80,15 @@ def agrees(tokens: list, accounts: set, reading: Optional[str]) -> bool:
 
 def readings_of(texts: list, n: int) -> list[str]:
     """Как можно понять строку n: сама по себе или вместе с соседней, если
-    число перенесено на следующую строку (overlay.wrapped)."""
-    from src.gmr.overlay import wrapped
+    число перенесено на следующую строку (overlay.wrapped); и каждое — с «З»
+    вместо «3» после «п»/«к» («ПКЗ», overlay.spellings)."""
+    from src.gmr.overlay import spellings, wrapped
     out = [texts[n]]
     if n + 1 < len(texts) and wrapped(texts[n], texts[n + 1]):
         out.append(texts[n] + texts[n + 1])
     if n > 0 and wrapped(texts[n - 1], texts[n]):
         out.append(texts[n - 1] + texts[n])
-    return out
+    return list(dict.fromkeys(v for t in out for v in spellings(t)))
 
 
 def truths(folder: Path, table: Path) -> tuple[list[Path], dict]:
