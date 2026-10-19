@@ -105,6 +105,30 @@ def test_short_tail_under_line():
     assert _found(_jpeg(img)) == (["лс04290", "57"], [])
 
 
+@pytest.mark.parametrize("font", [0, 3])
+def test_labels_on_own_lines(font):
+    """Приписка своей строкой под числом: «ПКЗ» (3 знака) и «ЛЦ» (2 — как
+    короткий хвост под строкой)."""
+    img = _photo([("51234", BLUE, 300, font), ("пк3", BLUE, 450, font), ("17777", BLUE, 600, font),
+                  ("лц", BLUE, 750, font)])
+    assert _found(img) == (["51234", "пк3", "17777", "лц"], [])
+
+
+def test_unread_line_of_note_paint_is_part_of_note():
+    """Не прочитанная строка той же краски, что прочитанная, — часть надписи
+    (буквы на пёстром фоне), а не мусор; другого цвета — мусор."""
+    wedge = np.zeros((120, 90), np.uint8)
+    cv2.fillPoly(wedge, [np.array([[5, 115], [85, 115], [45, 5]])], 1)
+    cv2.fillPoly(wedge, [np.array([[30, 115], [60, 115], [45, 60]])], 0)
+    for color, part in ((BLUE, True), (RED, False)):
+        img = _background(12)
+        _paint(img, "24317", BLUE, 60, 300, 110)
+        _row(img, wedge > 0, color, y=700)
+        texts, dropped = _found(_jpeg(img, 90))
+        why = "не похоже на буквы, " + overlay.SAME_PAINT if part else "не похоже на буквы"
+        assert (texts, dropped) == (["24317"], [("4444", why, part)])
+
+
 def test_slash_in_ls():
     assert _found(_photo([("л/с17777", BLUE, 600, 3)])) == (["л/с17777"], [])
 
@@ -159,11 +183,24 @@ def test_height_tells_letter_from_digit():
 
 def test_bank_margin_and_similarity():
     zero = _glyph("0", 0, 100)
-    c, m, sim, dev = BANK.read(zero, 1.0)
-    assert c == "0" and m >= overlay.MARGIN and sim > 0.95 and dev < 0.05
+    c, m, sim, dev, other = BANK.read(zero, 1.0)
+    assert c == "0" and m >= overlay.MARGIN and sim > 0.95 and dev < 0.05 and other == "о"
     thin = cv2.resize(zero.astype(np.uint8), (zero.shape[1] // 2, zero.shape[0])) > 0
     assert BANK.read(thin, 1.0)[3] > overlay.ASPECT_DEV_MAX                # «0» вдвое уже любого образца
     assert BANK.read(np.ones((100, 70), bool), 1.0)[1] < 0.2              # сплошное пятно — без запаса
+
+
+def test_zero_or_letter_o_by_neighbours():
+    """«0» и «О» почти одинаковы: «о» — только в «пок» (после «п», перед «к»)."""
+    def r(c, other, margin=0.01):
+        return (c, margin, 0.9, 0.0, other, 100)
+    got = overlay._zero_or_o([r("п", "л", 0.3), r("0", "о"), r("к", "л", 0.3), r("о", "0"), r("1", "7", 0.3)])
+    assert [x[0] for x in got] == ["п", "о", "к", "0", "1"]
+    assert [x[1] for x in got] == [0.3, overlay.MARGIN, 0.3, overlay.MARGIN, 0.3]
+    assert [x[0] for x in overlay._zero_or_o([r("0", "о"), r("к", "л", 0.3)])] == ["о", "к"]
+    assert [x[0] for x in overlay._zero_or_o([r("п", "л", 0.3), r("0", "о"), r("1", "7", 0.3)])] == ["п", "о", "1"]
+    assert overlay._zero_or_o([r("о", "с")]) == [r("о", "с")]              # не та пара — не трогаем
+    assert overlay._zero_or_o([r("о", "0", 0.2)]) == [r("о", "0", 0.2)]    # уверенный — тоже
 
 
 def test_unsure_symbol_line_is_not_read(monkeypatch):
@@ -236,6 +273,7 @@ def test_dropped_text_like():
     assert overlay.Dropped("1", overlay.FRAGMENT, (0, 0, 1, 1), crop).text_like
     assert overlay.Dropped("1", overlay.UNSURE, (0, 0, 1, 1), crop).text_like
     assert overlay.Dropped("1", overlay.DIGITS, (0, 0, 1, 1), crop).text_like
+    assert overlay.Dropped("1", "как рукопись, " + overlay.SAME_PAINT, (0, 0, 1, 1), crop).text_like
     assert not overlay.Dropped("1", "неровный штрих", (0, 0, 1, 1), crop).text_like
 
 

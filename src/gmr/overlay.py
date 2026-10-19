@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 
 BANK_PATH = Path(__file__).resolve().parents[2] / "models" / "overlay" / "glyphs.npz"
-CHARS = "0123456789покслПОКЛС/"         # «/» — в «л/с»
+CHARS = "0123456789покслцПОКЛСЦ/"       # «/» — в «л/с», «ц» — в «лц»
 GLYPH_H, GLYPH_W = 48, 36
 MAX_SIDE = 1280             # ищется на уменьшенном фото: надпись крупная
 MARGIN = 0.05               # запас уверенности символа (проверено на синтетике, 2026-10-21)
@@ -64,6 +64,7 @@ DIGIT_H_DEV = 0.15
 EDGE = 0.3                  # у края фото кусок того же цвета от 0.3 высоты строки — срезанная буква
 
 FRAGMENT, UNSURE, DIGITS = "обрывок", "не разобрать символы", "цифры разной высоты"   # Dropped.why
+SAME_PAINT = "цвет надписи"   # приписка к причине: строка той же краски, что прочитанная
 
 _HUE_BINS, _MIN_COLOR_PX = 30, 200
 _NEAR, _CORE = 35, 18       # расстояние в Lab: пиксель того же цвета / «чистый» цвет надписи
@@ -114,10 +115,11 @@ class GlyphBank:
         d = np.load(path)
         return cls(d["chars"], d["glyphs"].astype(np.float32) / 255, d["aspect"], d["rel_h"])
 
-    def read(self, mask: np.ndarray, rel_h: float) -> tuple[str, float, float, float]:
+    def read(self, mask: np.ndarray, rel_h: float) -> tuple[str, float, float, float, str]:
         """(символ, запас до лучшего другого символа, похожесть формы на
         самый похожий образец — 1.0 совпадает, у пятна-мусора меньше SIM_MIN,
-        отклонение пропорций от ближайшего образца этого символа — |ln|)."""
+        отклонение пропорций от ближайшего образца этого символа — |ln|,
+        лучший другой символ)."""
         ys, xs = np.nonzero(mask)
         aspect = (np.ptp(ys) + 1) / (np.ptp(xs) + 1)
         sim = self.vectors @ _vector(_norm(mask))
@@ -126,7 +128,7 @@ class GlyphBank:
         best = self.chars[order[0]]
         other = next(i for i in order if self.chars[i] != best)
         aspect_dev = float(np.min(np.abs(np.log(aspect / self.aspect[self.chars == best]))))
-        return str(best), float(score[order[0]] - score[other]), float(sim.max()), aspect_dev
+        return str(best), float(score[order[0]] - score[other]), float(sim.max()), aspect_dev, str(self.chars[other])
 
 
 def make_bank(fonts, path: Path = BANK_PATH, size: int = 120) -> int:
@@ -224,15 +226,16 @@ def _runs(glyphs: list, min_len: int) -> list[list]:
 
 
 def _tails(lines: list, glyphs: list) -> list[list]:
-    """Короткий хвост перенесённого числа (1–2 цифры): строка под строкой
-    надписи того же цвета, той же высоты, начинается в её пределах."""
+    """Короткая строка (1–2 знака) под строкой надписи того же цвета,
+    начинается в её пределах: хвост перенесённого числа («57») или приписка
+    («ЛЦ», «лс» — строчные ниже цифр, «Ц» с хвостиком выше)."""
     used = {id(g) for ln in lines for g in ln}
     rest = [g for g in glyphs if id(g) not in used]
     out = []
     for ln in lines:
         top = max(g.h for g in ln)
         x0, x1, bottom = min(g.x for g in ln), max(g.x + g.w for g in ln), max(g.y + g.h for g in ln)
-        near = [g for g in rest if 0.75 <= g.h / top <= 1.3 and bottom < g.y < bottom + 1.2 * top
+        near = [g for g in rest if 0.6 <= g.h / top <= 1.3 and bottom < g.y < bottom + 1.2 * top
                 and x0 - top <= g.x <= x1]
         out += [r for r in _runs(near, 1) if _count(r) <= 2]
     return out
@@ -342,8 +345,9 @@ def _parts(mask: np.ndarray, top: float) -> list[np.ndarray]:
 
 
 def _read_glyph(bank: GlyphBank, g: _Glyph, top: float) -> list[tuple]:
-    """[(символ, запас, похожесть, отклонение пропорций, высота)] — обычно
-    один; широкое пятно, которое лучше читается кусками, — по куску на символ."""
+    """[(символ, запас, похожесть, отклонение пропорций, другой символ,
+    высота)] — обычно один; широкое пятно, которое лучше читается кусками, —
+    по куску на символ."""
     one = bank.read(g.mask, g.h / top) + (g.h,)
     if g.w <= WIDE * top:
         return [one]
@@ -353,6 +357,19 @@ def _read_glyph(bank: GlyphBank, g: _Glyph, top: float) -> list[tuple]:
             and np.mean([r[2] for r in reads]) > one[2]:
         return reads
     return [one]
+
+
+def _zero_or_o(reads: list) -> list:
+    """«0» и «О» в некоторых шрифтах почти одинаковы. Буква «о» бывает только
+    в «пок» — после «п» или перед «к»; иначе это 0. Так решённый символ —
+    уверенный."""
+    out = []
+    for i, r in enumerate(reads):
+        if r[1] < MARGIN and {r[0], r[4]} == {"0", "о"}:
+            letter = (i > 0 and reads[i - 1][0] == "п") or (i + 1 < len(reads) and reads[i + 1][0] == "к")
+            r = ("о" if letter else "0", MARGIN) + r[2:]
+        out.append(r)
+    return out
 
 
 @dataclass
@@ -366,9 +383,14 @@ class Dropped:
     @property
     def text_like(self) -> bool:
         """Похоже на часть надписи, но не прочитано (обрывок, неуверенные
-        символы, цифры разной высоты) — надпись тогда понята не целиком.
-        Остальное — не текст."""
-        return self.why in (FRAGMENT, UNSURE, DIGITS)
+        символы, цифры разной высоты, той же краски, что прочитанная строка)
+        — надпись тогда понята не целиком. Остальное — не текст."""
+        return self.why in (FRAGMENT, UNSURE, DIGITS) or self.why.endswith(SAME_PAINT)
+
+
+def _paint(line: list, lab: np.ndarray) -> np.ndarray:
+    """Цвет строки (Lab) — средний у её штрихов."""
+    return np.median(np.concatenate([lab[g.y:g.y + g.h, g.x:g.x + g.w][g.mask] for g in line]), axis=0)
 
 
 def _crop(line: list) -> np.ndarray:
@@ -386,10 +408,11 @@ def read(img: np.ndarray, bank: GlyphBank, dropped: Optional[list] = None) -> li
     if s < 1:
         img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
     lines, rejected = find(img)
-    out = []
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+    out, kept, refused = [], [], []
     for ln, why in [(ln, "") for ln in lines] + rejected:
         top = float(max(g.h for g in ln))                             # цифры — самые высокие
-        reads = [r for g in ln for r in _read_glyph(bank, g, top)]
+        reads = _zero_or_o([r for g in ln for r in _read_glyph(bank, g, top)])
         text = "".join(r[0] for r in reads)
         sims, margin, dev = [r[2] for r in reads], min(r[1] for r in reads), max(r[3] for r in reads)
         # какая-то «буква» ни на что не похожа, строка в целом — не набранный
@@ -400,12 +423,19 @@ def read(img: np.ndarray, bank: GlyphBank, dropped: Optional[list] = None) -> li
                   else "пропорции не те" if dev > ASPECT_DEV_MAX else "")
         if why == FRAGMENT and unlike and np.median(sims) < MEAN_SIM_MIN:
             why = unlike
-        digits = [r[4] for r in reads if r[0].isdigit()]
+        digits = [r[5] for r in reads if r[0].isdigit()]
         uneven = digits and max(abs(h / np.median(digits) - 1) for h in digits) > DIGIT_H_DEV
         why = why or unlike or (DIGITS if uneven else "") or (UNSURE if margin < MARGIN else "")
         if why:
-            if dropped is not None:
-                dropped.append(Dropped(text, why, _box(ln), _crop(ln)))
+            refused.append((Dropped(text, why, _box(ln), _crop(ln)), _paint(ln, lab)))
             continue
         out.append(Line(text, margin, _box(ln), _crop(ln)))
+        kept.append(_paint(ln, lab))
+    # не прочитана строка той же краски, что прочитанная, — это часть той же
+    # надписи (буквы на пёстром фоне), а не мусор: надпись понята не целиком
+    for d, paint in refused:
+        if not d.text_like and any(np.linalg.norm(paint - k) < _CORE for k in kept):
+            d.why = f"{d.why}, {SAME_PAINT}"
+        if dropped is not None:
+            dropped.append(d)
     return out

@@ -5,12 +5,13 @@ src/gmr/domain/note_match.py — надпись контролёра повер�
 
 Контролёры пишут как придётся: «24317», «лс17777», «пок51234», «17743пок»,
 «ПКЗ…» (показания), «лс0429» / «000013» (число перенесено на вторую
-строку), счёт с любым числом нулей. Обрывки и мусор («лс0», «1525») не
+строку), «51234» / «ПКЗ» и «17777» / «ЛЦ» (приписка строкой ниже), счёт с
+любым числом нулей или только его конец («4317» у 1300024317). Обрывки и мусор («лс0», «1525») не
 угадываются: надпись используется, только если понята целиком.
 
   1. Прочтения (hypotheses): каждая строка сама по себе или вместе с
-     соседней, если число перенесено (wrapped); «З» вместо «3» после «к»
-     (spellings).
+     соседней — число перенесено или приписка на соседней строке
+     (attached); «З» вместо «3» после «к» (spellings).
   2. Строка → числа с припиской (parse): «лс» — счёт, «пок»/«пк»/«пкз» —
      показание, без приписки — решает таблица.
   3. Прочтение понято, если есть счёт, которым объясняется КАЖДОЕ число:
@@ -32,10 +33,13 @@ from typing import Iterable, Optional
 from .account_match import account_variants
 
 ACCOUNT, READING = "account", "reading"
-# Конец счёта, записанный без начала («9005357», «005357» — 0429005357), —
-# от 6 цифр (docs/BACKLOG.md): короче — у многих счетов, и так пишет обрывок
-# («2051» из «22051»), а не контролёр.
-MIN_TAIL = 6
+# Конец счёта как есть — от 4 цифр: «9005357», «005357» у 0429005357, «4317» у
+# 1300024317 (замер 2026-10-24: так контролёры тоже пишут). Поэтому короткое
+# число часто подходит к нескольким счетам («4317» — и 1300004317, и
+# 1300024317): тогда без таблички счёт по нему не берётся. Реестр архива: так
+# чужой счёт по записи «последними цифрами» — 0% (было 3.5%), по обрывку — 1.5%
+# (было 4.9%); по ядру без нулей счёт берётся в 70% случаев (было 96%).
+MIN_TAIL = 4
 # Показание правдоподобно для счёта, если от прошлого отличается на −1500…+3000:
 # реестр архива 2026-10 (16 245 счетов) — так у 98.4% настоящих пар, у
 # случайного чужого счёта — у 8.5%.
@@ -54,6 +58,18 @@ def wrapped(upper: str, lower: str) -> bool:
     return upper[-1:].isdigit() and lower[:1].isdigit()
 
 
+def _label(text: str) -> bool:
+    """Строка — только приписка, без чисел («ПКЗ», «лц»; «пк3» — это «ПКЗ»)."""
+    return bool(text) and not any(c.isdigit() for c in _ZE.sub("з", text))
+
+
+def attached(upper: str, lower: str) -> bool:
+    """Две строки — одна запись: число перенесено (wrapped) или приписка на
+    своей строке под числом («51234» / «ПКЗ») или над ним («лс» / «17777»)."""
+    return wrapped(upper, lower) or (upper[-1:].isdigit() and _label(lower)) or \
+        (_label(upper) and lower[:1].isdigit())
+
+
 def spellings(text: str) -> list[str]:
     """Как ещё могла быть написана строка: «З» и «3» в шрифте почти одинаковы,
     и «ПКЗ» (показания) читается как «пк3». Вариант с «з» вместо «3» сразу
@@ -63,7 +79,10 @@ def spellings(text: str) -> list[str]:
 
 
 def _kind(letters: str) -> str:
-    return ACCOUNT if set(letters) & set("лс") else READING if set(letters) & set("пок") else ""
+    """Приписка: буквы счёта («лс», «л/с», «лц») или показания («пок», «пкз»).
+    Смешанная («пск» — «пок» с ошибкой чтения) — не приписка."""
+    acc, rd = set(letters) & set("лс"), set(letters) & set("пк")
+    return "" if acc and rd else ACCOUNT if acc else READING if rd else ""
 
 
 def parse(text: str) -> list[tuple[str, str]]:
@@ -83,11 +102,11 @@ def parse(text: str) -> list[tuple[str, str]]:
 
 def hypotheses(lines: list[str]) -> Optional[list[list[str]]]:
     """Как можно понять строки (сверху вниз): каждая сама по себе или с
-    соседней, если число перенесено; и «З» вместо «3». None — прочтений
-    больше MAX_HYPOTHESES."""
+    соседней (attached); и «З» вместо «3». None — прочтений больше
+    MAX_HYPOTHESES."""
     texts = [t for t in lines if t]
     seen: dict = {}
-    joins = [i for i in range(len(texts) - 1) if wrapped(texts[i], texts[i + 1])]
+    joins = [i for i in range(len(texts) - 1) if attached(texts[i], texts[i + 1])]
     for mask in range(2 ** len(joins)) if texts else ():
         glued = {joins[j] for j in range(len(joins)) if mask >> j & 1}
         merged, cur = [], texts[0]
@@ -113,7 +132,7 @@ class AccountIndex:
       - начало счёта как есть, остаток — с любым числом нулей («0429» +
         «00013» — счёт 0429000013);
       - конец счёта как есть, от MIN_TAIL цифр («9005357», «005357» —
-        0429005357)."""
+        0429005357; «4317» — 1300024317)."""
 
     def __init__(self, accounts: Iterable[str]):
         self.variants: dict[str, set] = {}
@@ -125,7 +144,8 @@ class AccountIndex:
             for v in account_variants(a):
                 self.variants.setdefault(v, set()).add(a)
             for k in range(len(a) - MIN_TAIL + 1):
-                self.tails.setdefault(a[k:], set()).add(a)
+                if int(a[k:]):
+                    self.tails.setdefault(a[k:], set()).add(a)
             for k in range(1, len(a)):
                 if int(a[k:]):
                     self.heads.setdefault((a[:k], int(a[k:])), set()).add(a)
@@ -170,7 +190,8 @@ def _show(tokens: list) -> str:
 def _explain(tokens: list, target: str, index: AccountIndex, last: Optional[int]) -> tuple[set, list]:
     """Надпись — про счёт target: (показания, лишние числа). Число — запись
     этого счёта или показание, правдоподобное для него (прошлого нет — только
-    с припиской «пок»); остальное — лишнее."""
+    с припиской «пок»); остальное — лишнее. Запись счёта — сильнее: «4317» у
+    1300024317 — счёт, даже если подошло бы и как показание."""
     readings, extra = set(), []
     for kind, number in tokens:
         if kind != READING and target in index.find(number):
@@ -255,7 +276,7 @@ def interpret(lines: list[str], index: AccountIndex, lasts: dict, account: Optio
     answers = []
     for h in hyps:
         tokens = [tok for t in h for tok in parse(t)]
-        if not tokens:
+        if not tokens or any(_label(t) for t in h):        # приписка без числа — прочтение не то
             continue
         if account is not None:
             answers.append(_known(tokens, index, lasts, str(account)))

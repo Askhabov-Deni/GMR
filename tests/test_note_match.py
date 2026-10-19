@@ -31,6 +31,15 @@ def test_wrapped():
     assert not nm.wrapped("пок", "123")
 
 
+def test_attached():
+    """Одна запись на двух строках: перенос числа или приписка своей строкой."""
+    assert nm.attached("лс04290", "05357")
+    assert nm.attached("51234", "пк3") and nm.attached("17777", "лц")     # приписка под числом
+    assert nm.attached("лс", "17777") and nm.attached("пкз", "51234")     # над числом
+    assert not nm.attached("пок51234", "лс17777") and not nm.attached("лс", "пок")
+    assert not nm.attached("лс17777", "") and not nm.attached("", "17777")
+
+
 def test_ze_read_as_three():
     """«ПКЗ12345» читается как «пк312345»: есть и вариант с «з»."""
     assert nm.spellings("пк312345") == ["пк312345", "пкз12345"]
@@ -45,7 +54,8 @@ def test_ze_read_as_three():
     ("л/с17777", [("account", "17777")]),
     ("17743пок", [("reading", "17743")]), ("17743лс", [("account", "17743")]),        # приписка после числа
     ("123пок456", [("", "123"), ("reading", "456")]),                                 # «пок» — к числу после
-    ("лс5пок", [("account", "5")]),
+    ("лс5пок", [("account", "5")]), ("лц17777", [("account", "17777")]),
+    ("пск13297", [("", "13297")]), ("пкз5", [("reading", "5")]),                      # смешанная — не приписка
 ])
 def test_parse(text, tokens):
     assert nm.parse(text) == tokens
@@ -55,7 +65,7 @@ def test_hypotheses():
     assert nm.hypotheses(["лс04290", "05357"]) == [["лс04290", "05357"], ["лс0429005357"]]
     assert nm.hypotheses(["пк3", "пок5"]) == [["пк3", "пок5"], ["пкз", "пок5"]]
     assert nm.hypotheses([]) == [] and nm.hypotheses([""]) == []
-    assert nm.hypotheses(["пк3"] * 8) is not None and nm.hypotheses(["пк3"] * 9) is None   # 2⁹ = 512 прочтений
+    assert nm.hypotheses(["лс1к3"] * 8) is not None and nm.hypotheses(["лс1к3"] * 9) is None   # 2⁹ = 512
 
 
 # ─── Счета ───────────────────────────────────────────────────────────────────
@@ -63,13 +73,14 @@ def test_hypotheses():
 def test_account_forms():
     assert is_account_form("24317", "1300024317") and is_account_form("0024317", "1300024317")
     assert is_account_form("9005357", "0429005357") and is_account_form("005357", "0429005357")
-    assert not is_account_form("05357", "0429005357")                    # конец счёта — от 6 цифр
+    assert is_account_form("5357", "0429005357") and is_account_form("4317", "1300024317")   # конец — от 4 цифр
+    assert not is_account_form("357", "0429005357")
     assert not is_account_form("0005357", "0429005357")                  # конец — как записан в счёте
     assert not is_account_form("24315", "1300024317") and not is_account_form("314", "1300024317")
     assert is_account_form("042900013", "0429000013")                    # «0429» + «00013»
     assert is_account_form("13000017", "1300000017") and is_account_form("130017", "1300000017")
     assert not is_account_form("042900014", "0429000013")
-    assert not is_account_form("0013", "0429000013")
+    assert not is_account_form("013", "0429000013") and not is_account_form("0000", "1300010000")
     assert not is_account_form("04290", "0429000000")                    # остаток счёта — нули
     assert not is_account_form("лс", "1300024317")
 
@@ -77,7 +88,7 @@ def test_account_forms():
 def test_index_finds_all_accounts_written_so():
     assert INDEX.find("17777") == {"1300017777"}
     assert INDEX.find("004330") == {"1300004330"}                        # не 1300014330: там «014330»
-    assert INDEX.find("4330") == {"1300004330"}
+    assert INDEX.find("4330") == {"1300004330", "1300014330"}           # и ядро, и конец другого счёта
     assert INDEX.find("0") == set() and INDEX.find("x") == set()
     assert AccountIndex(["1300017777", " 1300017777 ", "абв"]).find("17777") == {"1300017777"}
 
@@ -105,6 +116,25 @@ def test_known_account_without_last_reading():
     assert interpret(["пок5100"], idx, {}, account="1300000001").reading == 5100
     a = interpret(["5100"], idx, {}, account="1300000001")
     assert a.reading is None and a.why == "лишнее: 5100"
+
+
+def test_known_account_tail_and_labels_below():
+    """Как на фото замера 2026-10-24: «4317» у счёта 1300024317 — конец счёта,
+    а не показание (хоть и подходит к прошлому 4300); «51234» / «ПКЗ» /
+    «17777» / «ЛЦ» — приписки строкой ниже."""
+    a = known(["4317"], "1300024317")
+    assert a.understood and a.reading is None and a.why == "подтверждает л/с 1300024317"
+    a = known(["51234", "пк3", "17777", "лц"])
+    assert (a.reading, a.understood) == (51234, True)
+    assert unknown(["17777", "лц", "51234", "пк3"]).account == "1300017777"
+
+
+def test_label_needs_its_number():
+    """Приписка своей строкой — к соседнему числу: «214» / «ЛЦ» (обрывок
+    «21438») — запись счёта 214, а не показание 214."""
+    a = known(["214", "лц"], "1300000024")
+    assert a.reading is None and not a.understood
+    assert known(["пкз"]).why == "чисел нет"
 
 
 def test_known_account_ze_and_wrap():
@@ -162,6 +192,12 @@ def test_account_from_note_needs_fitting_reading():
     assert a.account is None and "показание 99999 ему не подходит (прошлое 4300)" in a.why
     assert unknown(["24317"], barrel=None).account is None                # нечем подтвердить
     assert interpret(["24317"], INDEX, {}, barrel=4400).account is None   # прошлого нет
+
+
+def test_short_number_of_several_accounts_is_not_account():
+    """«4330» — ядро 1300004330 и конец 1300014330: без таблички не берётся."""
+    assert unknown(["4330"], barrel=37200).account is None
+    assert unknown(["лс4330"], barrel=37200).account is None
 
 
 def test_number_from_barrel_is_not_account():
