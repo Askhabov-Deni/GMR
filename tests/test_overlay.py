@@ -217,6 +217,10 @@ def test_line_next_to_same_color_spot_is_fragment():
     x = _paint(img, "24317", BLUE, 60, 500, 110)
     cv2.rectangle(img, (x + 30, 520), (x + 90, 600), BLUE, -1)
     assert _found(_jpeg(img)) == ([], [("24317", overlay.FRAGMENT, True)])
+    img = _background(9)                                                  # чуть другой краски — тоже
+    x = _paint(img, "24317", BLUE, 60, 500, 110)
+    cv2.rectangle(img, (x + 30, 520), (x + 90, 600), (240, 215, 140), -1)
+    assert _found(_jpeg(img)) == ([], [("24317", overlay.FRAGMENT, True)])
     img = _background(9)
     x = _paint(img, "24317", BLUE, 60, 500, 110)
     cv2.rectangle(img, (x + 15, 572), (x + 45, 610), BLUE, -1)            # жирная точка — треть строки
@@ -230,6 +234,16 @@ def test_letter_on_same_color_spot_is_not_text():
     x = _paint(img, "24317", BLUE, 60, 500, 110)
     cv2.ellipse(img, (x + 25, 555), (35, 50), 0, 0, 360, BLUE, -1)
     assert _found(_jpeg(img))[0] == []
+
+
+def test_pale_background_of_same_hue():
+    """Бледный фон того же оттенка (серый корпус с голубым отливом) за концом
+    строки: при обычном допуске цвета буквы сливаются с ним — начало строки
+    и обрывок; при строгом (буквы из редактора залиты ровно) — вся строка."""
+    img = _background(9)
+    cv2.rectangle(img, (300, 420), (959, 720), (240, 215, 140), -1)
+    _paint(img, "24317", BLUE, 60, 500, 110)
+    assert _found(_jpeg(img)) == (["24317"], [])
 
 
 def test_digits_of_different_height_spoil_line():
@@ -266,6 +280,11 @@ def test_line_at_photo_edge_is_fragment():
     img = _background(9)
     _paint(img, "24317", BLUE, 20, 500, 110)                             # близко к краю — можно
     assert _found(_jpeg(img)) == (["24317"], [])
+    width = sum(_glyph(c, 0, 110).shape[1] for c in "24317") + 13 * 4
+    for gap, cut in ((3, True), (5, False)):          # до правого края 3 точки — ещё «касается»
+        img = _background(9)
+        _paint(img, "24317", BLUE, 960 - width - gap, 500, 110)
+        assert _found(_jpeg(img)) == (([], [("24317", overlay.FRAGMENT, True)]) if cut else (["24317"], []))
 
 
 def test_dropped_text_like():
@@ -381,7 +400,8 @@ def _table(tmp_path) -> Path:
     t = tmp_path / "реестр.csv"
     t.write_text("Лицевой счет;Номер счетчика;Последние показания;Текущие показания\n"
                  "1300017777;095011111;51000;51234\n1300024317;1260001;4300;5100\n"
-                 "0429005357;2250001;1;2\n1300000001;111111;1;2\n1300055555;3330001;51000;51300\n",
+                 "0429005357;2250001;1;2\n1300000001;111111;1;2\n1300055555;3330001;51000;51300\n"
+                 "1300014317;4440001;9000;\n",
                  encoding="utf-8")
     return t
 
@@ -413,24 +433,26 @@ def test_notes_run_on_archive_folder(tmp_path, capsys):
     cut = _background(12)
     _paint(cut, "24317", BLUE, 0, 500, 110)
     _write(photos / "минус" / "1300024317 (3).jpg", _jpeg(cut))                                  # обрывок у края
+    _write(photos / "минус" / "1300024317 (4).jpg", _photo([("4317", BLUE, 600, 0)], seed=12))    # и 1300014317
+    _write(photos / "плюс" / "1300014317.jpg", _photo([("4317", BLUE, 600, 3)], seed=13))      # показания нет
     (photos / "битое.jpg").write_bytes(b"x")
     out = tmp_path / "фото_надписи"
     (out / "не_совпало").mkdir(parents=True)                                     # папка прошлой версии замера
     text = notes.run(photos, _table(tmp_path))
     assert text.splitlines()[:5] == [
-        f"Надписи: {photos} — фото 10",
-        "  надпись есть: 7 (70%)",
-        "  по фото с ответом в таблице (6): верно 2, опасно 1, спор (к оператору) 1, "
+        f"Надписи: {photos} — фото 12",
+        "  надпись есть: 9 (75%)",
+        "  по фото с ответом в таблице (8): верно 3, опасно 1, спор (к оператору) 1, подтверждает счёт 1, "
         "не понять (надпись не используется) 2",
-        "    счёт по надписи (как без таблички): верно 2, опасно 1, спор 0",
+        "    счёт по надписи (как без таблички): верно 3, опасно 1, спор 0",
         "    показание по надписи (как без барабана): верно 1, опасно 0, спор 2"]
     assert "  надпись есть, но ответа в таблице нет: 1" in text and "  не открылись как картинка: 1" in text
     assert "  найдено только не-текст (тени, трубы — отброшено): 1" in text
     assert sorted(p.relative_to(out).as_posix() for p in out.rglob("*.jpg")) == [
-        "верно/минус__1300024317.jpg", "верно/плюс__1300017777.jpg", "не_понять/минус__1300024317 (3).jpg",
-        "не_понять/плюс__0429005357.jpg",
+        "верно/минус__1300024317 (4).jpg", "верно/минус__1300024317.jpg", "верно/плюс__1300017777.jpg",
+        "не_понять/минус__1300024317 (3).jpg", "не_понять/плюс__0429005357.jpg",
         "не_текст/плюс__1300000001 (2).jpg", "нет_ответа/плюс__1399999999.jpg",
-        "опасно/плюс__1300055555.jpg", "спор/минус__1300024317 (2).jpg"]
+        "опасно/плюс__1300055555.jpg", "подтверждает/плюс__1300014317.jpg", "спор/минус__1300024317 (2).jpg"]
     assert not (out / "не_совпало").exists()
     rows = {r["фото"]: r for r in _report(out)}
     assert rows["плюс/1300017777.jpg"]["показание по надписи"] == "51234"
@@ -438,7 +460,11 @@ def test_notes_run_on_archive_folder(tmp_path, capsys):
     assert rows["минус/1300024317 (2).jpg"]["итог"] == "спор"
     assert rows["плюс/0429005357.jpg"]["почему"].startswith("без таблички: не запись счёта: 9005358")
     assert rows["минус/1300024317 (3).jpg"]["отброшено"] == "24317 (обрывок)"
-    assert "Фото 10 из 10" in capsys.readouterr().out
+    assert rows["минус/1300024317 (4).jpg"]["счёт по надписи"] == "1300024317"   # из двух — по показанию
+    assert rows["плюс/1300014317.jpg"]["почему"] == (
+        "без таблички: л/с 1300014317? показание — ему не подходит (прошлое 9000); л/с 1300024317? показание "
+        "— ему не подходит (прошлое 4300); с табличкой: подтверждает л/с 1300014317")
+    assert "Фото 12 из 12" in capsys.readouterr().out
     # повторный замер — прошлые картинки заменяются
     (photos / "плюс" / "1300055555.jpg").unlink()
     notes.run(photos, _table(tmp_path))
@@ -467,7 +493,8 @@ def test_notes_on_archive_etalon(tmp_path):
                      {"photo_hash": "c", "file": "ccc.jpg", "serial": "95011111", "reading": "51234"},
                      {"photo_hash": "d", "file": "ddd.jpg", "serial": "999", "reading": "51234"}])
     text = notes.run(et, _table(tmp_path))
-    assert "фото 4" in text and "верно 2, опасно 0, спор (к оператору) 0, не понять (надпись не используется) 1" in text
+    assert "фото 4" in text and "верно 2, опасно 0, спор (к оператору) 0, подтверждает счёт 0, " \
+        "не понять (надпись не используется) 1" in text
     assert "ответа в таблице нет: 1" in text
     out = tmp_path / "etalon_archive_надписи"
     assert (out / "не_понять" / "ccc.jpg").is_file() and (out / "нет_ответа" / "ddd.jpg").is_file()

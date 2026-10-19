@@ -17,9 +17,10 @@ note_match.py — понять по таблице). Работу програм
   - показание по надписи — как если бы барабан не прочитался (счёт
     известен).
 Итог фото: «опасно» — надпись дала не тот счёт или не то показание; «спор»
-— пошло бы оператору; «верно»; «не понять» — надпись есть, но понята не
-целиком (обрывки, мусор, лишнее число): программа её не использует, фото
-идёт как без надписи. Картинки для разбора — <out>\\<итог>\\: фото, зелёным —
+— пошло бы оператору; «верно»; «подтверждает» — надпись понята и согласна с
+табличкой, но сама ответа не даёт (так записывается несколько счетов); «не
+понять» — надпись есть, но понята не целиком (обрывки, мусор, лишнее
+число): программа её не использует, фото идёт как без надписи. Картинки для разбора — <out>\\<итог>\\: фото, зелёным —
 принятые строки, оранжевым — похоже на текст, но не прочитано, красным — не
 текст (тень, труба); под фото — что прочитано и почему такой итог. По
 каждому фото — <out>\\надписи.csv.
@@ -41,9 +42,9 @@ from models.datasets import time_left
 from src.gmr.domain import PipelineConfig
 from src.gmr.render.image_io import read_image, write_image
 
-RIGHT, DANGER, CONFLICT, UNCLEAR, NO_TRUTH, NOT_TEXT = \
-    "верно", "опасно", "спор", "не_понять", "нет_ответа", "не_текст"
-STATUSES = (RIGHT, DANGER, CONFLICT, UNCLEAR, NO_TRUTH, NOT_TEXT)
+RIGHT, DANGER, CONFLICT, CONFIRMS, UNCLEAR, NO_TRUTH, NOT_TEXT = \
+    "верно", "опасно", "спор", "подтверждает", "не_понять", "нет_ответа", "не_текст"
+STATUSES = (RIGHT, DANGER, CONFLICT, CONFIRMS, UNCLEAR, NO_TRUTH, NOT_TEXT)
 _OLD = ("не_совпало", "неуверенно")       # папки прошлых версий замера
 REPORT = "надписи.csv"
 _FIELDS = ["фото", "итог", "счёт", "счёт по надписи", "показание", "показание по надписи",
@@ -111,14 +112,19 @@ def judge(lines, dropped, truth, index, lasts) -> dict:
     if truth:
         row["правильно"] = f"л/с {', '.join(sorted(accounts))}, показание {reading or '—'}"
         row["счёт"] = _verdict(by_note, None if by_note.account is None else by_note.account in accounts)
-        if len(accounts) == 1 and rd is not None:
-            on_plate = interpret(texts, index, lasts, next(iter(accounts)), None, unread)
+    on_plate = None
+    if truth and len(accounts) == 1:
+        on_plate = interpret(texts, index, lasts, next(iter(accounts)), None, unread)
+        why.append(f"с табличкой: {on_plate.why or on_plate.conflict}")
+        if rd is not None:
             row["показание по надписи"] = on_plate.reading if on_plate.reading is not None else \
                 on_plate.conflict or "—"
             row["показание"] = _verdict(on_plate, None if on_plate.reading is None else on_plate.reading == rd)
-            why.append(f"с табличкой: {on_plate.why or on_plate.conflict}")
     got = {row.get("счёт", ""), row.get("показание", "")}
-    row["итог"] = NO_TRUTH if not truth else next((s for s in (DANGER, CONFLICT, RIGHT) if s in got), UNCLEAR)
+    # понята и согласна с табличкой, но сама по себе (без таблички) ответа не даёт
+    confirms = on_plate is not None and on_plate.understood and not on_plate.conflict
+    row["итог"] = NO_TRUTH if not truth else next((s for s in (DANGER, CONFLICT, RIGHT) if s in got),
+                                                  CONFIRMS if confirms else UNCLEAR)
     row["почему"] = "; ".join(why)
     return row
 
@@ -199,7 +205,7 @@ def run(folder: Path, table: Path, out: Optional[Path] = None, bank=None) -> str
         w = csv.DictWriter(fh, fieldnames=_FIELDS, delimiter=";", extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
-    noted = sum(stat[s] for s in (RIGHT, DANGER, CONFLICT, UNCLEAR, NO_TRUTH))
+    noted = sum(stat[s] for s in (RIGHT, DANGER, CONFLICT, CONFIRMS, UNCLEAR, NO_TRUTH))
     checked = noted - stat[NO_TRUTH]
 
     def counts(kind: str) -> str:
@@ -208,7 +214,8 @@ def run(folder: Path, table: Path, out: Optional[Path] = None, bank=None) -> str
     text = [f"Надписи: {folder} — фото {len(photos)}",
             f"  надпись есть: {noted} ({100 * noted / len(photos):.0f}%)",
             f"  по фото с ответом в таблице ({checked}): верно {stat[RIGHT]}, опасно {stat[DANGER]}, "
-            f"спор (к оператору) {stat[CONFLICT]}, не понять (надпись не используется) {stat[UNCLEAR]}",
+            f"спор (к оператору) {stat[CONFLICT]}, подтверждает счёт {stat[CONFIRMS]}, "
+            f"не понять (надпись не используется) {stat[UNCLEAR]}",
             f"    счёт по надписи (как без таблички): {counts('счёт')}",
             f"    показание по надписи (как без барабана): {counts('показание')}"]
     if stat[NO_TRUTH]:

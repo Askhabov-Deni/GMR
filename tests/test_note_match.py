@@ -11,7 +11,7 @@ ACCOUNTS = ["1300017777", "1300024317", "0429005357", "0429000013", "1300000429"
             "1300001525", "1300000024", "1300051234", "1300004330", "1300014330"]
 LASTS = {"1300017777": 51000, "1300024317": 4300, "0429005357": 1, "0429000013": 100,
          "1300000429": 7000, "1300001525": 50500, "1300000024": 10, "1300051234": 90000,
-         "1300004330": 37000, "1300014330": 37500}
+         "1300004330": 37000, "1300014330": 20000}
 INDEX = AccountIndex(ACCOUNTS)
 
 
@@ -194,10 +194,25 @@ def test_account_from_note_needs_fitting_reading():
     assert interpret(["24317"], INDEX, {}, barrel=4400).account is None   # прошлого нет
 
 
-def test_short_number_of_several_accounts_is_not_account():
-    """«4330» — ядро 1300004330 и конец 1300014330: без таблички не берётся."""
-    assert unknown(["4330"], barrel=37200).account is None
-    assert unknown(["лс4330"], barrel=37200).account is None
+def test_short_number_of_several_accounts_picked_by_reading():
+    """«4330» — ядро 1300004330 и конец 1300014330: тот, к прошлому которого
+    подходит показание с барабана (решение владельца 2026-10-26)."""
+    a = unknown(["4330"], barrel=37200)
+    assert (a.account, a.why) == ("1300004330", "л/с 1300004330 по надписи")
+    assert unknown(["лс4330"], barrel=20100).account == "1300014330"
+    assert unknown(["4330"], barrel=60000).account is None              # ни к одному не подходит
+    assert unknown(["4330"], barrel=43305).why == "не запись счёта: 4330"  # кусок показания — не счёт
+    idx = AccountIndex(["1300004330", "1300014330"])
+    a = interpret(["4330"], idx, {"1300004330": 37000, "1300014330": 37100}, barrel=37200)
+    assert a.account is None and a.conflict == "надпись можно понять как л/с 1300004330 или 1300014330"
+
+
+def test_short_number_of_too_many_accounts_is_not_account():
+    accounts = ["1300004330", "1300014330", "1300024330", "0429004330"]
+    idx = AccountIndex(accounts)
+    a = interpret(["4330"], idx, dict.fromkeys(accounts, 37000), barrel=37200)
+    assert a.account is None and a.why == "4330 — так записывается 4 счетов: без таблички не понять какой"
+    assert interpret(["4330"], AccountIndex(accounts[:3]), dict.fromkeys(accounts, 37000), barrel=37200).conflict
 
 
 def test_number_from_barrel_is_not_account():

@@ -62,6 +62,7 @@ WIDEST = 8                  # пятно шире 8 своих высот — н
 # или строчная буква прочитана цифрой («к» как «4»): строка испорчена.
 DIGIT_H_DEV = 0.15
 EDGE = 0.3                  # у края фото кусок того же цвета от 0.3 высоты строки — срезанная буква
+EDGE_PX = 3                 # «касается края» — до 3 точек: при строгом цвете (_CORE) буква на 1–2 точки уже
 
 FRAGMENT, UNSURE, DIGITS = "обрывок", "не разобрать символы", "цифры разной высоты"   # Dropped.why
 SAME_PAINT = "цвет надписи"   # приписка к причине: строка той же краски, что прочитанная
@@ -181,7 +182,6 @@ class _Glyph:
     h: int
     mask: np.ndarray = field(repr=False)     # h×w, True — штрих
     stroke: tuple = (0.0, 0.0, 0.0)          # _stroke(mask)
-    label: int = 0                           # номер пятна в разметке цвета (_glyphs)
 
 
 def _even_strokes(line: list) -> bool:
@@ -253,10 +253,11 @@ def _overlap(a: tuple, b: tuple) -> float:
     return max(0, w) * max(0, h) / max(1, min(a[2] * a[3], b[2] * b[3]))
 
 
-def _glyphs(lab: np.ndarray, sel: np.ndarray) -> tuple[list[_Glyph], np.ndarray, np.ndarray]:
-    """(«буквы», разметка пятен, их рамки) одного цвета — среднего у пикселей sel."""
+def _glyphs(lab: np.ndarray, sel: np.ndarray, near: float) -> tuple[list[_Glyph], np.ndarray, np.ndarray]:
+    """(«буквы», разметка пятен, их рамки) одного цвета — среднего у пикселей
+    sel; свой цвет — ближе near."""
     dist = np.linalg.norm(lab - np.median(lab[sel], axis=0), axis=2)
-    mask = cv2.morphologyEx((dist < _NEAR).astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    mask = cv2.morphologyEx((dist < near).astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lbl, st, _ = cv2.connectedComponentsWithStats(mask)
     height, out = lab.shape[0], []
     for i in range(1, n):
@@ -268,7 +269,7 @@ def _glyphs(lab: np.ndarray, sel: np.ndarray) -> tuple[list[_Glyph], np.ndarray,
         comp = lbl[y:y + h, x:x + w] == i
         if (dist[y:y + h, x:x + w][comp] < _CORE).mean() < 0.35:       # почти весь цвет — один
             continue
-        out.append(_Glyph(int(x), int(y), int(w), int(h), comp, _stroke(comp), i))
+        out.append(_Glyph(int(x), int(y), int(w), int(h), comp, _stroke(comp)))
     return out, lbl, st
 
 
@@ -281,15 +282,15 @@ def _loose_ink(line: list, lbl: np.ndarray, st: np.ndarray) -> bool:
     top = max(g.h for g in line)
     x0, y0, w, h = _box(line)
     height, width = lbl.shape
-    if min(x0, y0) <= 1 or x0 + w >= width - 1 or y0 + h >= height - 1:
+    if min(x0, y0) <= EDGE_PX or x0 + w >= width - EDGE_PX or y0 + h >= height - EDGE_PX:
         return True
     band = lbl[y0 + h // 5:y0 + h - h // 5, max(0, x0 - top):x0 + w + top]
-    mine = {g.label for g in line}
+    mine = {int(i) for g in line for i in np.unique(lbl[g.y:g.y + g.h, g.x:g.x + g.w][g.mask])}
     area = float(np.median([g.mask.sum() for g in line]))
     ids, counts = np.unique(band[band > 0], return_counts=True)
     for i, c in zip(ids, counts):
         x, _, cw, ch, _ = st[i]
-        at_edge = x <= 1 or x + cw >= width - 1
+        at_edge = x <= EDGE_PX or x + cw >= width - EDGE_PX
         if i not in mine and (ch >= 0.5 * top and c >= 0.1 * area or at_edge and ch >= EDGE * top):
             return True
     return False
@@ -311,17 +312,26 @@ def find(img: np.ndarray) -> tuple[list, list]:
         sel = bright & (hue == b)
         if sel.sum() < _MIN_COLOR_PX:
             continue
-        glyphs, lbl, st = _glyphs(lab, sel)
-        lines = _runs(glyphs, 3)
-        for ln in lines + _tails(lines, glyphs):
-            why = "неровный штрих" if not _even_strokes(ln) else FRAGMENT if _loose_ink(ln, lbl, st) else ""
-            (bad if why else good).append((ln, why))
+        # Бледный фон того же оттенка при _NEAR сливается с буквами в одно
+        # пятно (строка — «обрывок»); буквы из редактора залиты ровно — при
+        # _CORE они отдельно. Строка второго прохода — обрывок и тогда, когда
+        # рядом при _NEAR цельная буква (а не фон, слитый с её же буквами).
+        loose = None
+        for strict, near in enumerate((_NEAR, _CORE)):
+            glyphs, lbl, st = _glyphs(lab, sel, near)
+            loose = loose or (lbl, st)
+            lines = _runs(glyphs, 3)
+            for ln in lines + _tails(lines, glyphs):
+                cut = _loose_ink(ln, lbl, st) or (strict and _loose_ink(ln, *loose))
+                why = "неровный штрих" if not _even_strokes(ln) else FRAGMENT if cut else ""
+                (bad if why else good).append((strict, ln, why))
+    first = lambda x: (x[0], -len(x[1]))                              # noqa: E731 — первый проход, длинная строка
     kept: list = []
-    for ln, _ in sorted(good, key=lambda x: len(x[0]), reverse=True):  # длинная строка важнее своего куска
+    for _, ln, _ in sorted(good, key=first):
         if all(_overlap(_box(ln), _box(k)) < 0.5 for k in kept):
             kept.append(ln)
     dropped: list = []
-    for ln, why in bad:                                               # и отброшенная — один раз
+    for _, ln, why in sorted(bad, key=first):                         # и отброшенная — один раз
         if all(_overlap(_box(ln), _box(k)) < 0.5 for k in kept + [d for d, _ in dropped]):
             dropped.append((ln, why))
     order = lambda ln: (_box(ln)[1], _box(ln)[0])                     # noqa: E731
