@@ -12,8 +12,9 @@ src/gmr/domain/note_match.py — надпись контролёра повер�
   1. Прочтения (hypotheses): каждая строка сама по себе или вместе с
      соседней — число перенесено или приписка на соседней строке
      (attached); «З» вместо «3» после «к» (spellings).
-  2. Строка → числа с припиской (parse): «лс» — счёт, «пок»/«пк»/«пкз» —
-     показание, без приписки — решает таблица.
+  2. Строка → числа с припиской (parse): «лс», «л/с», «лц» — счёт,
+     «пок»/«пк»/«пкз» — показание, без приписки — решает таблица. Других
+     букв быть не должно (LABELS): есть — строка прочитана не так.
   3. Прочтение понято, если есть счёт, которым объясняется КАЖДОЕ число:
      это запись счёта (AccountIndex) или показание, правдоподобное для него
      (READING_WINDOW от прошлого). Хоть одно число лишнее — не понято.
@@ -32,7 +33,8 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Iterable, Optional
 
-from .account_match import account_variants
+from .account_match import AccountDecision, account_variants, serial_agrees
+from .models import Outcome
 
 ACCOUNT, READING = "account", "reading"
 # Конец счёта как есть — от 4 цифр: «9005357», «005357» у 0429005357, «4317» у
@@ -53,6 +55,10 @@ READING_WINDOW = (-1500, 3000)
 MAX_READING_DIGITS = 6      # число длиннее — не показание, только счёт
 MAX_HYPOTHESES = 256        # прочтений больше — надпись не разобрать
 _RUNS = re.compile(r"\d+|\D+")
+# Приписки контролёров (решения владельца 2026-10-21…26; буквы — строчные).
+# Других букв в надписи быть не должно: непонятные буквы — строка прочитана
+# не так (замер 2026-10-27: «9» при плохом JPEG прочитана как «о»).
+LABELS = {"лс": ACCOUNT, "л/с": ACCOUNT, "лц": ACCOUNT, "пок": READING, "пк": READING, "пкз": READING}
 _ZE = re.compile(r"(?<=к)3")
 
 
@@ -65,8 +71,15 @@ def wrapped(upper: str, lower: str) -> bool:
 
 
 def _label(text: str) -> bool:
-    """Строка — только приписка, без чисел («ПКЗ», «лц»; «пк3» — это «ПКЗ»)."""
-    return bool(text) and not any(c.isdigit() for c in _ZE.sub("з", text))
+    """Строка — только приписка («ПКЗ», «лц»; «пк3» — это «ПКЗ»)."""
+    return _ZE.sub("з", text) in LABELS
+
+
+def _strange(text: str) -> str:
+    """Буквы строки, которые не приписка («о» в «2431о»: цифра прочитана как
+    «о»; «пск» — «пок» с ошибкой), или "" — таких нет. Строка с ними
+    прочитана не так — надпись не понята."""
+    return next((r for r in _RUNS.findall(text) if not r.isdigit() and r not in LABELS), "")
 
 
 def attached(upper: str, lower: str) -> bool:
@@ -85,10 +98,7 @@ def spellings(text: str) -> list[str]:
 
 
 def _kind(letters: str) -> str:
-    """Приписка: буквы счёта («лс», «л/с», «лц») или показания («пок», «пкз»).
-    Смешанная («пск» — «пок» с ошибкой чтения) — не приписка."""
-    acc, rd = set(letters) & set("лс"), set(letters) & set("пк")
-    return "" if acc and rd else ACCOUNT if acc else READING if rd else ""
+    return LABELS.get(letters, "")
 
 
 def parse(text: str) -> list[tuple[str, str]]:
@@ -294,6 +304,10 @@ def interpret(lines: list[str], index: AccountIndex, lasts: dict, account: Optio
     answers = []
     for h in hyps:
         tokens = [tok for t in h for tok in parse(t)]
+        strange = next((s for s in map(_strange, h) if s), "")
+        if strange:
+            answers.append(NoteAnswer(why=f"непонятные буквы «{strange}»"))
+            continue
         if not tokens or any(_label(t) for t in h):        # приписка без числа — прочтение не то
             continue
         if account is not None:
@@ -314,3 +328,39 @@ def interpret(lines: list[str], index: AccountIndex, lasts: dict, account: Optio
         return NoteAnswer(account=best.account, understood=True,
                           why=f"показание можно понять как {' или '.join(map(str, readings))}")
     return best
+
+
+# ─── В работе (настройка месяца «надписи поверх фото») ───────────────────────
+
+def shown(lines: list[str]) -> str:
+    """Надпись для пометок: «лс17777 / пок51234»."""
+    return "«" + " / ".join(lines) + "»"
+
+
+def rescue(outcome: Outcome, lines: list[str], answer: NoteAnswer, serial_text: Optional[str],
+           account_serials: Iterable[str], ambiguous: Iterable[str] = ()) -> AccountDecision:
+    """Серийник счёт не дал (outcome — его исход), надпись поверх фото
+    понята (answer — interpret без счёта, с показанием барабана). Решение
+    владельца 2026-10-26: серийник не прочитался, а по надписи понятно,
+    чей счётчик, — обрабатывать:
+      - номер у нескольких абонентов — счёт надписи, если он среди них;
+      - таблички нет или номер прочитан неуверенно — счёт надписи;
+      - номер прочитан уверенно, но его нет в таблице — счёт надписи, только
+        если номер этого счёта в таблице отличается не больше чем символом
+        (иначе, может быть, счётчик заменён — решает оператор).
+    Не взято — пометка для оператора: что написано и почему."""
+    if answer.account is None:
+        return AccountDecision(None, f"надпись на фото {shown(lines)}: {answer.conflict or answer.why}")
+    found = f"надпись на фото {shown(lines)} → л/с {answer.account}"
+    if outcome == Outcome.SERIAL_AMBIGUOUS:
+        if answer.account in {str(a) for a in ambiguous}:
+            return AccountDecision(answer.account, f"номер у нескольких абонентов, выбран по надписи: {found}")
+        return AccountDecision(None, f"{found} — не из абонентов с этим номером")
+    if outcome in (Outcome.NO_SERIAL, Outcome.SERIAL_LOW_CONF):
+        return AccountDecision(answer.account, found)
+    serials = [str(s) for s in account_serials]
+    if outcome == Outcome.SERIAL_NOT_FOUND and serial_agrees(serial_text or "", serials):
+        return AccountDecision(answer.account, f"{found}; серийник прочитан '{serial_text}', "
+                                               f"в базе '{', '.join(serials)}'")
+    return AccountDecision(None, f"{found}, но серийник '{serial_text}' не похож на номер в базе "
+                                 f"'{', '.join(serials)}'")

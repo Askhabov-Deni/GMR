@@ -223,6 +223,7 @@ class PresetDialog(tk.Toplevel):
             "first_from_last": tk.BooleanVar(value=preset.first_from_last),
             "serial_by_table": tk.BooleanVar(value=preset.serial_by_table),
             "turn_photo": tk.BooleanVar(value=preset.turn_photo),
+            "overlay_notes": tk.BooleanVar(value=preset.overlay_notes),
         }
         f = ttk.Frame(self, padding=16)
         f.pack(fill=tk.BOTH, expand=True)
@@ -242,6 +243,8 @@ class PresetDialog(tk.Toplevel):
                                                                 " (модель надписи ещё не подключена)"),
                         variable=self._vars["account_marker"],
                         state=tk.NORMAL if marker_model else tk.DISABLED).pack(anchor="w", padx=12)
+        ttk.Checkbutton(f, text="искать по надписи поверх фото (табличка не прочиталась — счёт по надписи)",
+                        variable=self._vars["overlay_notes"]).pack(anchor="w", padx=12)
         ttk.Label(f, text="Дополнительно:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
         for key, label in (("drum_rule", "правило барабана: цифра между двумя — меньшая"),
                            ("first_from_last", "старшая цифра по прошлому показанию"),
@@ -264,7 +267,8 @@ class PresetDialog(tk.Toplevel):
             forgive_with=v["forgive_with"].get(), serial_pad=float(v["serial_pad"].get()),
             account_marker=bool(v["account_marker"].get()) and self._marker_model,
             drum_rule=bool(v["drum_rule"].get()), first_from_last=bool(v["first_from_last"].get()),
-            serial_by_table=bool(v["serial_by_table"].get()), turn_photo=bool(v["turn_photo"].get()))
+            serial_by_table=bool(v["serial_by_table"].get()), turn_photo=bool(v["turn_photo"].get()),
+            overlay_notes=bool(v["overlay_notes"].get()))
         self.destroy()
 
 

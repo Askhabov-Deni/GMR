@@ -246,6 +246,26 @@ def test_pale_background_of_same_hue():
     assert _found(_jpeg(img)) == (["24317"], [])
 
 
+def test_letters_merged_with_pale_band():
+    """Бледная полоса того же оттенка (кронштейн) через буквы: при обычном
+    допуске цвета строка читается «04294» (конец слит с полосой) — берётся
+    прочтение строгого прохода; из двух его прочтений (соседние оттенки,
+    в одном «0» расколот на «с1») — у которого буквы больше похожи на образцы."""
+    img = _background(9)
+    cv2.rectangle(img, (380, 540), (900, 556), (240, 215, 140), -1)
+    _paint(img, "0429005357", BLUE, 60, 500, 90)
+    assert _found(_jpeg(img)) == (["0429005357"], [])
+
+
+def test_twin_readings_of_same_width_only():
+    def result(width, why="", strict=1, sim=0.9):
+        return (why, strict, [overlay._Glyph(10, 10, width, 90, np.ones((1, 1), bool))], "", 0.2, sim)
+    assert overlay._twin(result(600), result(629))
+    assert not overlay._twin(result(600), result(631))               # уже на треть высоты — обрывок, не двойник
+    assert not overlay._twin(result(600), result(600, strict=0))
+    assert not overlay._twin(result(600), result(600, why="обрывок"))
+
+
 def test_digits_of_different_height_spoil_line():
     """Цифры одного шрифта — одной высоты; одна выше на треть (слилась с
     фоном того же цвета) — строка испорчена, часть надписи не прочитана."""

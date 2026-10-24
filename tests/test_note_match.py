@@ -50,7 +50,7 @@ def test_ze_read_as_three():
 @pytest.mark.parametrize("text, tokens", [
     ("пок51234", [("reading", "51234")]), ("лс17777", [("account", "17777")]),
     ("24317", [("", "24317")]), ("пк123лс45", [("reading", "123"), ("account", "45")]),
-    ("ПОК7", [("reading", "7")]), ("лсок", []), ("с0042", [("account", "0042")]),
+    ("ПОК7", [("reading", "7")]), ("лсок", []), ("с0042", [("", "0042")]),           # «с» — не приписка
     ("л/с17777", [("account", "17777")]),
     ("17743пок", [("reading", "17743")]), ("17743лс", [("account", "17743")]),        # приписка после числа
     ("123пок456", [("", "123"), ("reading", "456")]),                                 # «пок» — к числу после
@@ -127,6 +127,16 @@ def test_known_account_tail_and_labels_below():
     a = known(["51234", "пк3", "17777", "лц"])
     assert (a.reading, a.understood) == (51234, True)
     assert unknown(["17777", "лц", "51234", "пк3"]).account == "1300017777"
+
+
+def test_strange_letters_mean_misread():
+    """Буквы, которые не приписка: «2431о» — цифра прочитана как «о»; «пск» —
+    «пок» с ошибкой. Надпись прочитана не так — не используется."""
+    a = known(["2431о", "51234"])
+    assert (a.reading, a.understood, a.why) == (None, False, "непонятные буквы «о»")
+    assert unknown(["пск51234", "17777"]).account is None
+    assert known(["кк", "пок51234"]).reading is None                   # и строка из одних непонятных букв
+    assert known(["л/с17777", "пк3", "51234"]).reading == 51234         # приписки — не «непонятные»
 
 
 def test_label_needs_its_number():

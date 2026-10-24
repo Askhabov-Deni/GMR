@@ -43,6 +43,7 @@ class RecognitionPreset:
     first_from_last: bool = False
     serial_by_table: bool = False
     turn_photo: bool = False          # этап 7b (PipelineConfig.turn_if_nothing)
+    overlay_notes: bool = False       # надписи контролёров поверх фото (PipelineConfig.overlay_notes)
 
     @classmethod
     def from_json(cls, text: Optional[str]) -> "RecognitionPreset":
@@ -68,6 +69,7 @@ class RecognitionPreset:
             first_from_last=data.get("first_from_last") is True,
             serial_by_table=data.get("serial_by_table") is True,
             turn_photo=data.get("turn_photo") is True,
+            overlay_notes=data.get("overlay_notes") is True,
         )
 
     def to_json(self) -> str:
@@ -87,6 +89,7 @@ class RecognitionPreset:
             first_digit_from_last=self.first_from_last,
             serial_by_table=self.serial_by_table,
             turn_if_nothing=self.turn_photo,
+            overlay_notes=self.overlay_notes,
         )
 
     def describe(self) -> str:
@@ -98,6 +101,7 @@ class RecognitionPreset:
             tail,
             f"запас рамки серийника {int(self.serial_pad * 100)}%",
             "лицевой счёт по надписи — " + ("да" if self.account_marker else "нет"),
+            "надписи поверх фото — " + ("да" if self.overlay_notes else "нет"),
             "дополнительно — " + (", ".join(name for on, name in (
                 (self.drum_rule, "правило барабана"),
                 (self.first_from_last, "старшая цифра по прошлому показанию"),

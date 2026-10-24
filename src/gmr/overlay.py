@@ -296,18 +296,18 @@ def _loose_ink(line: list, lbl: np.ndarray, st: np.ndarray) -> bool:
     return False
 
 
-def find(img: np.ndarray) -> tuple[list, list]:
-    """(строки, [(отброшенная строка, почему)]) — строка — список «букв»
-    слева направо, строки сверху вниз. Каждый яркий цвет — отдельно: надпись
-    бывает в два цвета («лс» синим, «пок» красным); одна и та же строка из
-    соседних цветов — один раз. Отброшены — «буквы» в строку, но штрих
-    неровный или строка — обрывок (_loose_ink). img — BGR, уже уменьшенное
-    до MAX_SIDE."""
+def find(img: np.ndarray) -> list[tuple]:
+    """Строки-кандидаты [(проход, строка, почему отброшена или "")] — строка
+    — список «букв» слева направо. Каждый яркий цвет — отдельно: надпись
+    бывает в два цвета («лс» синим, «пок» красным). Одна и та же строка
+    бывает несколько раз (соседние цвета, два прохода): какую взять, решает
+    read() по тому, как она прочиталась. Отброшена — штрих неровный или
+    строка — обрывок (_loose_ink). img — BGR, уже уменьшенное до MAX_SIDE."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
     bright = (hsv[..., 1] >= 110) & (hsv[..., 2] >= 90)
     hue = hsv[..., 0].astype(int) // (180 // _HUE_BINS)
-    good, bad = [], []
+    out = []
     for b in range(_HUE_BINS):
         sel = bright & (hue == b)
         if sel.sum() < _MIN_COLOR_PX:
@@ -324,18 +324,8 @@ def find(img: np.ndarray) -> tuple[list, list]:
             for ln in lines + _tails(lines, glyphs):
                 cut = _loose_ink(ln, lbl, st) or (strict and _loose_ink(ln, *loose))
                 why = "неровный штрих" if not _even_strokes(ln) else FRAGMENT if cut else ""
-                (bad if why else good).append((strict, ln, why))
-    first = lambda x: (x[0], -len(x[1]))                              # noqa: E731 — первый проход, длинная строка
-    kept: list = []
-    for _, ln, _ in sorted(good, key=first):
-        if all(_overlap(_box(ln), _box(k)) < 0.5 for k in kept):
-            kept.append(ln)
-    dropped: list = []
-    for _, ln, why in sorted(bad, key=first):                         # и отброшенная — один раз
-        if all(_overlap(_box(ln), _box(k)) < 0.5 for k in kept + [d for d, _ in dropped]):
-            dropped.append((ln, why))
-    order = lambda ln: (_box(ln)[1], _box(ln)[0])                     # noqa: E731
-    return sorted(kept, key=order), sorted(dropped, key=lambda x: order(x[0]))
+                out.append((strict, ln, why))
+    return out
 
 
 def _parts(mask: np.ndarray, top: float) -> list[np.ndarray]:
@@ -411,16 +401,22 @@ def _crop(line: list) -> np.ndarray:
     return out
 
 
+def _twin(a: tuple, b: tuple) -> bool:
+    """Два прочтения одной строки равны по всему, кроме похожести букв: оба
+    приняты (или оба нет), один проход, ширина — в пределах трети высоты."""
+    (_, _, wa, ha), (_, _, wb, _) = _box(a[2]), _box(b[2])
+    return bool(a[0]) == bool(b[0]) and a[1] == b[1] and abs(wa - wb) <= ha / 3
+
+
 def read(img: np.ndarray, bank: GlyphBank, dropped: Optional[list] = None) -> list[Line]:
     """Строки надписи на фото (BGR), сверху вниз. Пусто — надписи нет.
     dropped — список: туда — найденные, но не принятые строки и почему."""
     s = MAX_SIDE / max(img.shape[:2])
     if s < 1:
         img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-    lines, rejected = find(img)
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
-    out, kept, refused = [], [], []
-    for ln, why in [(ln, "") for ln in lines] + rejected:
+    results = []
+    for strict, ln, why in find(img):
         top = float(max(g.h for g in ln))                             # цифры — самые высокие
         reads = _zero_or_o([r for g in ln for r in _read_glyph(bank, g, top)])
         text = "".join(r[0] for r in reads)
@@ -436,11 +432,26 @@ def read(img: np.ndarray, bank: GlyphBank, dropped: Optional[list] = None) -> li
         digits = [r[5] for r in reads if r[0].isdigit()]
         uneven = digits and max(abs(h / np.median(digits) - 1) for h in digits) > DIGIT_H_DEV
         why = why or unlike or (DIGITS if uneven else "") or (UNSURE if margin < MARGIN else "")
+        results.append((why, strict, ln, text, margin, float(np.mean(sims))))
+    # одно место — одна строка: прочитанная важнее непрочитанной (при
+    # обычном допуске цвета буквы бывают слиты с фоном, при строгом — целы),
+    # дальше — первый проход и широкая строка (обрывок — кусок широкой; число
+    # пятен не годится — буква бывает расколота); той же ширины — у которой
+    # буквы больше похожи на образцы (соседний оттенок мог съесть край буквы)
+    chosen: list = []
+    for r in sorted(results, key=lambda r: (bool(r[0]), r[1], -_box(r[2])[2])):
+        rival = next((i for i, c in enumerate(chosen) if _overlap(_box(r[2]), _box(c[2])) >= 0.5), None)
+        if rival is None:
+            chosen.append(r)
+        elif _twin(r, chosen[rival]) and r[5] > chosen[rival][5]:
+            chosen[rival] = r
+    out, kept, refused = [], [], []
+    for why, _, ln, text, margin, _ in sorted(chosen, key=lambda r: (_box(r[2])[1], _box(r[2])[0])):
         if why:
             refused.append((Dropped(text, why, _box(ln), _crop(ln)), _paint(ln, lab)))
-            continue
-        out.append(Line(text, margin, _box(ln), _crop(ln)))
-        kept.append(_paint(ln, lab))
+        else:
+            out.append(Line(text, margin, _box(ln), _crop(ln)))
+            kept.append(_paint(ln, lab))
     # не прочитана строка той же краски, что прочитанная, — это часть той же
     # надписи (буквы на пёстром фоне), а не мусор: надпись понята не целиком
     for d, paint in refused:

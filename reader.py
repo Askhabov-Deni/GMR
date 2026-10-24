@@ -46,6 +46,7 @@ import json
 import shutil
 import sqlite3
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -72,6 +73,7 @@ from src.gmr.domain import (
     AccountRecognizer,
 )
 from src.gmr.domain.account_match import AccountMarkerPolicy, account_groups as build_account_groups
+from src.gmr.domain.note_match import AccountIndex, interpret, rescue as note_rescue, shown
 from src.gmr.domain.datasets import ACCOUNT, METER, SERIAL, standard_class
 from src.gmr.application import (
     RecognitionModels,
@@ -304,6 +306,44 @@ def _rows_with_serial(df: pd.DataFrame, config: PipelineConfig, serial: str) -> 
     return df[df[config.col_serial].apply(lambda x: normalize_serial(str(x)) == norm)]
 
 
+# ─── Надпись контролёра поверх фото (настройка месяца overlay_notes) ─────────
+
+@dataclass
+class NoteContext:
+    """Для надписей поверх фото — один на прогон: образцы символов, как
+    записывается каждый счёт таблицы, прошлые показания."""
+    bank: object
+    index: AccountIndex
+    lasts: dict
+
+
+def note_context_of(df: pd.DataFrame, config: PipelineConfig) -> NoteContext:
+    from src.gmr.overlay import GlyphBank
+    accounts = df[config.col_account_id].astype(str).str.strip()
+    lasts = {}
+    for account, value in zip(accounts, df[config.col_last_reading]):
+        try:
+            lasts[account] = int(float(str(value).replace(",", ".")))
+        except ValueError:
+            continue
+    return NoteContext(GlyphBank.load(), AccountIndex(accounts), lasts)
+
+
+def _read_note(notes: Optional[NoteContext], photo_path: str) -> Optional[tuple[list[str], int]]:
+    """(строки надписи, сколько строк похожи на надпись, но не прочитаны);
+    None — не смотрим или надписи нет."""
+    if notes is None:
+        return None
+    from src.gmr import overlay
+    img = read_image(photo_path)
+    if img is None:
+        return None
+    dropped: list = []
+    lines = [ln.text for ln in overlay.read(img, notes.bank, dropped)]
+    unread = sum(d.text_like for d in dropped)
+    return (lines, unread) if lines or unread else None
+
+
 # ─── Надпись маркером (лицевой счёт) ─────────────────────────────────────────
 
 def account_groups_of(df: pd.DataFrame, config: PipelineConfig) -> dict:
@@ -339,6 +379,7 @@ def process_photo(
     account_recognizer: Optional[AccountRecognizer] = None,
     account_groups: Optional[dict] = None,
     serial_groups: Optional[dict] = None,
+    notes: Optional["NoteContext"] = None,
 ) -> PhotoResult:
     """
     Обрабатывает одну фотографию. Возвращает PhotoResult.
@@ -355,6 +396,8 @@ def process_photo(
     account_recognizer — модель надписи маркером (None — её нет, всё как до
     неё); account_groups — словарь счетов таблицы для неё
     (account_groups_of(df, config): прогон строит его один раз).
+    notes — надписи контролёров поверх фото (note_context_of, настройка
+    месяца overlay_notes; None — не смотрим, всё как без них).
     """
     models = RecognitionModels(
         meter_detector=meter_detector,
@@ -418,6 +461,8 @@ def process_photo(
     if account_recognizer is not None and account_groups is None:
         account_groups = account_groups_of(df, config)
     marker = _read_marker(account_recognizer, crops, account_groups, config)
+    # ── Шаг 1c: надпись контролёра поверх фото (настройка месяца) ───────────
+    note = _read_note(notes, photo_path)
 
     # ── Шаги 2–3: серийник → строка таблицы ─────────────────────────────────
     # failure — почему серийник не дал ровно один счёт (исход и пояснение)
@@ -505,9 +550,22 @@ def process_photo(
             [str(v) for v in rows_m[config.col_serial]], ambiguous,
         )
         result.account_notes = decision.note
+        if (decision.account is None or rows_m.empty) and note is not None:
+            # …или надпись поверх фото (note_match.rescue): счёт по ней
+            # подтверждается показанием барабана — читаем его сначала
+            _read_digits_for_annotation()
+            lines, unread = note
+            answer = interpret(lines, notes.index, notes.lasts, None,
+                               None if result.reading is None else int(result.reading), unread)
+            rows_n = (_account_rows(df, config, answer.account) if answer.account is not None
+                      else df.iloc[0:0])
+            decision = note_rescue(failure[0], lines, answer, result.serial_text,
+                                   [str(v) for v in rows_n[config.col_serial]], ambiguous)
+            result.account_notes = "; ".join(n for n in (result.account_notes, decision.note) if n)
+            rows_m = rows_n
         if decision.account is None or rows_m.empty:
             result.outcome, result.error_detail = failure
-            if failure[0] != Outcome.NO_SERIAL:
+            if failure[0] != Outcome.NO_SERIAL and result.reading is None:
                 # Читаем цифры для информативной аннотации
                 _read_digits_for_annotation()
             return result
@@ -537,6 +595,11 @@ def process_photo(
     # не должно молча закрыть это фото (close_waiting ищет по account_id).
     if failure is None:
         conflict = _account_policy.conflict(account_id, marker, config.account_conf_thresh)
+        if conflict is None and note is not None:
+            # надпись поверх фото явно про другой счёт («лс…») — тоже спор
+            answer = interpret(note[0], notes.index, notes.lasts, account_id, None, note[1])
+            if answer.conflict:
+                conflict = f"надпись на фото {shown(note[0])}: {answer.conflict}"
         if conflict is not None:
             result.outcome = Outcome.SUSPICIOUS
             result.error_detail = conflict
@@ -888,7 +951,7 @@ def run_pipeline(config: PipelineConfig) -> None:
 
 _PRESET_FIELDS = ("missing_digit_mode", "ignore_last_digits", "forgiven_digit_mode",
                   "serial_crop_pad", "account_ocr_model", "drum_rule", "first_digit_from_last",
-                  "serial_by_table", "turn_if_nothing")
+                  "serial_by_table", "turn_if_nothing", "overlay_notes")
 
 
 def _apply_month_preset(config: PipelineConfig, month: MonthFolder, log: logging.Logger) -> None:
@@ -1036,6 +1099,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
     models = None                                       # загружаются, только если есть что читать
     account_groups_cache = None                         # словарь счетов для модели надписи (один на прогон)
     serial_groups_cache = None                          # словарь номеров для серийника по таблице (этап 6b)
+    notes_cache = None                                  # надписи поверх фото: счета таблицы, образцы
 
     def load():
         log.info("Загружаем модели...")
@@ -1143,6 +1207,8 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                     account_groups_cache = account_groups_of(df, config)
                 if config.serial_by_table:
                     serial_groups_cache = serial_groups_of(df, config)
+                if config.overlay_notes:
+                    notes_cache = note_context_of(df, config)
             done += 1
             log.info(f"Фото {done} из {expected}: {photo_path.name}" + ("  (читается заново)" if rows else ""))
             if rows:
@@ -1163,6 +1229,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                     account_recognizer=models.account_recognizer,
                     account_groups=account_groups_cache,
                     serial_groups=serial_groups_cache,
+                    notes=notes_cache,
                 )
             except Exception as e:
                 # Ошибка на одном фото не останавливает прогон: фото → question/error,

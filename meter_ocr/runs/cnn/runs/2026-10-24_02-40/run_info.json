@@ -1,0 +1,40 @@
+{
+  "created_at": "2026-10-24T02:40:21",
+  "dataset": "C:\\AD\\GSM\\gas-meter-reader\\database\\datasets\\digits_cnn",
+  "dataset_files": 76635,
+  "dataset_fingerprint": "922bb7d3762146e3",
+  "split": {
+    "rule": "по фото (имя до «__»), часть — по sha256(seed:фото); списки — split/*.txt",
+    "seed": 67,
+    "counts": {
+      "train": 53059,
+      "val": 12011,
+      "test": 11565
+    },
+    "photos": {
+      "train": 9922,
+      "val": 2242,
+      "test": 2159
+    }
+  },
+  "code": "d11834a + незакоммиченные изменения",
+  "packages": {
+    "python": "3.14.3",
+    "torch": "2.14.0",
+    "torchvision": "0.29.0",
+    "ultralytics": "8.4.163",
+    "albumentations": "2.0.8",
+    "numpy": "2.4.4"
+  },
+  "args": {
+    "crops_dir": "database/datasets/digits_cnn",
+    "output_dir": null,
+    "epochs": 100,
+    "lr": 0.001,
+    "batch_size": 32,
+    "seed": 67,
+    "resume": null,
+    "finetune": null,
+    "patience": 20
+  }
+}

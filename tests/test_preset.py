@@ -25,7 +25,9 @@ def test_default_preset_is_old_behaviour():
     assert (applied.missing_digit_mode, applied.ignore_last_digits, applied.forgiven_digit_mode,
             applied.serial_crop_pad) == ("placeholder", cfg.ignore_last_digits, "placeholder", 0.0)
     assert p.describe() == ("пропущенная цифра — подставить «5»; неуверенные последние 2 → «0»; "
-                            "запас рамки серийника 0%; лицевой счёт по надписи — нет; дополнительно — нет")
+                            "запас рамки серийника 0%; лицевой счёт по надписи — нет; надписи поверх фото — нет; "
+                            "дополнительно — нет")
+    assert not applied.overlay_notes
 
 
 def test_preset_json_roundtrip_and_bad_values():
@@ -48,6 +50,10 @@ def test_preset_apply_and_describe():
     assert "последние цифры не прощаются" in RecognitionPreset(forgive_last=0).describe()
     assert "неуверенные последние 1 → ответом модели" in RecognitionPreset(
         forgive_last=1, forgive_with="model").describe()
+    notes = RecognitionPreset(overlay_notes=True)
+    assert notes.apply(cfg).overlay_notes and "надписи поверх фото — да" in notes.describe()
+    assert RecognitionPreset.from_json(notes.to_json()) == notes
+    assert RecognitionPreset.from_json('{"overlay_notes": "да"}') == RecognitionPreset()
 
 
 # ─── Чтение цифр: пропущенная цифра и прощённые ──────────────────────────────
