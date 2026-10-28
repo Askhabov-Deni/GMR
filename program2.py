@@ -243,7 +243,8 @@ class PresetDialog(tk.Toplevel):
                                                                 " (модель надписи ещё не подключена)"),
                         variable=self._vars["account_marker"],
                         state=tk.NORMAL if marker_model else tk.DISABLED).pack(anchor="w", padx=12)
-        ttk.Checkbutton(f, text="искать по надписи поверх фото (табличка не прочиталась — счёт по надписи)",
+        ttk.Checkbutton(f, text="искать по надписи поверх фото (счёт — если табличка не прочиталась; "
+                                "показание надписи главнее барабана)",
                         variable=self._vars["overlay_notes"]).pack(anchor="w", padx=12)
         ttk.Label(f, text="Дополнительно:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
         for key, label in (("drum_rule", "правило барабана: цифра между двумя — меньшая"),

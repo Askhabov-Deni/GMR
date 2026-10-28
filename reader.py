@@ -46,7 +46,7 @@ import json
 import shutil
 import sqlite3
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -429,27 +429,38 @@ def process_photo(
     # ── Шаг 1: детекция трёх классов ─────────────────────────────────────────
     # (ничего не найдено и включено turn_if_nothing — фото поворачивается, этап 7b)
     crops, result.photo_turn = detect_meter(meter_detector, photo_path, config)
-    if not crops:
-        result.outcome = Outcome.NO_METER
-        result.error_detail = "YOLO returned no crops"
-        return result
+    # ── Шаг 1a: надпись контролёра поверх фото (настройка месяца) ───────────
+    # Её показание главнее барабана (решение владельца 2026-10-28): счётчик
+    # не найден — фото всё равно читается, счёт и показание — по надписи.
+    note = _read_note(notes, photo_path)
 
     meter_entry  = find_detection(crops, METER)
     serial_entry = find_detection(crops, SERIAL)
 
     # Сохраняем все найденные детекции для отрисовки боксов
-    result.meter_crops_raw = crops
+    if crops:
+        result.meter_crops_raw = crops
 
+    no_meter: Optional[PhotoResult] = None      # счётчика нет — исход, если надпись не поможет
     if meter_entry is None:
         result.outcome = Outcome.NO_METER
-        result.error_detail = "class meter not detected"
-        return result
+        result.error_detail = "class meter not detected" if crops else "YOLO returned no crops"
+        if note is None:
+            return result
+        no_meter = replace(result)
 
-    meter_crop = meter_entry["crop"]
-    meter_bbox  = meter_entry["bbox"]   # (x1,y1,x2,y2) в оригинале
+    def _as_no_meter(hint: Optional[str]) -> PhotoResult:
+        """Счётчика нет, надпись не дала счёт и показание — как без неё, с подсказкой."""
+        no_meter.account_notes = hint
+        return no_meter
+
+    meter_crop = None if meter_entry is None else meter_entry["crop"]
+    meter_bbox = None if meter_entry is None else meter_entry["bbox"]   # (x1,y1,x2,y2) в оригинале
 
     def _read_digits_for_annotation() -> None:
         """Показание для аннотации и оператору, когда исход — не запись."""
+        if meter_crop is None:
+            return
         _r, _rs, _, _dres, _bboxes = read_meter_digits_for_config(models, meter_crop, config).as_tuple()
         result.reading_str = _rs
         result.reading     = _r
@@ -461,8 +472,6 @@ def process_photo(
     if account_recognizer is not None and account_groups is None:
         account_groups = account_groups_of(df, config)
     marker = _read_marker(account_recognizer, crops, account_groups, config)
-    # ── Шаг 1c: надпись контролёра поверх фото (настройка месяца) ───────────
-    note = _read_note(notes, photo_path)
 
     # ── Шаги 2–3: серийник → строка таблицы ─────────────────────────────────
     # failure — почему серийник не дал ровно один счёт (исход и пояснение)
@@ -564,6 +573,8 @@ def process_photo(
             result.account_notes = "; ".join(n for n in (result.account_notes, decision.note) if n)
             rows_m = rows_n
         if decision.account is None or rows_m.empty:
+            if no_meter is not None:
+                return _as_no_meter(result.account_notes)
             result.outcome, result.error_detail = failure
             if failure[0] != Outcome.NO_SERIAL and result.reading is None:
                 # Читаем цифры для информативной аннотации
@@ -588,6 +599,9 @@ def process_photo(
         last_reading = None
     result.last_reading = last_reading
 
+    # Надпись поверх фото про этот счёт: подтверждает, спорит, даёт показание
+    known = None if note is None else interpret(note[0], notes.index, notes.lasts, account_id, None, note[1])
+
     # ── Шаг 3b: серийник нашёл счёт сам — сверить с надписью маркером ───────
     # Надпись уверенно указывает на другой счёт → показание не пишем, решает
     # оператор (account_match.py, правило 1). Счёт фото не присваивается: чей
@@ -595,11 +609,11 @@ def process_photo(
     # не должно молча закрыть это фото (close_waiting ищет по account_id).
     if failure is None:
         conflict = _account_policy.conflict(account_id, marker, config.account_conf_thresh)
-        if conflict is None and note is not None:
+        if conflict is None and known is not None and known.conflict:
             # надпись поверх фото явно про другой счёт («лс…») — тоже спор
-            answer = interpret(note[0], notes.index, notes.lasts, account_id, None, note[1])
-            if answer.conflict:
-                conflict = f"надпись на фото {shown(note[0])}: {answer.conflict}"
+            conflict = f"надпись на фото {shown(note[0])}: {known.conflict}"
+        if conflict is not None and no_meter is not None:
+            return _as_no_meter(conflict)
         if conflict is not None:
             result.outcome = Outcome.SUSPICIOUS
             result.error_detail = conflict
@@ -607,6 +621,9 @@ def process_photo(
             result.last_reading = None
             _read_digits_for_annotation()
             return result
+    if no_meter is not None and known.reading is None:
+        return _as_no_meter("; ".join(n for n in (
+            result.account_notes, f"надпись на фото {shown(note[0])}: {known.why}; показания по надписи нет") if n))
 
     # ── Шаг 4: проверяем дубль ───────────────────────────────────────────────
     # Дубль определяем по логу, а не по col_new_reading.
@@ -638,18 +655,31 @@ def process_photo(
 
     # ── Шаг 5: читаем показания счётчика ─────────────────────────────────────
     # (прошлое показание — для старшей цифры по прошлому показанию, этап 6b)
-    reading, reading_str, err, digit_results, digit_bboxes = (
-        read_meter_digits_for_config(models, meter_crop, config, last_reading=last_reading).as_tuple()
-    )
-
-    result.reading_str = reading_str
-    result.digit_notes = describe_substitutions(digit_results)
-
-    # Пересчитываем digit bbox-ы в координаты оригинала (для отрисовки)
-    if digit_bboxes is not None:
-        result.digit_bboxes_in_orig = _digit_bboxes_to_orig(
-            digit_bboxes, meter_bbox, meter_crop.shape
+    reading, reading_str, err, digit_results = None, None, None, None
+    if meter_crop is not None:
+        reading, reading_str, err, digit_results, digit_bboxes = (
+            read_meter_digits_for_config(models, meter_crop, config, last_reading=last_reading).as_tuple()
         )
+
+        result.reading_str = reading_str
+        result.digit_notes = describe_substitutions(digit_results)
+
+        # Пересчитываем digit bbox-ы в координаты оригинала (для отрисовки)
+        if digit_bboxes is not None:
+            result.digit_bboxes_in_orig = _digit_bboxes_to_orig(
+                digit_bboxes, meter_bbox, meter_crop.shape
+            )
+
+    # Показание по надписи поверх фото главнее барабана (решение владельца
+    # 2026-10-28); с барабана — что прочитано, для оператора (model_reading_str)
+    if known is not None and known.reading is not None:
+        if known.reading != reading:
+            barrel = (f"барабан: {reading}" if reading is not None else "счётчик не найден" if meter_crop is None
+                      else f"барабан не прочитан: '{reading_str}'")
+            result.account_notes = "; ".join(n for n in (
+                result.account_notes, f"показание по надписи на фото {shown(note[0])}: {known.reading} ({barrel})")
+                if n)
+        reading = known.reading
 
     if reading is None:
         result.outcome = Outcome.DIGITS_ERROR

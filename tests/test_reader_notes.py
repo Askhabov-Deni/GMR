@@ -30,15 +30,18 @@ def _notes(table=TABLE):
     return reader.NoteContext(BANK, AccountIndex(accounts), {r["account_id"]: int(r["last_reading"]) for r in table})
 
 
-def _run(tmp_path, config, serial_text, lines=(), with_serial=True, notes=True, table=TABLE, serial_conf=0.95):
+def _run(tmp_path, config, serial_text, lines=(), with_serial=True, notes=True, table=TABLE, serial_conf=0.95,
+         with_meter=True, digit_conf=0.95):
     path = tmp_path / "p.jpg"
     img = _photo([(t, BLUE, 400 + 200 * i, 0) for i, t in enumerate(lines)]) if lines else _jpeg(_background(3))
     write_image(path, img)
     crops = make_meter_crops()
     if not with_serial:
         crops = [c for c in crops if c["class"] != "serial_number"]
+    if not with_meter:
+        crops = [c for c in crops if c["class"] != "gas_meter"]
     digit_crops, arrays = make_digit_crops_with_centers([i * 40 for i in range(5)])
-    docr = FakeDigitOCR({id(a): (d, 0.95) for a, d in zip(arrays, "01200")})
+    docr = FakeDigitOCR({id(a): (d, digit_conf) for a, d in zip(arrays, "01200")})
     return process_photo(str(path), make_df(table), config, FakeMeterDetector(crops), FakeDigitDetector(digit_crops),
                          docr, FakeSerialOCR(serial_text, serial_conf), notes=_notes(table) if notes else None)
 
@@ -93,6 +96,61 @@ def test_note_picks_among_owners_of_number(tmp_path, base_config):
     r = _run(tmp_path, base_config, "123456", ["лс99"], table=table)
     assert (r.outcome, r.account_id, r.delta) == (Outcome.PLUS, "1300000099", 100)
     assert r.account_notes.startswith("номер у нескольких абонентов, выбран по надписи")
+
+
+# ─── Показание по надписи главнее барабана (решение владельца 2026-10-28) ───
+
+def test_note_reading_beats_barrel(tmp_path, base_config):
+    r = _run(tmp_path, base_config, "123456", ["пок1250"])
+    assert (r.outcome, r.account_id, r.reading, r.delta) == (Outcome.PLUS, "1300000065", 1250, 250)
+    assert r.reading_str == "01200"                                   # что на барабане — для оператора
+    assert r.account_notes == "показание по надписи на фото «пок1250»: 1250 (барабан: 1200)"
+
+
+def test_note_reading_same_as_barrel_adds_nothing(tmp_path, base_config):
+    r = _run(tmp_path, base_config, "123456", ["пок1200"])
+    assert (r.outcome, r.reading, r.account_notes) == (Outcome.PLUS, 1200, None)
+
+
+def test_note_reading_when_barrel_unread(tmp_path, base_config):
+    assert _run(tmp_path, base_config, "123456", digit_conf=0.3).outcome == Outcome.DIGITS_ERROR
+    r = _run(tmp_path, base_config, "123456", ["пок1250"], digit_conf=0.3)
+    assert (r.outcome, r.account_id, r.reading) == (Outcome.PLUS, "1300000065", 1250)
+    assert r.account_notes.startswith("показание по надписи на фото «пок1250»: 1250 (барабан не прочитан: '")
+
+
+def test_note_without_reading_keeps_digits_error(tmp_path, base_config):
+    r = _run(tmp_path, base_config, "123456", ["лс65"], digit_conf=0.3)
+    assert (r.outcome, r.account_id, r.reading) == (Outcome.DIGITS_ERROR, "1300000065", None)
+
+
+def test_no_meter_account_and_reading_by_note(tmp_path, base_config):
+    r = _run(tmp_path, base_config, None, ["лс82", "пок2100"], with_serial=False, with_meter=False)
+    assert (r.outcome, r.account_id, r.reading, r.new_photo_name) == (Outcome.PLUS, "1300000082", 2100,
+                                                                      "1300000082.jpg")
+    assert r.account_notes.endswith("показание по надписи на фото «лс82 / пок2100»: 2100 (счётчик не найден)")
+
+
+def test_no_meter_serial_account_and_note_reading(tmp_path, base_config):
+    r = _run(tmp_path, base_config, "654321", ["пок2100"], with_meter=False)
+    assert (r.outcome, r.account_id, r.reading) == (Outcome.PLUS, "1300000082", 2100)
+
+
+@pytest.mark.parametrize("serial, lines, hint", [
+    (None, ["лс82"], "надпись на фото «лс82»: л/с 1300000082? показание — ему не подходит"),   # показания нет
+    ("123456", ["лс82", "пок2100"], "надпись на фото «лс82 / пок2100»: надпись указывает на л/с 1300000082"),
+    ("654321", ["лс82"], "надпись на фото «лс82»: подтверждает л/с 1300000082; показания по надписи нет"),
+    ("654321", [], None),                                                           # надписи нет
+])
+def test_no_meter_note_not_enough_is_as_before(tmp_path, base_config, serial, lines, hint):
+    """Счётчика нет, а надпись не дала счёт и показание — исход как без надписей, с подсказкой."""
+    on = _run(tmp_path, base_config, serial, lines, with_serial=serial is not None, with_meter=False)
+    off = _run(tmp_path, base_config, serial, lines, with_serial=serial is not None, with_meter=False, notes=False)
+    fields = ("outcome", "error_detail", "account_id", "serial_text", "reading", "new_photo_name")
+    assert [getattr(on, f) for f in fields] == [getattr(off, f) for f in fields]
+    assert on.outcome == Outcome.NO_METER and on.error_detail == ("class meter not detected" if serial
+                                                                  else "YOLO returned no crops")
+    assert (on.account_notes or "").startswith(hint or "") and (hint is not None or on.account_notes is None)
 
 
 def test_note_context_of_table(base_config):

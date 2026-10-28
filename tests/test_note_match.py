@@ -204,6 +204,15 @@ def test_account_from_note_needs_fitting_reading():
     assert interpret(["24317"], INDEX, {}, barrel=4400).account is None   # прошлого нет
 
 
+def test_reading_of_note_beats_barrel_in_choice():
+    """Счёт подтверждает показание, которое будет записано: по надписи — оно
+    главнее барабана (решение владельца 2026-10-28); нет в надписи — с барабана."""
+    a = unknown(["лс17777", "пок51234"], barrel=99999)
+    assert (a.account, a.reading) == ("1300017777", 51234)
+    assert unknown(["лс4330", "пок37200"], barrel=20100).account == "1300004330"
+    assert unknown(["лс4330"], barrel=20100).account == "1300014330"
+
+
 def test_short_number_of_several_accounts_picked_by_reading():
     """«4330» — ядро 1300004330 и конец 1300014330: тот, к прошлому которого
     подходит показание с барабана (решение владельца 2026-10-26)."""
