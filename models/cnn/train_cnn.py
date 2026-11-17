@@ -5,8 +5,10 @@
 Обучение с нуля (из папки проекта; датасет — database/datasets/digits_cnn):
     python models/cnn/train_cnn.py
 
-Продолжение прерванного обучения (resume):
-    python train_cnn.py --resume runs/cnn/best.pth
+Продолжение прерванного обучения (resume) — с последней эпохи, с тем же
+графиком скорости обучения и историей:
+    python train_cnn.py --resume <папка прогона>/last.pth
+    (прогоны до 2026-11-18 без last.pth — <папка>/best.pth)
 
 Дообучение (fine-tuning, сброс оптимизатора):
     python train_cnn.py --finetune runs/cnn/best.pth --lr 1e-4
@@ -15,13 +17,15 @@
 при --resume — папка чекпоинта):
     run_info.json    — датасет (отпечаток), коммит кода, пакеты, деление (этап 5)
     split/*.txt      — какие файлы попали в train / val / test
-    best.pth         — чекпоинт (веса модели + оптимизатор + метрики)
+    best.pth         — чекпоинт лучшей эпохи по val_acc (веса + оптимизатор + график + метрики)
+    last.pth         — то же для последней эпохи: с него --resume
     best_model.pt    — TorchScript для продакшена (инференс)
-    history.json     — метрики по эпохам + финальный тест
+    history.json     — метрики по эпохам (пишется после каждой) + финальный тест
     training_curves.png — графики обучения
 """
 import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime
@@ -181,6 +185,54 @@ def save_split(output_dir: Path, crops_dir: Path, train_loader, val_loader, test
     write_run_info(output_dir, crops_dir, files, parts, args.seed, vars(args))
 
 
+# ─── Чекпоинты и продолжение ────────────────────────────────────────────────
+def save_checkpoint(path: Path, epoch: int, model: nn.Module, optimizer: optim.Optimizer,
+                    scheduler, val_acc: float, best_acc: float, no_improve: int) -> None:
+    torch.save({
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "val_acc": val_acc,
+        "best_val_acc": best_acc,
+        "no_improve": no_improve,
+    }, path)
+
+
+def resume_from(ckpt: dict, model: nn.Module, optimizer: optim.Optimizer, scheduler) -> tuple[int, float, int]:
+    """Веса, оптимизатор и график скорости обучения из чекпоинта →
+    (с какой эпохи продолжать, лучшая val_acc, эпох без улучшения).
+    В чекпоинтах до 2026-11-18 графика нет: без докрутки косинус начался бы
+    заново и к концу обучения скорость не упала бы до минимума."""
+    model.load_state_dict(ckpt["model_state_dict"])
+    if "optimizer_state_dict" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    done = ckpt.get("epoch", 0)
+    if "scheduler_state_dict" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    else:
+        scheduler.last_epoch = done
+        for group in optimizer.param_groups:
+            base = group.get("initial_lr", group["lr"])
+            group["lr"] = scheduler.eta_min + (base - scheduler.eta_min) * (
+                1 + math.cos(math.pi * done / scheduler.T_max)) / 2
+    return done + 1, ckpt.get("best_val_acc", ckpt.get("val_acc", 0.0)), ckpt.get("no_improve", 0)
+
+
+def load_history(output_dir: Path, start_epoch: int) -> list[dict]:
+    """Эпохи этого прогона до start_epoch (при --resume история продолжается)."""
+    path = output_dir / "history.json"
+    if not path.exists():
+        return []
+    return [e for e in json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(e.get("epoch"), int) and e["epoch"] < start_epoch]
+
+
+def save_history(history: list[dict], output_dir: Path) -> None:
+    with open(output_dir / "history.json", "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 def main() -> None:
     args = parse_args()
@@ -227,20 +279,19 @@ def main() -> None:
         print(f"\n🎯 Fine-tuning из: {args.finetune}")
         ckpt = torch.load(args.finetune, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state_dict"])
-        best_acc = ckpt.get("val_acc", 0.0)
-        print(f"   Стартовая val_acc: {best_acc:.4f}")
-        
+        # Лучшая эпоха — заново: val_acc прежнего обучения посчитана на его
+        # выборке; с ней на изменённом датасете best.pth мог не записаться вовсе.
+        print(f"   val_acc прежнего обучения (на его выборке): {ckpt.get('val_acc', 0.0):.4f}")
+
     elif args.resume:
         if not Path(args.resume).exists():
             raise FileNotFoundError(f"Чекпоинт не найден: {args.resume}")
         print(f"\n⏳ Resume из: {args.resume}")
         ckpt = torch.load(args.resume, map_location=device, weights_only=True)
-        model.load_state_dict(ckpt["model_state_dict"])
-        if "optimizer_state_dict" in ckpt:
-            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        start_epoch = ckpt.get("epoch", 0) + 1
-        best_acc = ckpt.get("val_acc", 0.0)
-        print(f"   Продолжение с эпохи {start_epoch}, best_acc={best_acc:.4f}")
+        start_epoch, best_acc, no_improve = resume_from(ckpt, model, optimizer, scheduler)
+        history = load_history(output_dir, start_epoch)
+        print(f"   Продолжение с эпохи {start_epoch}, best_acc={best_acc:.4f}, "
+              f"lr={optimizer.param_groups[0]['lr']:.2e}")
 
     # 4. Цикл обучения
     print(f"\n{'─' * 65}")
@@ -258,15 +309,11 @@ def main() -> None:
         if val_acc > best_acc:
             best_acc = val_acc
             no_improve = 0
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_acc": val_acc,
-            }, best_ckpt_path)
+            save_checkpoint(best_ckpt_path, epoch, model, optimizer, scheduler, val_acc, best_acc, no_improve)
             marker = " ✓ (best)"
         else:
             no_improve += 1
+        save_checkpoint(output_dir / "last.pth", epoch, model, optimizer, scheduler, val_acc, best_acc, no_improve)
 
         history.append({
             "epoch": epoch,
@@ -275,6 +322,7 @@ def main() -> None:
             "val_loss": round(val_loss, 4),
             "val_acc": round(val_acc, 4),
         })
+        save_history(history, output_dir)
 
         if epoch % 5 == 0 or epoch == 1 or marker:
             current_lr = optimizer.param_groups[0]["lr"]
@@ -310,8 +358,7 @@ def main() -> None:
     })
 
     # 6. Сохранение артефактов
-    with open(output_dir / "history.json", "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2, ensure_ascii=False)
+    save_history(history, output_dir)
     print(f"📈 История сохранена: {output_dir / 'history.json'}")
 
     plot_history(history, output_dir)

@@ -423,6 +423,55 @@ def test_cnn_run_dir_and_split_saved(tmp_path, monkeypatch):
     assert (tmp_path / "run" / "split" / "test.txt").read_text(encoding="utf-8") == "1/p2__digit_1.jpg\n"
 
 
+def _cnn_training(steps: int):
+    import torch
+    model = torch.nn.Linear(2, 2)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=10, eta_min=1e-6)
+    for _ in range(steps):
+        opt.step()
+        sched.step()
+    return model, opt, sched
+
+
+def test_cnn_resume_continues_lr_schedule(tmp_path):
+    import torch
+
+    from models.cnn import train_cnn
+    model, opt, sched = _cnn_training(4)
+    train_cnn.save_checkpoint(tmp_path / "last.pth", 4, model, opt, sched, 0.9, 0.95, 2)
+    m2, o2, s2 = _cnn_training(0)
+    ckpt = torch.load(tmp_path / "last.pth", weights_only=True)
+    assert train_cnn.resume_from(ckpt, m2, o2, s2) == (5, 0.95, 2)
+    assert o2.param_groups[0]["lr"] == pytest.approx(opt.param_groups[0]["lr"])
+    o2.step(); s2.step(); opt.step(); sched.step()
+    assert o2.param_groups[0]["lr"] == pytest.approx(opt.param_groups[0]["lr"])
+
+
+def test_cnn_resume_old_checkpoint_without_schedule(tmp_path):
+    from models.cnn import train_cnn
+    model, opt, sched = _cnn_training(4)
+    old = {"epoch": 4, "model_state_dict": model.state_dict(),     # чекпоинт до 2026-11-18
+           "optimizer_state_dict": opt.state_dict(), "val_acc": 0.9}
+    m2, o2, s2 = _cnn_training(0)
+    assert train_cnn.resume_from(old, m2, o2, s2) == (5, 0.9, 0)
+    assert o2.param_groups[0]["lr"] == pytest.approx(opt.param_groups[0]["lr"])  # не 1e-3 заново
+    for _ in range(6):
+        o2.step(); s2.step(); opt.step(); sched.step()
+    assert o2.param_groups[0]["lr"] == pytest.approx(opt.param_groups[0]["lr"]) == pytest.approx(1e-6)
+    del old["optimizer_state_dict"]                                 # только веса — скорость по графику
+    m3, o3, s3 = _cnn_training(0)
+    train_cnn.resume_from(old, m3, o3, s3)
+    assert o3.param_groups[0]["lr"] == pytest.approx(_cnn_training(4)[1].param_groups[0]["lr"])
+
+
+def test_cnn_history_continues_on_resume(tmp_path):
+    from models.cnn import train_cnn
+    train_cnn.save_history([{"epoch": e, "val_acc": 0.5} for e in (1, 2, 3, 4)] + [{"epoch": "final_test"}], tmp_path)
+    assert [e["epoch"] for e in train_cnn.load_history(tmp_path, 3)] == [1, 2]
+    assert train_cnn.load_history(tmp_path / "нет", 3) == []
+
+
 def test_cnn_crnn_default_dataset_is_new_layout():
     from models.cnn import config_cnn
     from models.crnn import train_crnn
