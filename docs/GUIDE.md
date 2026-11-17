@@ -274,7 +274,7 @@ python gmr.py datasets
 
 # 2) дообучить от текущих весов, маленький шаг обучения
 #    (результат — новая папка meter_ocr\runs\cnn\runs\<дата-время>)
-python models\cnn\train_cnn.py --finetune meter_ocr\runs\cnn\runs\v3_platinum\best.pth --lr 1e-4
+python models\cnn\train_cnn.py --finetune meter_ocr\runs\cnn\runs\2026-11-17_20-41\best.pth --lr 1e-4
 
 # 3) отчёт: точность по классам, матрица ошибок, картинки ошибок
 python models\cnn\evaluate_cnn.py --run_dir meter_ocr\runs\cnn\runs\<дата-время>
@@ -658,7 +658,7 @@ python gmr.py notes D:\16k\photos --table D:\16k\table16.xls                    
 Сейчас веса грузятся так: код **создаёт модель по текущему
 `models/cnn/model_cnn.py`** и вкладывает в неё веса
 (`DigitCNN.from_pretrained`). Если поменять слои в `model_cnn.py`,
-**старые веса `v3_platinum` перестанут загружаться**, и прод сломается.
+**веса, которые сейчас в работе, перестанут загружаться**, и прод сломается.
 С CRNN то же самое (`models/crnn/model_crnn.py`). Как кроп серийника
 приводится к размеру, чекпоинт CRNN с этапа 6c помнит сам (`input_mode`);
 размер входа по-прежнему в `models/crnn/config_crnn.py`.
