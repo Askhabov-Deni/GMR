@@ -80,8 +80,11 @@ def test_account_forms():
     assert is_account_form("042900013", "0429000013")                    # «0429» + «00013»
     assert is_account_form("13000017", "1300000017") and is_account_form("130017", "1300000017")
     assert not is_account_form("042900014", "0429000013")
-    assert not is_account_form("013", "0429000013") and not is_account_form("0000", "1300010000")
-    assert not is_account_form("04290", "0429000000")                    # остаток счёта — нули
+    assert not is_account_form("0000", "1300010000")
+    # серия 0429 — как 1300 (владелец, 2026-11-18): номер без нулей или с частью нулей, «29/13», «04/13»
+    assert is_account_form("13", "0429000013") and is_account_form("013", "0429000013")
+    assert is_account_form("2913", "0429000013") and is_account_form("0413", "0429000013")
+    assert not is_account_form("0000013", "0429000013")                  # нулей у номера — не больше 6 цифр
     assert not is_account_form("лс", "1300024317")
 
 

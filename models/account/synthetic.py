@@ -8,8 +8,8 @@
 сама выбирает написание, которое видит на картинке (проверено 2026-10-12:
 разминка на одних шрифтах → свои кропы другим шрифтом: 99% «точно как
 написано», счёт по словарю — 100%). Разминку дают надписи с точной меткой:
-цифры шрифтами OpenCV, как пишут счёт (93, 0093, 1300000093, 13-0093),
-с наклоном, толщиной маркера, смазом и шумом.
+цифры шрифтами OpenCV, как пишут счёт (93, 0093, 1300000093, 13-0093,
+0429/228, 29/90), с наклоном, толщиной маркера, смазом и шумом.
 """
 import cv2
 import numpy as np
@@ -19,18 +19,29 @@ FONTS = (cv2.FONT_HERSHEY_SIMPLEX, cv2.FONT_HERSHEY_DUPLEX, cv2.FONT_HERSHEY_PLA
          cv2.FONT_HERSHEY_SCRIPT_SIMPLEX, cv2.FONT_HERSHEY_SCRIPT_COMPLEX)
 
 
-def written_text(rng: np.random.Generator) -> str:
-    """Как контролёр мог написать случайный счёт «13 + 8 цифр» (черта — как на корпусе)."""
+SERIES = ("1300", "0429")      # серии счетов в таблицах (2026-11)
+
+
+def written_text(rng: np.random.Generator) -> tuple[str, str]:
+    """(надпись, счёт): как контролёр мог написать случайный счёт «серия +
+    номер из 6 цифр» (account_match.account_variants; черта — как на корпусе)."""
+    series = SERIES[int(rng.integers(len(SERIES)))]
     core = str(int(rng.integers(1, 10 ** int(rng.integers(1, 7)))))
-    rest = core.zfill(8)
+    number = core.zfill(6)
+    account = series + number
+    zeros = "00" if series.endswith("00") else ""                      # у 1300 нули серии — те же нули номера
+    padded = zeros + number
     style = rng.random()
-    if style < 0.35:
-        return core                                                     # 93
-    if style < 0.75:
-        return rest[-int(rng.integers(len(core) + 1, min(8, len(core) + 3) + 1)):]   # 0093
-    if style < 0.85:
-        return "13" + rest                                              # 1300000093
-    return "13-" + rest[-int(rng.integers(len(core), min(8, len(core) + 2) + 1)):]   # 13-0093
+    if style < 0.35 or (style < 0.7 and len(core) == len(padded)):
+        return core, account                                            # 93
+    if style < 0.7:
+        return padded[-int(rng.integers(len(core) + 1, min(len(padded), len(core) + 3) + 1)):], account  # 0093
+    if style < 0.8:
+        return account, account                                         # 1300000093
+    heads = [h for h in (series, series[:2], series[2:]) if h.strip("0")]
+    head = heads[int(rng.integers(len(heads)))]
+    sep = ("/", "-", "")[int(rng.integers(3))]
+    return head + sep + number[-int(rng.integers(len(core), min(6, len(core) + 2) + 1)):], account  # 13-0093, 29/90
 
 
 def render(text: str, rng: np.random.Generator) -> np.ndarray:
@@ -56,6 +67,6 @@ def synthetic_items(n: int, seed: int = 0) -> list[dict]:
     rng = np.random.default_rng(seed)
     items = []
     for _ in range(n):
-        text = written_text(rng)
-        items.append({"image": render(text, rng), "variants": (text.replace("-", ""),)})
+        text, _ = written_text(rng)
+        items.append({"image": render(text, rng), "variants": (text.replace("-", "").replace("/", ""),)})
     return items

@@ -129,7 +129,7 @@ def test_dataset_items_and_collate(tmp_path):
     assert x.shape == (1, 48, 224) and len(targets) == 14 and targets[0].tolist() == [9, 3]
     xs, flat, lengths, owners = ds.collate([data[0], data[1]])
     assert xs.shape == (2, 1, 48, 224)
-    assert owners.tolist() == [0] * 14 + [1] * 2 and lengths.tolist()[-2:] == [8, 10]
+    assert owners.tolist() == [0] * 14 + [1] * 4 and lengths.tolist()[-4:] == [6, 8, 8, 10]
     assert flat.shape[0] == int(lengths.sum())
 
 
@@ -177,15 +177,16 @@ def test_synthetic_items():
         assert label.isdigit() and 1 <= len(label) <= 10
         assert it["image"].ndim == 2 and it["image"].dtype == np.uint8 and min(it["image"].shape) > 10
     rng = np.random.default_rng(0)
-    texts = [written_text(rng) for _ in range(2000)]
+    pairs = [written_text(rng) for _ in range(2000)]
+    texts = [t for t, _ in pairs]
     assert any(t.startswith("13-") for t in texts) and any(t.startswith("00") for t in texts)
+    assert any(t.startswith("0429/") for t in texts) and any(t.startswith("29/") for t in texts)
     assert any(t.isdigit() and len(t) == 10 and t.startswith("13") for t in texts)
+    assert any(t.isdigit() and len(t) == 10 and t.startswith("0429") for t in texts)
     assert any(not t.startswith("0") for t in texts)
-    for t in texts:                                                 # каждое — одно из написаний своего счёта
-        digits = t.replace("-", "")
-        core = digits[2:].lstrip("0") if t.startswith("13-") or len(digits) == 10 else digits.lstrip("0")
-        account = "13" + (core or "0").zfill(8)
-        assert digits in account_variants(account), t
+    assert not any(t.startswith("00/") or t.startswith("00-") for t in texts)    # «00» серии 1300 — просто нули
+    for t, account in pairs:                                        # каждое — одно из написаний своего счёта
+        assert t.replace("-", "").replace("/", "") in account_variants(account), t
 
 
 def test_synthetic_goes_through_dataset():
