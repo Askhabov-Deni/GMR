@@ -14,10 +14,19 @@ def test_data_files_found_anywhere_except_training_metrics():
         "fotos/IMG-20261001-WA0012.jpg", "x/scan.JPEG", "gmr.sqlite",
         "meter_detect/runs/detect/gas_meter_all_classes_s_v1/results.csv",
         "meter_ocr/runs/yolo/digits_detect_v4/results.csv",
+        "serial_id_ocr/runs/crnn/2026-10-20_01-49/eval/metrics.json",
+        "serial_id_ocr/runs/crnn/2026-10-20_01-49/history.json",
+        # имена кропов в этих списках — лицевые счета и номера счётчиков
+        "serial_id_ocr/runs/crnn/2026-10-20_01-49/split/test.txt",
+        "meter_ocr/runs/cnn/runs/2026-11-17_20-41/eval/predictions_test.txt",
+        "account_ocr/runs/crnn/2026-10-10_11-35/eval/suspect_labels.txt",
     ]
     assert check.data_files(paths) == sorted([
         "Октябрь.xlsx", "data/таблица.csv", "data/таблица_log.csv",
         "fotos/IMG-20261001-WA0012.jpg", "x/scan.JPEG", "gmr.sqlite",
+        "serial_id_ocr/runs/crnn/2026-10-20_01-49/split/test.txt",
+        "meter_ocr/runs/cnn/runs/2026-11-17_20-41/eval/predictions_test.txt",
+        "account_ocr/runs/crnn/2026-10-10_11-35/eval/suspect_labels.txt",
     ])
 
 

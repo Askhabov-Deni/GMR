@@ -11,6 +11,7 @@ tools/check.py — проверка перед коммитом: `python gmr.py 
 
 Всё зелёное — можно коммитить. Код возврата: 0 — всё в порядке, 1 — нет.
 """
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -28,13 +29,19 @@ DATA_EXTENSIONS = {
 # выдуманных данных (docs/img/) лежат в git намеренно.
 ALLOWED_PREFIXES = ("meter_detect/runs/", "meter_ocr/runs/", "serial_id_ocr/runs/", "tests/data/",
                     "docs/img/")
+# Файлы прогонов обучения, в которых перечислены кропы: имя кропа — лицевой
+# счёт и номер счётчика (docs/DATASETS.md), то есть персональные данные,
+# хотя расширение у них .txt.
+PRIVATE_RUN_FILES = re.compile(r"/runs/.*/(split/|eval/predictions_|eval/suspect_labels)")
 
 
 def data_files(paths: Iterable[str]) -> list[str]:
     """Из списка путей (как их печатает git, через «/») — те, что похожи на данные."""
     found = []
     for p in paths:
-        if Path(p).suffix.lower() in DATA_EXTENSIONS and not p.startswith(ALLOWED_PREFIXES):
+        if PRIVATE_RUN_FILES.search("/" + p):
+            found.append(p)
+        elif Path(p).suffix.lower() in DATA_EXTENSIONS and not p.startswith(ALLOWED_PREFIXES):
             found.append(p)
     return sorted(found)
 

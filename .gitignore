@@ -43,6 +43,13 @@ settings.json
 *_log.sqlite
 *_log_shadow_report.txt
 
+# Списки разбиения датасетов и предсказания моделей: в именах кропов —
+# лицевые счета и номера счётчиков (персональные данные). Метрики
+# (metrics.json, history.json, run_info.json, report.txt) — в git.
+**/runs/**/split/
+**/runs/**/eval/predictions_*
+**/runs/**/eval/suspect_labels*
+
 # Результаты tools/inspect_model.py
 inspect_out/
 
