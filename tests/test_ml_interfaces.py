@@ -6,8 +6,8 @@
      что reader.py до Фазы 3 (включая то, что straighten не переопределяется).
   2. load_models создаёт модели с теми же параметрами: выпрямление включено
      для детектора счётчика и выключено для детектора цифр.
-  3. program2.ModelBundle.run_on_photo выдаёт тот же dict, что и раньше, и
-     читает цифры тем же сервисом, что и reader.process_photo.
+  3. Что прочитали модели на фото оператора, пишет прогон (pipeline/seen.py,
+     этап Е) тем же сервисом чтения цифр; окно оператора моделей не запускает.
   4. Границы слоёв: program2.py не импортирует приватные _read_meter_digits /
      _find_crop_entry; domain и application не импортируют torch/cv2/pandas.
 """
@@ -20,14 +20,15 @@ import pytest
 from src.gmr.application import RecognitionModels, read_meter_digits
 from src.gmr.domain import (
     DigitDetector, DigitPrediction, DigitRecognizer, MeterDetector,
-    PipelineConfig, SerialPrediction, SerialRecognizer,
+    Outcome, PhotoResult, PipelineConfig, SerialPrediction, SerialRecognizer,
 )
 from src.gmr.ml import (
     CnnDigitRecognizer, CrnnSerialRecognizer, YoloDigitDetector, YoloMeterDetector,
 )
 from src.gmr.ml import loader
+from src.gmr.pipeline.seen import safe_what_models_saw, what_models_saw
 from tests._fixtures import (
-    FakeDigitDetector, FakeDigitOCR, FakeMeterDetector, FakeSerialOCR,
+    FakeDigitDetector, FakeDigitOCR, FakeSerialOCR,
     make_digit_crops_with_centers, make_meter_crops,
 )
 
@@ -145,7 +146,11 @@ def test_straighten_defaults_of_real_yolo_inferer():
     assert inspect.signature(YOLOInferer.__init__).parameters["straighten"].default is True
 
 
-# ─── 3. program2 и reader читают цифры одним сервисом ───────────────────────
+# ─── 3. Что прочитали модели — для окна оператора (этап Е) ──────────────────
+# До этапа Е окно читало фото само (program2.ModelBundle.run_on_photo). Теперь
+# это пишет прогон (src/gmr/pipeline/seen.py) тем же сервисом чтения цифр, а
+# окно показывает. Прочитанное process_photo не перечитывается; недостающее
+# (номер без счётчика, цифры без номера) — дочитывается по найденным рамкам.
 
 def _digits(values, conf=0.95):
     crops, arrays = make_digit_crops_with_centers([i * 40 for i in range(len(values))])
@@ -153,73 +158,98 @@ def _digits(values, conf=0.95):
     return FakeDigitDetector(crops), ocr
 
 
-def _bundle(meter_crops, digit_values, serial=("12345", 0.9)):
-    import program2
+def _models(digit_values, serial=("12345", 0.9)):
     dd, docr = _digits(digit_values)
-    bundle = program2.ModelBundle.__new__(program2.ModelBundle)   # без загрузки весов
-    bundle.config = PipelineConfig()
-    bundle.models = RecognitionModels(
-        meter_detector=YoloMeterDetector(FakeMeterDetector(meter_crops)),
+    models = RecognitionModels(
+        meter_detector=None,
         digit_detector=YoloDigitDetector(dd),
         digit_recognizer=CnnDigitRecognizer(docr),
         serial_recognizer=CrnnSerialRecognizer(FakeSerialOCR(*serial)),
     )
-    return bundle, dd, docr
+    return models, dd, docr
 
 
-def test_program2_run_on_photo_full():
-    meter_crops = make_meter_crops()
-    meter_crops[0]["crop"] = np.arange(100 * 300 * 3, dtype=np.uint8).reshape(100, 300, 3)
-    bundle, dd, docr = _bundle(meter_crops, ["0", "1", "2", "3", "4"])
+def _queued(detections, outcome=Outcome.NO_SERIAL, **kw):
+    return PhotoResult(photo_path="p.jpg", outcome=outcome, meter_crops_raw=detections, **kw)
 
-    r = bundle.run_on_photo("p.jpg")
 
-    assert r["error"] is None
-    assert r["serial_text"] == "12345" and r["serial_conf"] == 0.9
-    assert r["serial_crop"] is meter_crops[1]["crop"]
-    assert r["reading_str"] == "01234"
-    # тот же результат, что у общего сервиса чтения цифр (им же пользуется reader.py)
-    same = read_meter_digits(YoloDigitDetector(dd), CnnDigitRecognizer(docr), meter_crops[0]["crop"],
+def _decode(jpeg):
+    import cv2
+    return cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+
+class _Never:
+    """Модель, которую звать нельзя: прочитанное прогоном не перечитывается."""
+
+    def recognize(self, crop):
+        raise AssertionError("прочитано повторно")
+
+    def detect(self, crop):
+        raise AssertionError("прочитано повторно")
+
+
+def test_seen_reads_digits_when_run_did_not():
+    # NO_SERIAL: прогон цифры не читает — для окна они дочитываются
+    meter = make_meter_crops()[0]
+    meter["crop"] = np.arange(100 * 300 * 3, dtype=np.uint8).reshape(100, 300, 3)
+    models, dd, docr = _models(["0", "1", "2", "3", "4"])
+    rec = what_models_saw(_queued([meter]), models, PipelineConfig())
+    assert (rec.serial_read, rec.serial_conf, rec.reading_str) == ("", None, "01234")
+    assert rec.digits_ok == [True] * 5
+    # тот же результат, что у общего сервиса чтения цифр (им пользуется и process_photo)
+    same = read_meter_digits(YoloDigitDetector(dd), CnnDigitRecognizer(docr), meter["crop"],
                              0.6, 5, ignore_last_digits=PipelineConfig().ignore_last_digits)
-    assert r["digit_preds"] == same.digit_results
-    # кропы цифр вырезаны из кропа счётчика по bbox каждой позиции
-    for crop, (x1, y1, x2, y2) in zip(r["digit_crops"], same.digit_bboxes):
-        assert np.array_equal(crop, meter_crops[0]["crop"][y1:y2, x1:x2])
+    assert rec.reading_str == same.reading_str
+    # кропы цифр — из кропа счётчика по рамке каждой позиции (JPEG: размер тот же)
+    assert sorted(rec.crops) == [f"digit{i}" for i in range(5)]
+    for i, (x1, y1, x2, y2) in enumerate(same.digit_bboxes):
+        assert _decode(rec.crops[f"digit{i}"]).shape == meter["crop"][y1:y2, x1:x2].shape
 
 
-def test_program2_run_on_photo_nothing_found():
-    bundle, _, _ = _bundle([], ["0"] * 5)
-    r = bundle.run_on_photo("p.jpg")
-    assert r["error"] == "YOLO: ничего не найдено"
-    assert r["serial_text"] is None and r["reading_str"] is None
-
-
-def test_program2_run_on_photo_meter_without_serial():
-    meter_only = [make_meter_crops()[0]]
-    bundle, _, _ = _bundle(meter_only, ["0", "0", "1", "0", "0"])
-    r = bundle.run_on_photo("p.jpg")
-    assert r["error"] is None
-    assert r["serial_text"] is None and r["serial_crop"] is None
-    assert r["reading_str"] == "00100"
-
-
-def test_program2_run_on_photo_serial_without_meter():
+def test_seen_reads_serial_without_meter():
+    # NO_METER: прогон номер не читает — для окна он дочитывается
     serial_only = [make_meter_crops()[1]]
-    bundle, _, _ = _bundle(serial_only, ["0"] * 5)
-    r = bundle.run_on_photo("p.jpg")
-    assert r["serial_text"] == "12345"
-    assert r["reading_str"] is None and r["digit_preds"] is None and r["digit_crops"] is None
+    models, _, _ = _models(["0"] * 5)
+    rec = what_models_saw(_queued(serial_only, Outcome.NO_METER), models, PipelineConfig())
+    assert (rec.serial_read, rec.serial_conf, rec.reading_str, rec.digits_ok) == ("12345", 0.9, "", [])
+    assert sorted(rec.crops) == ["serial"]
+    assert _decode(rec.crops["serial"]).shape == serial_only[0]["crop"].shape
 
 
-def test_program2_run_on_photo_model_exception_goes_to_error():
-    bundle, _, _ = _bundle(make_meter_crops(), ["0"] * 5)
+def test_seen_keeps_what_run_read():
+    crops = make_meter_crops()
+    models = RecognitionModels(None, _Never(), _Never(), _Never())
+    result = _queued(crops, Outcome.DIGITS_ERROR, serial_text="0012345", serial_read="12345",
+                     serial_conf=0.93, reading_str="01?45",
+                     digit_results=[{"ok": True}, {"ok": True}, {"ok": False}, {"ok": True}, {"ok": True}],
+                     digit_bboxes=[(0, 0, 20, 30), None, (80, 0, 100, 30), (120, 0, 140, 30), (160, 0, 180, 30)])
+    rec = what_models_saw(result, models, PipelineConfig())
+    assert (rec.serial_read, rec.serial_conf, rec.reading_str) == ("12345", 0.93, "01?45")
+    assert rec.digits_ok == [True, True, False, True, True]
+    assert sorted(rec.crops) == ["digit0", "digit2", "digit3", "digit4", "serial"]   # digit1 — заглушка
+
+
+@pytest.mark.parametrize("outcome", [Outcome.PLUS, Outcome.MINUS, Outcome.REPEAT, Outcome.ERROR])
+def test_seen_only_for_operator_queue(outcome):
+    models = RecognitionModels(None, _Never(), _Never(), _Never())
+    assert what_models_saw(_queued(make_meter_crops(), outcome), models, PipelineConfig()) is None
+
+
+def test_seen_nothing_found():
+    models = RecognitionModels(None, _Never(), _Never(), _Never())
+    assert what_models_saw(_queued(None, Outcome.NO_METER), models, PipelineConfig()) is None
+
+
+def test_seen_model_exception_does_not_stop_run():
+    import logging
 
     class Boom:
         def recognize(self, crop):
             raise RuntimeError("cuda died")
-    bundle.models.serial_recognizer = Boom()
-    r = bundle.run_on_photo("p.jpg")
-    assert r["error"] == "cuda died"
+    models, _, _ = _models(["0"] * 5)
+    models.serial_recognizer = Boom()
+    result = _queued([make_meter_crops()[1]], Outcome.NO_METER)
+    assert safe_what_models_saw(result, models, PipelineConfig(), logging.getLogger("t")) is None
 
 
 def test_application_read_meter_digits_low_conf_and_forgiven():

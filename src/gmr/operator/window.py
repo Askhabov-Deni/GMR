@@ -1,6 +1,5 @@
 """Главное окно: вход, месяц, меню, вкладки «Обработка» и «Проверка»."""
 import sqlite3
-import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -30,7 +29,6 @@ from .dialogs import LoginDialog, PresetDialog, SettingsDialog
 from .edit_screen import EditScreen
 from .files import move_photo, now_iso, open_in_explorer, place_decision
 from .hints import SerialIndex, build_serial_index
-from .model_bundle import ModelBundle
 from .photos import (
     controller_dir,
     controller_name,
@@ -53,7 +51,6 @@ class MainWindow(tk.Tk):
         self.session:   Optional[OperatorSession] = None
         self.df: Optional[pd.DataFrame] = None
         self.log_rows:  list[dict] = []
-        self.models:    Optional[ModelBundle] = None
         self.config      = PipelineConfig()
 
         # Удержание Enter: автоповтор Windows шлёт нажатия без отпускания —
@@ -103,7 +100,6 @@ class MainWindow(tk.Tk):
             if not self._open_settings():
                 self.destroy()
                 return
-        self._load_models_async()
         self._build_ui()
 
     def _open_settings(self) -> bool:
@@ -150,29 +146,6 @@ class MainWindow(tk.Tk):
     @property
     def results_dir(self) -> str:
         return str(self.session.folder.results)
-
-    def _load_models_async(self):
-        self._model_load_error: Optional[str] = None
-
-        def _load():
-            try:
-                bundle = ModelBundle(self.config)
-                self.models = bundle
-            except Exception as e:
-                log.error(f"Ошибка загрузки моделей: {e}")
-                self._model_load_error = str(e)
-                self.after(0, self._on_model_load_error)
-
-        threading.Thread(target=_load, daemon=True).start()
-
-    def _on_model_load_error(self):
-        err = getattr(self, "_model_load_error", None)
-        if err:
-            messagebox.showerror(
-                "Ошибка загрузки моделей",
-                f"Не удалось загрузить модели:\n\n{err}\n\n"
-                "Программа продолжит работу, но автораспознавание недоступно.",
-            )
 
     # ─── Месяц: создать, обновить таблицу, итог (этап 4) ───────────────────────
     def _ask_table(self, parent=None) -> Optional[str]:
@@ -253,11 +226,9 @@ class MainWindow(tk.Tk):
         return RecognitionPreset()
 
     def _apply_preset(self):
-        """Настройки месяца — в self.config: окно читает фото так же, как прогон."""
+        """Настройки месяца — в self.config (порог разницы, столбцы — как у прогона)."""
         preset = month_app.month_preset(str(self.session.folder.root))
         self.config = preset.apply(PipelineConfig()) if preset is not None else PipelineConfig()
-        if self.models is not None:
-            self.models.config = self.config
 
     def edit_preset(self):
         """Меню «Месяц» → «Настройки распознавания…»."""

@@ -32,7 +32,7 @@ from src.gmr.domain.serial_match import lookup_variants, normalize_serial
 from src.gmr.ml.loader import default_device, load_models
 from src.gmr.storage import photo_fingerprint
 from src.gmr.storage.backup import KEEP, backup_sqlite, remove_old
-from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
+from src.gmr.storage.month import MonthDB, MonthFolder, Reading, Recognition, now_text
 
 from .output import make_log_row, save_annotated
 from .photo import (
@@ -50,6 +50,7 @@ from .report import (
     skip_lines,
     where,
 )
+from .seen import safe_what_models_saw
 
 _run_selection = RunSelectionPolicy()
 
@@ -235,10 +236,12 @@ class _MonthRun:
         log.info(f"Месяц: {month.root}; абонентов: {len(abonents)}, с показанием: "
                  f"{sum(1 for a in abonents if a in readings)}, строк лога: {len(self.log_rows)}")
 
-    def record(self, result: PhotoResult, log_row: dict, photo_name: str) -> list[dict]:
-        """Показание и строка лога — одной транзакцией. Если у счёта появилось
-        показание, его фото, ждущие оператора, закрываются (этап 3, пункт 3) —
-        возвращаются их строки REPEAT."""
+    def record(self, result: PhotoResult, log_row: dict, photo_name: str,
+               seen: Optional[Recognition] = None) -> list[dict]:
+        """Показание и строка лога — одной транзакцией (с ними — что прочитали
+        модели, для окна оператора). Если у счёта появилось показание, его фото,
+        ждущие оператора, закрываются (этап 3, пункт 3) — возвращаются их строки
+        REPEAT."""
         cfg = self.config
         closed, moves = [], []
         with self.db.transaction():
@@ -252,6 +255,8 @@ class _MonthRun:
                 self.df.loc[self.df[cfg.col_account_id] == account, cfg.col_new_reading] = value
                 self.log.info(f"  ✅ Записано в базу: account={account}, reading={value}")
             self.db.append_log_rows([log_row])
+            if seen is not None and log_row.get("photo_hash"):
+                self.db.put_recognition(log_row["photo_hash"], seen)
             if result.outcome in (Outcome.PLUS, Outcome.MINUS) and result.account_id:
                 closed, moves = close_waiting(self.db, self.month.results, result.account_id,
                                               photo_name, "auto")
@@ -465,6 +470,8 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                 )
             stats[result.outcome] += 1
             total_stats[result.outcome] += 1
+            # что прочитали модели — для окна оператора (этап Е), в базу вместе со строкой лога
+            seen = safe_what_models_saw(result, models, config, log) if photo_hash else None
 
             detail = result.error_detail or ""
             log.info(
@@ -497,7 +504,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                 photo_path_obj.name, result, config,
                 photo_hash=photo_hash, source_folder=subfolder_name,
             )
-            closed = store.record(result, log_row, photo_path_obj.name)
+            closed = store.record(result, log_row, photo_path_obj.name, seen=seen)
             for row in [log_row, *closed]:
                 state.log_rows.append(row)
                 index.add(row)

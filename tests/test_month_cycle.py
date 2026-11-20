@@ -302,6 +302,23 @@ def test_not_in_db_read_again_when_serial_appeared(tmp_path, models):
     assert not (nid / "a5.jpg").exists()
 
 
+def test_run_saves_what_models_saw_for_operator(tmp_path, models):
+    # этап Е: для фото в очереди оператора прогон пишет в базу, что прочитали модели —
+    # окно показывает это, само моделей не запускает
+    f = _day1(tmp_path)
+    h = {r["original_filename"]: r["photo_hash"] for r in _log(f)}
+    with MonthDB(f.db) as db:
+        a1, a3, a5 = (db.recognition(h[n]) for n in ("a1.jpg", "a3.jpg", "a5.jpg"))
+    assert a1 is None                                      # показание записано — оператору не нужно
+    assert (a3.serial_read, a3.serial_conf, a3.reading_str, a3.digits_ok) == ("33333", 0.95, "", [])
+    assert sorted(a3.crops) == ["serial"]                  # цифр не нашлось
+    assert (a5.serial_read, a5.reading_str, a5.digits_ok) == ("99999", "00500", [True] * 5)
+    assert sorted(a5.crops) == ["digit0", "digit1", "digit2", "digit3", "digit4", "serial"]
+    _run(f, reread_errors=True)                            # перечитаны — запись заменена, не добавлена
+    with MonthDB(f.db) as db:
+        assert db.conn.execute("SELECT COUNT(*) FROM recognitions").fetchone()[0] == 2
+
+
 def _with_99999(tmp_path):
     upd = tmp_path / "новая.csv"
     upd.write_text("Номер счетчика,Лицевой счет,Последние показания,Текущие показания\n"

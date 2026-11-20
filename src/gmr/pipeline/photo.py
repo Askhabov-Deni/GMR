@@ -289,6 +289,7 @@ def process_photo(
         result.reading_str = _rs
         result.reading     = _r
         result.digit_notes = describe_substitutions(_dres)
+        result.digit_results, result.digit_bboxes = _dres or [], _bboxes   # [] — читали, цифр нет
         if _bboxes is not None:
             result.digit_bboxes_in_orig = _digit_bboxes_to_orig(_bboxes, meter_bbox, meter_crop.shape)
 
@@ -312,6 +313,7 @@ def process_photo(
 
         result.serial_text = serial_text
         result.serial_conf = serial_conf
+        result.serial_read = serial_text
 
         if serial_conf < config.serial_conf_thresh:
             failure = (Outcome.SERIAL_LOW_CONF,
@@ -487,6 +489,7 @@ def process_photo(
 
         result.reading_str = reading_str
         result.digit_notes = describe_substitutions(digit_results)
+        result.digit_results, result.digit_bboxes = digit_results or [], digit_bboxes
 
         # Пересчитываем digit bbox-ы в координаты оригинала (для отрисовки)
         if digit_bboxes is not None:

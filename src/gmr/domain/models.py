@@ -96,3 +96,9 @@ class PhotoResult:
     # ↓ Фото повёрнуто на столько градусов: на исходном детектор ничего не
     #   нашёл (этап 7b, пресет месяца); рамки — в координатах повёрнутого фото
     photo_turn:     int             = 0
+    # ↓ Для окна оператора (этап Е): номер, как его прочитала модель (serial_text
+    #   потом может стать номером из таблицы), и цифры по позициям
+    #   (read_meter_digits: digit_results, рамки в координатах кропа счётчика)
+    serial_read:    Optional[str]   = None
+    digit_results:  Optional[list]  = None
+    digit_bboxes:   Optional[list]  = None

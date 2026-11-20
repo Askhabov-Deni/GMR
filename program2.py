@@ -52,10 +52,6 @@ from src.gmr.operator.dialogs import (  # noqa: E402, F401
     PresetDialog,
     SettingsDialog,
 )
-from src.gmr.operator.model_bundle import (  # noqa: E402, F401
-    _abs_model,
-    ModelBundle,
-)
 from src.gmr.operator.photos import (  # noqa: E402, F401
     controller_dir,
     controller_dirs,

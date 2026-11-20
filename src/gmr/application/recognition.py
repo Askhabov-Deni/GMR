@@ -2,9 +2,11 @@
 src/gmr/application/recognition.py — распознавание фото через контракты
 моделей (Фаза 3, ТЗ миграции, история git).
 
-Общий код для обеих точек входа:
+Общий код:
   - reader.process_photo      (автоматический прогон)
-  - program2.ModelBundle      (ручная обработка оператором)
+  - pipeline/seen.py          (что прочитали модели — для окна оператора, этап Е)
+  - эталон и инструменты      (recognize_photo)
+До этапа Е окно оператора само запускало модели (program2.ModelBundle).
 До Фазы 3 program2.py импортировал из reader.py приватные
 _read_meter_digits/_find_crop_entry и сам повторял шаги детекции.
 

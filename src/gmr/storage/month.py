@@ -20,12 +20,14 @@ src/gmr/storage/month.py — папка месяца и её база (этап 
   readings   — текущее показание по лицевому счёту (то, что уйдёт в выгрузку);
   changes    — журнал изменений: кто, когда, что было и что стало;
   processing_log — лог обработки фото, те же столбцы, что CSV-лог
-               (src/gmr/storage/log_store.py, SqliteLogStore).
+               (src/gmr/storage/log_store.py, SqliteLogStore);
+  recognitions, recognition_crops — что модели прочитали на фото, ушедших
+               оператору (этап Е): окно показывает это, само моделей не запускает.
 """
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
@@ -88,6 +90,18 @@ class Reading:
     updated_by: str
 
 
+@dataclass
+class Recognition:
+    """Что модели прочитали на фото при обработке (этап Е): окно оператора
+    показывает это сразу и само моделей не запускает. Пишется для фото,
+    ушедших в question/; ключ — отпечаток фото, новое чтение заменяет прежнее."""
+    serial_read: str = ""                   # номер, как его прочитала модель (до поиска по таблице)
+    serial_conf: Optional[float] = None
+    reading_str: str = ""                   # показание, «?» — неуверенная цифра
+    digits_ok: list = field(default_factory=list)   # по позициям: цифра принята
+    crops: dict = field(default_factory=dict)       # JPEG: "serial", "digit0" … "digit4"
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS abonents (
@@ -118,6 +132,17 @@ CREATE TABLE IF NOT EXISTS changes (
     old     TEXT NOT NULL DEFAULT '',
     new     TEXT NOT NULL DEFAULT '',
     note    TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS recognitions (
+    photo_hash TEXT PRIMARY KEY,
+    read_at    TEXT NOT NULL,
+    data       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recognition_crops (
+    photo_hash TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    jpeg       BLOB NOT NULL,
+    PRIMARY KEY (photo_hash, name)
 );
 """
 
@@ -216,6 +241,26 @@ class MonthDB:
 
     def changes(self) -> list[dict]:
         return [dict(r) for r in self.conn.execute("SELECT * FROM changes ORDER BY id")]
+
+    # ─── что прочитали модели (этап Е) ──────────────────────────────────────
+    def put_recognition(self, photo_hash: str, rec: Recognition) -> None:
+        data = {"serial_read": rec.serial_read, "serial_conf": rec.serial_conf,
+                "reading_str": rec.reading_str, "digits_ok": rec.digits_ok}
+        self.conn.execute("INSERT OR REPLACE INTO recognitions (photo_hash, read_at, data) VALUES (?, ?, ?)",
+                          (photo_hash, now_text(), json.dumps(data, ensure_ascii=False)))
+        self.conn.execute("DELETE FROM recognition_crops WHERE photo_hash=?", (photo_hash,))
+        self.conn.executemany("INSERT INTO recognition_crops (photo_hash, name, jpeg) VALUES (?, ?, ?)",
+                              [(photo_hash, name, sqlite3.Binary(b)) for name, b in rec.crops.items()])
+
+    def recognition(self, photo_hash: str) -> Optional[Recognition]:
+        row = self.conn.execute("SELECT data FROM recognitions WHERE photo_hash=?", (photo_hash,)).fetchone()
+        if row is None:
+            return None
+        d = json.loads(row[0])
+        crops = {r["name"]: bytes(r["jpeg"]) for r in self.conn.execute(
+            "SELECT name, jpeg FROM recognition_crops WHERE photo_hash=?", (photo_hash,))}
+        return Recognition(d.get("serial_read") or "", d.get("serial_conf"), d.get("reading_str") or "",
+                           list(d.get("digits_ok") or []), crops)
 
     # ─── лог обработки ──────────────────────────────────────────────────────
     def log_rows(self, with_id: bool = False) -> list[dict]:

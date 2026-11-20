@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
@@ -20,7 +21,7 @@ from src.gmr.operator import settings as op_settings  # noqa: E402
 from src.gmr.operator import window as op_window  # noqa: E402
 from src.gmr.domain import PipelineConfig, RunSelection, RunSelectionPolicy  # noqa: E402
 from src.gmr.storage import LOG_COLUMNS  # noqa: E402
-from src.gmr.storage.month import MonthDB, Reading  # noqa: E402
+from src.gmr.storage.month import MonthDB, Reading, Recognition  # noqa: E402
 from tests._month import changes, img, log_rows, make_month, readings  # noqa: E402
 from tests._window import has_display, new_window  # noqa: E402
 
@@ -142,7 +143,6 @@ AUTO = [  # авто-строки reader.py, создавшие файлы в qu
 def _window(monkeypatch, settings, answers=None):
     monkeypatch.setattr(op_window, "load_settings", lambda: settings)
     monkeypatch.setattr(op_window, "save_settings", lambda s: None)
-    monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
     monkeypatch.setattr(op_window, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
     # настройки распознавания нового месяца — как предложено (окно не открывается)
     monkeypatch.setattr(program2.MainWindow, "ask_preset",
@@ -315,12 +315,17 @@ def test_last_photo_returns_to_list(app):
     assert app._notebook.winfo_manager() == "pack"                # снова список вкладок
 
 
+def _seen_wrong_model(app):
+    """Модели при обработке ошиблись: номер 1284567, показание 01?00 (кропы — в базе)."""
+    _seen(app, serial_read="1284567", serial_conf=0.9, reading_str="01?00",
+          digits_ok=[True, True, False, True, True],
+          crops={"serial": _jpg(20, 60, 5), **{f"digit{i}": _jpg(30, 15, 1) for i in range(5)}})
+
+
 @needs_display
 def test_accept_saves_silent_markup_when_model_was_wrong(app):
+    _seen_wrong_model(app)
     scr = _open_first(app)
-    scr._model_result = {"serial_text": "1284567", "serial_crop": np.full((20, 60, 3), 5, np.uint8),
-                         "reading_str": "01?00", "digit_crops": [np.full((30, 15, 3), 1, np.uint8)] * 5,
-                         "digit_preds": [{}] * 5}
     img(app.month.photos / "Аюб" / "IMG-20260915-WA0001.jpg")  # исходное фото есть, но счётчик найден —
     with MonthDB(app.month.db) as db, db.transaction():      # в meter_yolo/new не кладётся
         db.set_meta("created_at", "2026-09-30 23:50:00")       # месяц создан в сентябре
@@ -509,19 +514,13 @@ def test_accounts_with_serial_looks_up_as_run():
         assert bool(program2.accounts_with_serial(df, CFG, s)) == in_table(s), s
 
 
-def _run_read(app, serial, outcome="SERIAL_NOT_FOUND", name="IMG-20260915-WA0001.jpg"):
-    """Прогон прочитал с исходного фото номер serial (авто-строка, создавшая файл в question/)."""
+def _run_read(app, serial, outcome="SERIAL_NOT_FOUND", name="IMG-20260915-WA0001.jpg", **fields):
+    """Обработка прочитала с исходного фото номер serial (её строка лога, создавшая файл в question/)."""
     with MonthDB(app.month.db) as db, db.transaction():
         db.append_log_rows([{c: "" for c in LOG_COLUMNS} | {
             "original_filename": name, "serial_id": serial, "outcome": outcome, "source": "auto",
-            "processed_by": "auto", "photo_hash": f"h-{name}", "source_folder": "Аюб"}])
+            "processed_by": "auto", "photo_hash": f"h-{name}", "source_folder": "Аюб", **fields}])
     app.reload()
-
-
-def _window_read(scr, serial):
-    """Модели окна прочитали копию фото с подписью: номер serial."""
-    scr._apply_model_result({"serial_text": serial, "serial_conf": 0.99, "reading_str": "01200",
-                             "digit_preds": None})
 
 
 def _ask_serial(scr, monkeypatch, answer):
@@ -544,29 +543,27 @@ def _next_run(app, name="IMG-20260915-WA0001.jpg"):
 
 
 @needs_display
-def test_not_in_db_when_window_found_other_abonent(app, monkeypatch):
-    # прогон: номера нет в таблице; окно по копии с подписью — номер абонента A1
-    _run_read(app, "99999")
+def test_not_in_db_when_abonent_found_asks_photo_serial(app, monkeypatch):
+    # обработка прочитала номер абонента A1 неуверенно — окно его показывает и находит A1
+    _run_read(app, "1234567", outcome="SERIAL_LOW_CONF")
     scr = _open_first(app)
-    _window_read(scr, "1234567")
     assert scr._account_var.get() == "A1"
-    asked = _ask_serial(scr, monkeypatch, "99999")         # номер с фото — как предложено
+    asked = _ask_serial(scr, monkeypatch, "99999")         # на фото другой номер
     scr._not_in_db()
     ((prompt, suggested),) = asked
-    assert "л/с A1" in prompt and "1234567" in prompt and suggested == "99999"
+    assert "л/с A1" in prompt and "1234567" in prompt and suggested == ""   # номер из таблицы не предлагается
     assert app.asked == []                                 # второго вопроса нет
     (r,) = _manual(app)
     assert (r["outcome"], r["serial_id"], r["account_id"]) == ("NOT_IN_DB", "99999", "")
     assert r["photo_hash"] == "h-IMG-20260915-WA0001.jpg"
     assert (app.photos / "not_in_db" / "IMG-20260915-WA0001.jpg").exists()
-    assert _next_run(app) == RunSelection.SKIP_DONE        # раньше — READ: фото снова в очереди
+    assert _next_run(app) == RunSelection.SKIP_DONE        # с номером A1 фото вернулось бы в очередь
 
 
 @needs_display
 def test_not_in_db_found_abonent_cancel_or_table_serial_changes_nothing(app, monkeypatch):
-    _run_read(app, "99999")
+    _run_read(app, "1234567", outcome="SERIAL_LOW_CONF")
     scr = _open_first(app)
-    _window_read(scr, "1234567")
     _ask_serial(scr, monkeypatch, None)                     # Cancel
     scr._not_in_db()
     _ask_serial(scr, monkeypatch, "  ")                     # пусто
@@ -581,21 +578,29 @@ def test_not_in_db_found_abonent_cancel_or_table_serial_changes_nothing(app, mon
 
 
 @needs_display
-def test_not_in_db_writes_run_serial_if_operator_did_not_change_it(app):
-    _run_read(app, "99999")
+def test_not_in_db_writes_run_serial(app):
+    _run_read(app, "99999")                                 # номера нет в таблице
     scr = _open_first(app)
-    _window_read(scr, "88888")                              # окно — другой номер, его тоже нет в таблице
     scr._not_in_db()
-    assert "Серийник: 99999 (прочитан при обработке фото)" in app.asked[0][1]
+    assert "Серийник: 99999\n" in app.asked[0][1]
     (r,) = _manual(app)
     assert (r["serial_id"], r["account_id"]) == ("99999", "")
 
 
 @needs_display
-def test_not_in_db_writes_operator_serial_without_previous_abonent(app):
+def test_not_in_db_empty_field_writes_run_serial(app):
     _run_read(app, "99999")
     scr = _open_first(app)
-    _window_read(scr, "1234567")                            # окно нашло A1
+    scr._serial_var.set("")                                 # оператор стёр номер
+    scr._not_in_db()
+    assert "Серийник: 99999 (прочитан при обработке фото)" in app.asked[0][1]
+    assert _manual(app)[0]["serial_id"] == "99999"
+
+
+@needs_display
+def test_not_in_db_writes_operator_serial_without_previous_abonent(app):
+    _run_read(app, "1234567", outcome="SERIAL_LOW_CONF")    # окно нашло A1
+    scr = _open_first(app)
     scr._serial_var.set("55555")                            # оператор: на фото другой номер
     scr._not_in_db()                                        # поиск по нему — сразу, до решения
     text = app.asked[0][1]
@@ -604,19 +609,75 @@ def test_not_in_db_writes_operator_serial_without_previous_abonent(app):
     assert (r["serial_id"], r["account_id"]) == ("55555", "")    # счёт A1 — от прежнего номера
 
 
+# ─── Этап Е: окно показывает, что прочитала обработка (решение владельца 2026-11-21) ─
+
+def _jpg(h, w, value):
+    return cv2.imencode(".jpg", np.full((h, w, 3), value, np.uint8))[1].tobytes()
+
+
+def _seen(app, name="IMG-20260915-WA0001.jpg", **kw):
+    """Обработка записала в базу, что прочитали модели на фото name."""
+    with MonthDB(app.month.db) as db, db.transaction():
+        db.put_recognition(f"h-{name}", Recognition(**kw))
+
+
 @needs_display
-def test_not_in_db_asks_when_run_serial_is_in_table(app, monkeypatch):
-    # прогон прочитал номер A2 неуверенно; окно — номер, которого нет в таблице
-    _run_read(app, "7654321", outcome="SERIAL_LOW_CONF")
+def test_window_shows_what_processing_read(app):
+    _run_read(app, "1234567", outcome="DIGITS_ERROR", model_reading_str="01?50")
+    _seen(app, serial_read="1234567", serial_conf=0.97, reading_str="01?50",
+          digits_ok=[True, True, False, True, False])      # последняя цифра подставлена настройкой
     scr = _open_first(app)
-    _window_read(scr, "88888")
-    asked = _ask_serial(scr, monkeypatch, "88888")
-    scr._not_in_db()
-    ((prompt, suggested),) = asked
-    assert "Номер 7654321 есть в таблице: л/с A2" in prompt and suggested == "88888"
-    (r,) = _manual(app)
-    assert (r["serial_id"], r["account_id"]) == ("88888", "")
-    assert _next_run(app) == RunSelection.SKIP_DONE
+    assert scr._serial_var.get() == "1234567" and scr._account_var.get() == "A1"
+    assert scr._reading_widget.get_string() == "01?5?"   # неуверенные цифры — «?», как раньше в окне
+    assert scr._status_var.get() == "✓ Прочитано при обработке фото"
+    assert "Серийник: обработка (0.97)" in scr._source_var.get()
+    _fill(scr, "A1", "01253")
+    scr._accept()
+    r = _manual(app)[-1]
+    assert (r["model_serial_conf"], r["model_reading_str"]) == ("0.9700", "01?50")
+
+
+@needs_display
+def test_window_photo_processed_before_stage_e(app):
+    # в базе нет записи моделей (фото обработано раньше) — номер и показание из строки лога
+    _run_read(app, "7654321", outcome="DIGITS_ERROR", model_reading_str="00?00", model_serial_conf="0.8800")
+    scr = _open_first(app)
+    assert (scr._serial_var.get(), scr._account_var.get()) == ("7654321", "A2")
+    assert scr._reading_widget.get_string() == "00?00"
+    assert "Серийник: обработка (0.88)" in scr._source_var.get()
+
+
+@needs_display
+def test_window_serial_read_without_meter(app):
+    # счётчик не найден: у строки обработки номера нет, модель номер прочитала
+    _seen(app, serial_read="7654321", serial_conf=0.9)
+    scr = _open_first(app)
+    assert (scr._serial_var.get(), scr._account_var.get()) == ("7654321", "A2")
+
+
+@needs_display
+def test_window_nothing_read(app):
+    scr = _open_first(app)                                   # строка обработки без номера и показания
+    assert scr._status_var.get() == "⚠ Обработка ничего не прочитала — введите вручную"
+    assert scr._serial_var.get() == "" and scr._reading_widget.get_string() == "?????"
+
+
+@needs_display
+def test_window_does_not_start_models(app):
+    assert not hasattr(app, "models") and not hasattr(app, "_load_models_async")
+
+
+def test_window_imports_no_models():
+    # окно оператора не загружает torch и модели: запуск быстрее, памяти меньше
+    import subprocess
+    import sys
+    code = ("import sys, program2; "
+            "print(sorted(m for m in ('torch', 'ultralytics', 'src.gmr.ml.loader', 'src.gmr.pipeline') "
+            "if m in sys.modules))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=str(Path(__file__).resolve().parent.parent),
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "[]"
 
 
 # ─── Выгрузка и закрытие окна ────────────────────────────────────────────────
@@ -972,10 +1033,8 @@ def test_error_in_button_shown_to_operator(app):
 @needs_display
 def test_markup_of_etalon_photo_not_saved(app, monkeypatch):
     monkeypatch.setattr(op_edit, "to_etalon", lambda h: h == "h-IMG-20260915-WA0001.jpg")
+    _seen_wrong_model(app)
     scr = _open_first(app)
-    scr._model_result = {"serial_text": "1284567", "serial_crop": np.full((20, 60, 3), 5, np.uint8),
-                         "reading_str": "01?00", "digit_crops": [np.full((30, 15, 3), 1, np.uint8)] * 5,
-                         "digit_preds": [{}] * 5}
     _fill(scr, "A1", "01200")
     scr._accept()
     assert not app.month.markup.exists()                      # фото эталона — не в обучение

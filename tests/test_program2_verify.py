@@ -181,7 +181,6 @@ VERIFY_LOG = [
 def _window(monkeypatch, settings):
     monkeypatch.setattr(op_window, "load_settings", lambda: settings)
     monkeypatch.setattr(op_window, "save_settings", lambda s: None)
-    monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
     monkeypatch.setattr(op_window, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
     answers = []
     monkeypatch.setattr(program2.messagebox, "askyesno", lambda *a, **k: answers.pop(0) if answers else True)

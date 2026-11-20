@@ -18,7 +18,7 @@ import pytest
 import gmr
 from src.gmr.application import month
 from src.gmr.storage import LOG_COLUMNS, load_log, save_log
-from src.gmr.storage.month import MonthDB, MonthFolder
+from src.gmr.storage.month import MonthDB, MonthFolder, Recognition
 from src.gmr.storage.register import clean_serial, read_register
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -413,3 +413,31 @@ def test_table_readings_count_only_rows_with_account(tmp_path):
         {"Лицевой счет": "", "Номер счетчика": "222222", "Текущие показания": 7},   # без счёта — пропущена
         {"Лицевой счет": "3", "Номер счетчика": "333333"}])
     assert month.table_readings_count(str(t)) == 1
+
+
+def test_recognition_saved_and_replaced(tmp_path):
+    # этап Е: что прочитали модели на фото — по отпечатку; новое чтение заменяет прежнее
+    with MonthDB(tmp_path / "gmr.sqlite") as db:
+        assert db.recognition("h1") is None
+        with db.transaction():
+            db.put_recognition("h1", Recognition("12345", 0.91, "01?45", [True, True, False, True, True],
+                                                 {"serial": b"jpeg-s", "digit0": b"jpeg-0"}))
+        assert db.recognition("h1") == Recognition("12345", 0.91, "01?45", [True, True, False, True, True],
+                                                   {"serial": b"jpeg-s", "digit0": b"jpeg-0"})
+        with db.transaction():
+            db.put_recognition("h1", Recognition("12346", None, "", [], {"digit1": b"x"}))
+        assert db.recognition("h1") == Recognition("12346", None, "", [], {"digit1": b"x"})
+        assert db.conn.execute("SELECT COUNT(*) FROM recognition_crops").fetchone()[0] == 1
+
+
+def test_old_month_db_gets_recognition_tables(tmp_path):
+    # база месяца, созданная до этапа Е: таблицы появляются при открытии, данные на месте
+    path = tmp_path / "gmr.sqlite"
+    with MonthDB(path) as db, db.transaction():
+        db.set_meta("columns", "[]")
+    con = sqlite3.connect(path)
+    con.executescript("DROP TABLE recognitions; DROP TABLE recognition_crops;")
+    con.close()
+    with MonthDB(path) as db:
+        assert db.meta("columns") == "[]" and db.recognition("h1") is None
+

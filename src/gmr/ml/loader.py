@@ -1,7 +1,7 @@
 """
 src/gmr/ml/loader.py — загрузка моделей по PipelineConfig (Фаза 3).
 Единственное место, где создаются YOLOInferer / CNNInferer / CRNNInferer /
-AccountInferer (reader.run_pipeline, program2.ModelBundle, tools/inspect_model).
+AccountInferer (reader.run_pipeline, tools/inspect_model; окно оператора моделей не загружает).
 
 Параметры создания моделей — ровно те, что были в reader.py до Фазы 3:
   - детектор счётчика: conf=meter_conf_thresh, straighten по умолчанию (True)

@@ -1,6 +1,7 @@
-"""Экран разбора одного фото из question/: Принять, Дубль, Нечитаемо, Нет в базе, Серийник в базе с ошибкой."""
-import queue
-import threading
+"""Экран разбора одного фото из question/: Принять, Дубль, Нечитаемо, Нет в базе, Серийник в базе с ошибкой.
+
+Номер и показание — то, что прочитала обработка (этап Е, run_read.py): окно
+моделей не запускает."""
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
@@ -40,6 +41,7 @@ from .files import (
 from .hints import CHOICE_NOTE, HINT_NOTE, SerialHint, serial_choices, serial_hints
 from .markup import save_cnn_markup, save_crnn_markup, save_meter_markup
 from .photos import _to_float, controller_dir, controller_name
+from .run_read import RunRead, run_read_of
 from .widgets import ReadingWidget
 
 if TYPE_CHECKING:                      # только для подсказки типов: окно импортирует экраны
@@ -58,7 +60,7 @@ class EditScreen(ttk.Frame):
         self.folder     = controller_dir(photo_path)   # папка контролёра этого фото
         self.reason     = reason
         self._on_back   = on_back
-        self._model_result: Optional[dict] = None
+        self._run: RunRead = RunRead()         # что прочитала обработка на этом фото
         self._tk_img: Optional[ImageTk.PhotoImage] = None
         self._confirmed_suspicious  = False
         self._filling_other: bool = False
@@ -73,7 +75,7 @@ class EditScreen(ttk.Frame):
         self._orig_image: Optional[Image.Image] = None
 
         self._build()
-        self._start_inference()
+        self._show_run_read()
 
     def _build(self):
         self.configure(padding=0)
@@ -357,64 +359,45 @@ class EditScreen(ttk.Frame):
         except Exception:
             pass
 
-    def _start_inference(self):
+    def _show_run_read(self):
+        """Что прочитала обработка на этом фото — сразу в поля (этап Е)."""
         self._display_photo()
-        if getattr(self.app, "_model_load_error", None):
-            self._status_var.set("⚠ Модели не загружены — введите вручную")
-            return
-        if self.app.models is None:
-            self.after(500, self._start_inference)
-            return
-        self._status_var.set("⏳ Распознавание…")
-        q = queue.Queue()
-        def _worker():
-            r = self.app.models.run_on_photo(self.photo_path)
-            q.put(r)
-        threading.Thread(target=_worker, daemon=True).start()
-        self._poll_inference(q)
+        auto = find_auto_row_for_output_file(
+            self.app.log_rows, Path(self.photo_path).name,
+            controller_name(self.photo_path, self.app.results_dir))
+        rec = self.app.session.recognition((auto or {}).get("photo_hash", "")) if auto else None
+        self._apply_run_read(run_read_of(auto, rec))
 
-    def _poll_inference(self, q: queue.Queue):
-        # Прекращаем поллинг если виджет уже уничтожен
-        try:
-            self.winfo_exists()
-        except Exception:
-            return
-        if not self.winfo_exists():
-            return
-        try:
-            result = q.get_nowait()
-            self._model_result = result
-            self._apply_model_result(result)
-        except queue.Empty:
-            self.after(100, lambda: self._poll_inference(q))
-
-    def _apply_model_result(self, r: dict):
-        if r.get("error"):
-            self._status_var.set(f"⚠ Ошибка модели: {r['error']}")
+    def _apply_run_read(self, r: RunRead):
+        self._run = r
+        if r.serial or r.reading_str:
+            self._status_var.set("✓ Прочитано при обработке фото")
         else:
-            self._status_var.set("✓ Модель отработала")
+            self._status_var.set("⚠ Обработка ничего не прочитала — введите вручную")
 
-        serial = r.get("serial_text") or ""
-        conf   = r.get("serial_conf")
-
-        self._model_serial  = serial
-        self._model_reading = r.get("reading_str") or ""
+        self._model_serial  = r.serial
+        self._model_reading = r.reading_str
 
         self._filling_other = True
-        self._serial_var.set(serial)
+        self._serial_var.set(r.serial)
         self._filling_other = False
 
-        self._serial_source  = f"Серийник: модель ({conf:.2f})" if conf else "Серийник: нет"
-        self._reading_source = "Показания: модель"
+        self._serial_source = (f"Серийник: обработка ({r.serial_conf:.2f})" if r.serial_conf
+                               else "Серийник: обработка" if r.serial else "Серийник: нет")
+        self._reading_source = "Показания: обработка"
 
-        reading_str = r.get("reading_str")
-        digit_preds = r.get("digit_preds")
-        self._reading_widget.set_digits(reading_str, digit_preds)
+        self._reading_widget.set_digits(r.reading_str or None, r.digit_preds())
         self._reading_manually_changed = False
 
         self._update_source_label()
-        self._lookup_by_serial(serial)
+        self._lookup_by_serial(r.serial)
         self._update_accept_state()
+
+    def _model_fields(self) -> dict:
+        """Что прочитала обработка — в строку лога решения оператора (эталон tools/analyze_log.py)."""
+        r = self._run
+        return {"model_serial_conf": f"{r.serial_conf:.4f}" if r.serial_conf else "",
+                "model_reading_str": r.reading_str}
 
     def _update_source_label(self):
         parts = []
@@ -454,7 +437,7 @@ class EditScreen(ttk.Frame):
 
                 if candidate != serial:
                     self._model_serial = candidate
-                    self._serial_source = "Серийник: модель (авто-нуль)"
+                    self._serial_source = "Серийник: обработка (авто-нуль)"
                     self._update_source_label()
                     
                     self._filling_other = True
@@ -586,7 +569,7 @@ class EditScreen(ttk.Frame):
         if model_serial is not None and self._serial_var.get() != model_serial:
             self._serial_source = "Серийник: вручную"
         elif model_serial is not None and self._serial_var.get() == model_serial:
-            self._serial_source = "Серийник: модель"
+            self._serial_source = "Серийник: обработка"
         else:
             self._serial_source = "Серийник: вручную"
         self._serial_match_var.set("")
@@ -621,7 +604,7 @@ class EditScreen(ttk.Frame):
                 self._reading_source = "Показания: вручную"
             elif model_r is not None and current == model_r:
                 self._reading_manually_changed = False
-                self._reading_source = "Показания: модель"
+                self._reading_source = "Показания: обработка"
         self._update_source_label()
         self._update_delta()
         self._update_accept_state()
@@ -752,7 +735,6 @@ class EditScreen(ttk.Frame):
             last = None
 
         delta = (reading - last) if last is not None else None
-        mr = self._model_result or {}
 
         row = {k: "" for k in _LOG_COLUMNS}
         row.update({
@@ -767,13 +749,12 @@ class EditScreen(ttk.Frame):
             "source":            "manual",
             "processed_by":      self.app.settings.operator_name,
             "processed_at":      now_iso(),
-            "model_serial_conf": f"{mr.get('serial_conf', ''):.4f}" if mr.get("serial_conf") else "",
-            "model_reading_str": mr.get("reading_str") or "",
+            **self._model_fields(),
             "notes":             self.reason + self._hint_note(),
         })
         self.app.accept_reading(row, self.photo_path)    # показание и строка лога — одной записью
 
-        self._save_markup_silent(serial, reading_s, mr, row)
+        self._save_markup_silent(serial, reading_s, row)
 
         try:
             new_path = move_photo(self.photo_path, dst_dir, new_name)
@@ -803,18 +784,20 @@ class EditScreen(ttk.Frame):
             parent=self.app,
         )
 
-    def _save_markup_silent(self, final_serial: str, final_reading_str: str, mr: dict, row: dict):
-        """Исправления оператора — в <месяц>/разметка. Фото эталона не
-        сохраняются: эталон и обучение не пересекаются (to_etalon)."""
+    def _save_markup_silent(self, final_serial: str, final_reading_str: str, row: dict):
+        """Исправления оператора — в <месяц>/разметка: кропы, которые видели
+        модели при обработке, с верным ответом. Фото эталона не сохраняются:
+        эталон и обучение не пересекаются (to_etalon)."""
         h = row.get("photo_hash") or ""
         if h and to_etalon(h):
             return
         photo = row.get("account_id") or h or Path(self.photo_path).stem    # фото кропов — лицевой счёт
+        run = self._run
         try:
             root = self.app.session.folder.markup
-            save_crnn_markup(root, photo, mr.get("serial_crop"), final_serial, mr.get("serial_text"))
-            save_cnn_markup(root, photo, mr.get("digit_crops"), mr.get("digit_preds"),
-                            mr.get("reading_str"), final_reading_str)
+            save_crnn_markup(root, photo, run.serial_crop(), final_serial, run.serial_read)
+            save_cnn_markup(root, photo, run.digit_crops(), run.digit_preds(),
+                            run.reading_str, final_reading_str)
             if self.reason == "no_meter":
                 save_meter_markup(root, photo, self._original_photo(row))
         except Exception as e:
@@ -877,14 +860,6 @@ class EditScreen(ttk.Frame):
         finally:
             self._unbind_keys()
 
-    def _run_serial(self) -> str:
-        """Номер, который прочитал прогон с исходного фото (авто-строка лога,
-        создавшая этот файл в question/)."""
-        src = find_auto_row_for_output_file(
-            self.app.log_rows, Path(self.photo_path).name,
-            controller_name(self.photo_path, self.app.results_dir))
-        return ((src or {}).get("serial_id") or "").strip()
-
     def _ask_serial_not_in_table(self, prompt: str, suggested: str) -> Optional[str]:
         return simpledialog.askstring("Нет в базе", prompt, initialvalue=suggested, parent=self.app)
 
@@ -904,7 +879,7 @@ class EditScreen(ttk.Frame):
         cfg, df = self.app.config, self.app.df
         field   = self._serial_var.get().strip()
         account = self._account_var.get().strip()
-        run_serial = self._run_serial()
+        run_serial = self._run.serial
         serial = not_in_db_serial(field, self._model_serial, run_serial)
         in_table = accounts_with_serial(df, cfg, serial)
 
@@ -948,7 +923,6 @@ class EditScreen(ttk.Frame):
                 return
 
         dst_dir = str(self.folder / "not_in_db")
-        mr = self._model_result or {}
         row = {k: "" for k in _LOG_COLUMNS}
         row.update({
             "original_filename": Path(self.photo_path).name,
@@ -958,8 +932,7 @@ class EditScreen(ttk.Frame):
             "source":            "manual",
             "processed_by":      self.app.settings.operator_name,
             "processed_at":      now_iso(),
-            "model_serial_conf": f"{mr.get('serial_conf', ''):.4f}" if mr.get("serial_conf") else "",
-            "model_reading_str": mr.get("reading_str") or "",
+            **self._model_fields(),
             "notes":             "счётчик не найден в базе",
         })
         name = place_decision(row, self.photo_path, dst_dir)
@@ -1004,8 +977,7 @@ class EditScreen(ttk.Frame):
                 "Введите все 5 цифр показания — оно запишется вместе с исправлением номера.",
                 parent=self.app)
             return
-        mr = self._model_result or {}
-        photo_serial = self._ask_photo_serial(mr.get("serial_text") or "")
+        photo_serial = self._ask_photo_serial(self._run.serial_read or self._run.serial)
         if photo_serial is None:
             return
         photo_serial = photo_serial.strip()
@@ -1051,8 +1023,7 @@ class EditScreen(ttk.Frame):
             "source":            "manual",
             "processed_by":      self.app.settings.operator_name,
             "processed_at":      now_iso(),
-            "model_serial_conf": f"{mr.get('serial_conf', ''):.4f}" if mr.get("serial_conf") else "",
-            "model_reading_str": mr.get("reading_str") or "",
+            **self._model_fields(),
             "notes":             f"серийник в базе с ошибкой: в базе {db_serial}, на фото {photo_serial}"
                                  + self._hint_note(),
         })
@@ -1068,7 +1039,7 @@ class EditScreen(ttk.Frame):
             "Оператор":         self.app.settings.operator_name,
         })
         # номер на фото верный — годится в разметку для дообучения CRNN
-        self._save_markup_silent(photo_serial, reading_s, mr, row)
+        self._save_markup_silent(photo_serial, reading_s, row)
         try:
             new_path = move_photo(self.photo_path, dst_dir, Path(dst).name)
             redraw_annotation(new_path, photo_serial, reading_s)

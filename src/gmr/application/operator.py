@@ -20,7 +20,7 @@ from src.gmr.application.month import (
 from src.gmr.domain.config import PipelineConfig
 from src.gmr.domain.photo_date import reading_date
 from src.gmr.storage.backup import backup_sqlite
-from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
+from src.gmr.storage.month import MonthDB, MonthFolder, Reading, Recognition, now_text
 
 CORRECTED_NOTE = "исправлено при проверке"   # по этой пометке tools/analyze_log.py считает исправления
 
@@ -73,6 +73,11 @@ class OperatorSession:
 
     def reading(self, account: str) -> Optional[Reading]:
         return self.db.reading(account)
+
+    def recognition(self, photo_hash: str) -> Optional[Recognition]:
+        """Что прочитали модели на фото при обработке (этап Е); None — не записано
+        (фото обработано до этапа Е или на нём ничего не найдено)."""
+        return self.db.recognition(photo_hash) if photo_hash else None
 
     # ─── запись ─────────────────────────────────────────────────────────────
     def add_row(self, row: dict) -> None:
