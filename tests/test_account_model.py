@@ -377,9 +377,9 @@ def test_no_marker_on_photo_is_as_before(base_config):
 
 
 def test_log_notes_carry_marker_note(base_config):
-    import reader
+    from src.gmr.pipeline import output as pipeline_output
     r = _photo(base_config, None, with_serial=False, marker=FakeAccountInferer("1300000082", 0.97, "00082"))
-    row = reader._make_log_row("p.jpg", r, base_config)
+    row = pipeline_output.make_log_row("p.jpg", r, base_config)
     assert "00082" in row["notes"]
 
 

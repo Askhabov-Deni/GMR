@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import reader
+from src.gmr.pipeline import output as pipeline_output
 from src.gmr.domain.serial_match import normalize_serial
 from src.gmr.storage import load_log, log_path_for, save_log
 
@@ -111,6 +112,6 @@ def test_reader_save_annotated_on_cyrillic_path(tmp_path):
     src.parent.mkdir(parents=True)
     write_image(src, np.full((400, 600, 3), 255, np.uint8))
     r = PhotoResult(photo_path=str(src), outcome=Outcome.PLUS, serial_text="1", reading=1200)
-    reader._save_annotated(str(src), str(tmp_path / "out" / "Аюб" / "plus"), "A1.jpg", r, move=False)
+    pipeline_output.save_annotated(str(src), str(tmp_path / "out" / "Аюб" / "plus"), "A1.jpg", r, move=False)
     out = read_image(tmp_path / "out" / "Аюб" / "plus" / "A1.jpg")
     assert out is not None and max(out[2, 2].tolist()) < 20

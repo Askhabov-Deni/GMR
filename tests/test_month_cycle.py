@@ -94,6 +94,7 @@ import pytest  # noqa: E402
 
 import gmr  # noqa: E402
 import reader  # noqa: E402
+from src.gmr.pipeline import run as pipeline_run  # noqa: E402
 from src.gmr.application import month  # noqa: E402
 from src.gmr.application.cycle import CLOSED_NOTE  # noqa: E402
 from src.gmr.ml import loader  # noqa: E402
@@ -154,8 +155,8 @@ class _SerialOCR:
 def models(monkeypatch):
     _Meter.calls = 0
     loads = []
-    real_load = reader.load_models
-    monkeypatch.setattr(reader, "load_models", lambda *a, **k: loads.append(1) or real_load(*a, **k))
+    real_load = pipeline_run.load_models
+    monkeypatch.setattr(pipeline_run, "load_models", lambda *a, **k: loads.append(1) or real_load(*a, **k))
     monkeypatch.setattr(loader, "YOLOInferer",
                         lambda m, conf_thresh=.8, straighten=True, output_dir=None:
                         _Digits() if straighten is False else _Meter())
@@ -472,9 +473,9 @@ def test_copy_rows_of_old_logs_ignored():
 
 def test_serial_lookup_like_reader():
     import pandas as pd
-    from reader import _serial_lookup
+    from src.gmr.pipeline.run import serial_lookup
     cfg = reader.PipelineConfig()
-    in_table = _serial_lookup(pd.DataFrame({cfg.col_serial: ["0099999", " 123 "]}), cfg)
+    in_table = serial_lookup(pd.DataFrame({cfg.col_serial: ["0099999", " 123 "]}), cfg)
     assert in_table("99999") and in_table("0099999") and in_table("123") and not in_table("9999")
 
 
@@ -551,8 +552,8 @@ def test_no_not_taken_line_when_all_photos(tmp_path, models):
 
 
 def test_not_taken_list_is_shortened():
-    from reader import _not_taken_line
-    line = _not_taken_line([f"{i}.webp" for i in range(12)])
+    from src.gmr.pipeline.report import not_taken_line
+    line = not_taken_line([f"{i}.webp" for i in range(12)])
     assert line.endswith("8.webp, 9.webp …") and ": 12 — 0.webp" in line
 
 
@@ -638,12 +639,12 @@ def test_stop_file_stops_between_photos(tmp_path, models, monkeypatch):
         f.stop_file.write_text("", encoding="utf-8")
         return res
 
-    monkeypatch.setattr(reader, "process_photo", press_stop_after_first)
+    monkeypatch.setattr(pipeline_run, "process_photo", press_stop_after_first)
     _run(f)
     assert [r["original_filename"] for r in _log(f)] == ["a.jpg"]   # a.jpg записан целиком
     assert "Остановлено оператором: прочитано 1 из 3" in _journal(f)
     assert not f.stop_file.exists() and f.export_xlsx.is_file()   # выгрузка сделана
-    monkeypatch.setattr(reader, "process_photo", real)
+    monkeypatch.setattr(pipeline_run, "process_photo", real)
     _run(f)                                                        # следующий запуск дочитывает
     assert [r["original_filename"] for r in _log(f)] == ["a.jpg", "b.jpg", "c.jpg"]
 
@@ -654,7 +655,7 @@ def test_stop_stops_whole_run_not_only_one_controller(tmp_path, models, monkeypa
     _photo(f.photos / "Аюб" / "b.jpg", 2)
     _photo(f.photos / "Сулиман С" / "c.jpg", 4)
     real = reader.process_photo
-    monkeypatch.setattr(reader, "process_photo",
+    monkeypatch.setattr(pipeline_run, "process_photo",
                         lambda *a, **k: (real(*a, **k), f.stop_file.write_text("", encoding="utf-8"))[0])
     _run(f)
     j = _journal(f)
@@ -663,12 +664,12 @@ def test_stop_stops_whole_run_not_only_one_controller(tmp_path, models, monkeypa
 
 
 def test_two_runs_in_one_second_keep_own_journals(tmp_path, models, monkeypatch):
-    class SameSecond(reader.datetime):
+    class SameSecond(pipeline_run.datetime):
         @classmethod
         def now(cls, tz=None):
-            return reader.datetime(2026, 10, 3, 12, 0, 0, tzinfo=tz)
+            return pipeline_run.datetime(2026, 10, 3, 12, 0, 0, tzinfo=tz)
 
-    monkeypatch.setattr(reader, "datetime", SameSecond)
+    monkeypatch.setattr(pipeline_run, "datetime", SameSecond)
     f = _month(tmp_path)
     _photo(f.photos / "Аюб" / "a.jpg", 1)
     _run(f)

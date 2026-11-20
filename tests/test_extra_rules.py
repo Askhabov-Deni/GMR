@@ -14,6 +14,8 @@ import torch
 
 import gmr
 import reader
+from src.gmr.pipeline import output as pipeline_output
+from src.gmr.pipeline import run as pipeline_run
 from src.gmr.application import month as month_app
 from src.gmr.application.recognition import (
     _drum_digit, _last_digits, describe_substitutions, read_meter_digits, read_meter_digits_for_config,
@@ -202,7 +204,7 @@ def test_serial_by_table_takes_sure_table_number(base_config):
     assert (r.outcome, r.account_id, r.reading, r.serial_text) == (Outcome.PLUS, "1300000065", 1200, "123456")
     assert r.serial_notes == "серийник по таблице: прочитано 123465, взят 123456 (доля 0.97)"
     assert set(ocr.calls[0]) == {"123456", "654321"}                     # словарь — вся таблица
-    assert "серийник по таблице" in reader._make_log_row("p.jpg", r, base_config)["notes"]
+    assert "серийник по таблице" in pipeline_output.make_log_row("p.jpg", r, base_config)["notes"]
     low = _serial_photo(base_config, _TableOCR("123456", 0.4, "123456", 0.95))
     assert (low.outcome, low.account_id) == (Outcome.PLUS, "1300000065")  # неуверенный номер — тоже
 
@@ -244,7 +246,7 @@ def test_serial_by_table_in_month_run(tmp_path, fake_models, monkeypatch):  # no
     pl.SerialOCR.predict_in_table = lambda self, image, serials: (
         seen.append(serials) or {"text": "99999", "serial": "33333", "confidence": 0.95})
     real = reader.process_photo
-    monkeypatch.setattr(reader, "process_photo", lambda *a, **k: given.append(k["serial_groups"]) or real(*a, **k))
+    monkeypatch.setattr(pipeline_run, "process_photo", lambda *a, **k: given.append(k["serial_groups"]) or real(*a, **k))
     try:
         folder = pl.setup_month(tmp_path)
         month_app.set_month_preset(folder.root, RecognitionPreset(serial_by_table=True))
@@ -317,7 +319,7 @@ def test_run_applies_new_switches(tmp_path, monkeypatch):
     f = make_month(tmp_path, [("100000", "A1", "1", "")])
     month_app.set_month_preset(f.root, RecognitionPreset(drum_rule=True, first_from_last=True))
     cfg = reader.PipelineConfig(month_dir=str(f.root))
-    reader._apply_month_preset(cfg, f, logging.getLogger("t"))
+    pipeline_run.apply_month_preset(cfg, f, logging.getLogger("t"))
     assert (cfg.drum_rule, cfg.first_digit_from_last, cfg.serial_by_table) == (True, True, False)
 
 

@@ -9,7 +9,7 @@ from tests._fixtures import (
     make_meter_crops, process_photo, FakeMeterDetector, FakeSerialOCR,
 )
 from tools import analyze_log as al
-import reader
+from src.gmr.pipeline import output as pipeline_output
 from reader import Outcome
 
 SERIAL, ACCOUNT = "12345", "A-0001"
@@ -79,16 +79,16 @@ def test_note_on_serial_not_found(base_config):
 
 def test_log_row_notes(base_config):
     r = _run(base_config, [i * 40 for i in range(5)], list("01209"), [0.95] * 4 + [0.3])
-    assert reader._make_log_row("p.jpg", r, base_config)["notes"] == r.digit_notes
+    assert pipeline_output.make_log_row("p.jpg", r, base_config)["notes"] == r.digit_notes
 
     plain = _run(base_config, [i * 40 for i in range(5)], list("01200"), [0.95] * 5)
-    assert reader._make_log_row("p.jpg", plain, base_config)["notes"] == ""   # как раньше
+    assert pipeline_output.make_log_row("p.jpg", plain, base_config)["notes"] == ""   # как раньше
 
     # SUSPICIOUS: причина исхода и пометка вместе
     sus = _run(base_config, [i * 40 for i in range(5)], list("90009"), [0.95] * 4 + [0.3],
                last_reading="1000")
     assert sus.outcome == Outcome.SUSPICIOUS
-    notes = reader._make_log_row("p.jpg", sus, base_config)["notes"]
+    notes = pipeline_output.make_log_row("p.jpg", sus, base_config)["notes"]
     assert notes == f"{sus.error_detail} | {sus.digit_notes}"
 
 

@@ -2,19 +2,12 @@
 src/gmr/domain/config.py — PipelineConfig.
 
 Значения по умолчанию — это настройки обычного прогона (`python gmr.py process
-<папка месяца>`, `python reader.py <папка месяца>`): других «настроек прогона»
-нет (default_run_config в reader.py убран 2026-10-01). Пути к данным задаёт
-только папка месяца (month_dir); переменные окружения GMR_INPUT_DIR,
-GMR_OUTPUT_DIR, GMR_TABLE_PATH и путь к таблице убраны вместе со старым
-режимом (этап 2.3b).
+<папка месяца>`, `python reader.py <папка месяца>`). Пути к данным задаёт
+только папка месяца (month_dir). Настройки распознавания месяца
+(src/gmr/domain/preset.py) накладываются на эти значения в начале прогона.
 
-Внимание: код в run_pipeline() (reader.py) навешивает на экземпляр
-PipelineConfig дополнительные динамические атрибуты — `_log_rows_cache`,
-`_processed_accounts_cache`, `_processed_hashes_cache` (`_log_filenames_cache`
-удалён в Фазе 7: после варианта Г он ни на что не влиял) — которые НЕ являются полями
-датакласса (читаются через getattr(..., default) в process_photo). Это
-осознанно оставлено как есть в Фазе 2a; полями датакласса их не делаем, чтобы
-не расширять публичный контракт конфига без явного решения по этому вопросу.
+Состояние прогона (строки лога, счета и фото, уже прочитанные в этом
+прогоне) — не здесь, а в RunState (src/gmr/pipeline/photo.py).
 """
 from dataclasses import dataclass
 

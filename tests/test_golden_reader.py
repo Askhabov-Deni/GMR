@@ -33,12 +33,12 @@ def _digits_setup(config, digits, forced_conf=0.95):
 
 
 def _run(config, df, meter_crops, digit_detector, digit_ocr, serial_text, serial_conf,
-          photo_name="photo1.jpg"):
+          photo_name="photo1.jpg", state=None):
     meter_detector = FakeMeterDetector(meter_crops)
     serial_ocr = FakeSerialOCR(serial_text, serial_conf)
     return process_photo(
         photo_name, df, config,
-        meter_detector, digit_detector, digit_ocr, serial_ocr,
+        meter_detector, digit_detector, digit_ocr, serial_ocr, state=state,
     )
 
 
@@ -90,56 +90,56 @@ def test_case4_no_last_reading_is_plus_with_none_delta(base_config):
 
 # ─── 5: фото уже в _log_filenames_cache → REPEAT ─────────────────────────────
 
-def test_case5_repeat_photo_already_in_log(base_config):
+def test_case5_repeat_photo_already_in_log(base_config, state):
     # Шаг 0 process_photo (ProcessedPhotoPolicy). До 2026-09-29 решение
     # принималось по набору имён _log_filenames_cache; с варианта Г — по
     # строке лога: успешно прочитанное фото (auto PLUS) сразу REPEAT.
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [
+    state.log_rows = [
         {"original_filename": "photo1.jpg", "outcome": "PLUS", "source": "auto",
          "account_id": ACCOUNT, "final_filename": f"{ACCOUNT}.jpg"},
     ]
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
     result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95,
-                  photo_name="photo1.jpg")
+                  photo_name="photo1.jpg", state=state)
     assert result.outcome == Outcome.REPEAT
     assert "already in log" in result.error_detail
 
 
 # ─── 6: тот же account_id второй раз в текущем прогоне → REPEAT ─────────────
 
-def test_case6_repeat_duplicate_in_current_run(base_config):
+def test_case6_repeat_duplicate_in_current_run(base_config, state):
     # reader.py:878-883
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._processed_accounts_cache = {ACCOUNT}
+    state.processed_accounts = {ACCOUNT}
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
-    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95)
+    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95, state=state)
     assert result.outcome == Outcome.REPEAT
     assert "duplicate in current run" in result.error_detail
 
 
 # ─── 7: col_new_reading заполнен И есть pre_existing запись → REPEAT ─────────
 
-def test_case7_repeat_pre_existing_entry(base_config):
+def test_case7_repeat_pre_existing_entry(base_config, state):
     # reader.py:897-907
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000",
                     "new_reading": "1200"}])
-    base_config._log_rows_cache = [{"source": "pre_existing", "account_id": ACCOUNT}]
+    state.log_rows = [{"source": "pre_existing", "account_id": ACCOUNT}]
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
-    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95)
+    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95, state=state)
     assert result.outcome == Outcome.REPEAT
     assert "pre-existing entry" in result.error_detail
 
 
 # ─── 8: col_new_reading заполнен, НЕТ pre_existing записи → SUSPICIOUS ───────
 
-def test_case8_suspicious_table_log_desync(base_config):
+def test_case8_suspicious_table_log_desync(base_config, state):
     # reader.py:909-917
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000",
                     "new_reading": "1200"}])
-    base_config._log_rows_cache = []  # нет pre_existing записи
+    state.log_rows = []  # нет pre_existing записи
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
-    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95)
+    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95, state=state)
     assert result.outcome == Outcome.SUSPICIOUS
     assert "рассинхронизация" in result.error_detail
     # показания не должны перезаписываться при этой аномалии
@@ -333,74 +333,77 @@ def _log_row(fname, outcome, source="auto", account=ACCOUNT, final=""):
             "account_id": account, "serial_id": SERIAL, "final_filename": final}
 
 
-def test_case20_done_photo_skips_models(base_config):
+def test_case20_done_photo_skips_models(base_config, state):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_log_row("photo1.jpg", "MINUS", final=f"{ACCOUNT}.jpg")]
+    state.log_rows = [_log_row("photo1.jpg", "MINUS", final=f"{ACCOUNT}.jpg")]
     result = process_photo(
         "photo1.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+        state=state,
     )
     assert result.outcome == Outcome.REPEAT
     assert result.account_id == ACCOUNT
     assert result.new_photo_name == f"{ACCOUNT}.jpg"
 
 
-def test_case21_manual_row_skips_even_after_auto_error(base_config):
+def test_case21_manual_row_skips_even_after_auto_error(base_config, state):
     # оператор пометил фото "Нечитаемо" в program2.py после авто NO_METER
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [
+    state.log_rows = [
         _log_row("photo1.jpg", "NO_METER", account=""),
         _log_row("photo1.jpg", "UNREADABLE", source="manual", account=""),
     ]
     result = process_photo(
         "photo1.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+        state=state,
     )
     assert result.outcome == Outcome.REPEAT
     assert "handled manually" in result.error_detail
     assert result.new_photo_name == "photo1.jpg"
 
 
-def test_case22_auto_digits_error_is_reprocessed(base_config):
+def test_case22_auto_digits_error_is_reprocessed(base_config, state):
     # в прошлый раз цифры не прочитались, теперь модель читает -> PLUS
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_log_row("photo1.jpg", "DIGITS_ERROR")]
+    state.log_rows = [_log_row("photo1.jpg", "DIGITS_ERROR")]
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
-    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95)
+    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95, state=state)
     assert result.outcome == Outcome.PLUS
     assert result.reading == 1200
 
 
-def test_case23_auto_early_error_is_reprocessed(base_config):
+def test_case23_auto_early_error_is_reprocessed(base_config, state):
     # в прошлый раз NO_METER -> фото снова проходит модели (здесь снова NO_METER)
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_log_row("photo1.jpg", "NO_METER", account="")]
-    result = _run(base_config, df, [], FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95)
+    state.log_rows = [_log_row("photo1.jpg", "NO_METER", account="")]
+    result = _run(base_config, df, [], FakeDigitDetector([]), FakeDigitOCR({}), SERIAL, 0.95, state=state)
     assert result.outcome == Outcome.NO_METER
     assert result.error_detail == "YOLO returned no crops"
 
 
-def test_case24_table_filled_explained_by_log_is_repeat_not_suspicious(base_config):
+def test_case24_table_filled_explained_by_log_is_repeat_not_suspicious(base_config, state):
     # счётчик уже прочитан по ДРУГОМУ фото (PLUS в логе), таблица заполнена.
     # Раньше это давало SUSPICIOUS "рассинхронизация"; с 2026-09-29 — REPEAT.
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000",
                     "new_reading": "1200"}])
-    base_config._log_rows_cache = [
+    state.log_rows = [
         _log_row("other.jpg", "PLUS"),
         _log_row("photo1.jpg", "DIGITS_ERROR"),
     ]
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
-    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95)
+    result = _run(base_config, df, make_meter_crops(), dd, docr, SERIAL, 0.95, state=state)
     assert result.outcome == Outcome.REPEAT
     assert "already has reading in log" in result.error_detail
 
 
-def test_case25_auto_repeat_counts_as_done(base_config):
+def test_case25_auto_repeat_counts_as_done(base_config, state):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_log_row("photo1.jpg", "REPEAT")]
+    state.log_rows = [_log_row("photo1.jpg", "REPEAT")]
     result = process_photo(
         "photo1.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
+        state=state,
     )
     assert result.outcome == Outcome.REPEAT
 
@@ -412,37 +415,40 @@ def _hashed_row(fname, outcome, photo_hash):
     return _log_row(fname, outcome) | {"photo_hash": photo_hash}
 
 
-def test_case26_same_name_other_hash_is_processed(base_config):
+def test_case26_same_name_other_hash_is_processed(base_config, state):
     # в логе IMG.jpg из другой подпапки (другое фото, другой отпечаток)
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_hashed_row("photo1.jpg", "PLUS", "aaaa")]
+    state.log_rows = [_hashed_row("photo1.jpg", "PLUS", "aaaa")]
     dd, docr = _digits_setup(base_config, ["0", "1", "2", "0", "0"])
     result = process_photo(
         "photo1.jpg", df, base_config, FakeMeterDetector(make_meter_crops()), dd, docr,
         FakeSerialOCR(SERIAL, 0.95), photo_hash="bbbb",
+        state=state,
     )
     assert result.outcome == Outcome.PLUS
 
 
-def test_case27_same_hash_other_name_skips_models(base_config):
+def test_case27_same_hash_other_name_skips_models(base_config, state):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_hashed_row("original.jpg", "PLUS", "aaaa")]
+    state.log_rows = [_hashed_row("original.jpg", "PLUS", "aaaa")]
     result = process_photo(
         "renamed.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
         photo_hash="aaaa",
+        state=state,
     )
     assert result.outcome == Outcome.REPEAT
 
 
-def test_case28_legacy_row_without_hash_matches_by_name(base_config):
+def test_case28_legacy_row_without_hash_matches_by_name(base_config, state):
     # строки, записанные до 2026-09-29, отпечатка не имеют — узнаём по имени
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_log_row("photo1.jpg", "PLUS")]
+    state.log_rows = [_log_row("photo1.jpg", "PLUS")]
     result = process_photo(
         "photo1.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
         photo_hash="cccc",
+        state=state,
     )
     assert result.outcome == Outcome.REPEAT
 
@@ -451,44 +457,47 @@ def test_case28_legacy_row_without_hash_matches_by_name(base_config):
 # Решение владельца 2026-09-29: копия уже обработанного в ЭТОМ прогоне файла —
 # сразу REPEAT при любом исходе первой копии. Между прогонами — правило Г.
 
-def test_case29_copy_in_current_run_is_repeat_even_after_error(base_config):
+def test_case29_copy_in_current_run_is_repeat_even_after_error(base_config, state):
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""}]
-    base_config._processed_hashes_cache = {"aaaa"}
+    state.log_rows = [_hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""}]
+    state.processed_hashes = {"aaaa"}
     result = process_photo(
         "copy.jpg", df, base_config,
         _MustNotRun(), _MustNotRun(), FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95),
         photo_hash="aaaa",
+        state=state,
     )
     assert result.outcome == Outcome.REPEAT
     assert "duplicate file in current run" in result.error_detail
     assert result.new_photo_name == "copy.jpg"
 
 
-def test_case30_same_error_from_previous_run_is_reprocessed(base_config):
+def test_case30_same_error_from_previous_run_is_reprocessed(base_config, state):
     # та же строка лога, но отпечаток НЕ из этого прогона -> правило Г, перечитываем
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [_hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""}]
-    base_config._processed_hashes_cache = set()
+    state.log_rows = [_hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""}]
+    state.processed_hashes = set()
     result = process_photo(
         "copy.jpg", df, base_config, FakeMeterDetector([]), FakeDigitDetector([]),
         FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95), photo_hash="aaaa",
+        state=state,
     )
     assert result.outcome == Outcome.NO_METER
 
 
-def test_case31_copy_repeat_rows_do_not_block_retry(base_config):
+def test_case31_copy_repeat_rows_do_not_block_retry(base_config, state):
     # в логе: оригинал NO_METER + его копия REPEAT ("duplicate file in current run")
     # из прошлого прогона. Строка копии не считается "разобрано" -> перечитываем.
     df = make_df([{"serial": SERIAL, "account_id": ACCOUNT, "last_reading": "1000"}])
-    base_config._log_rows_cache = [
+    state.log_rows = [
         _hashed_row("first.jpg", "NO_METER", "aaaa") | {"account_id": ""},
         _hashed_row("copy.jpg", "REPEAT", "aaaa") | {"account_id": "",
             "notes": "duplicate file in current run: copy.jpg"},
     ]
-    base_config._processed_hashes_cache = set()
+    state.processed_hashes = set()
     result = process_photo(
         "first.jpg", df, base_config, FakeMeterDetector([]), FakeDigitDetector([]),
         FakeDigitOCR({}), FakeSerialOCR(SERIAL, 0.95), photo_hash="aaaa",
+        state=state,
     )
     assert result.outcome == Outcome.NO_METER

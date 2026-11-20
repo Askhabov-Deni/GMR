@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import reader
+from src.gmr.pipeline import run as pipeline_run
 from src.gmr.domain import OUTCOME_FOLDER, Outcome
 from tests import _pipeline as pl
 from tests._pipeline import fake_models  # noqa: F401 (фикстура)
@@ -64,22 +64,22 @@ def test_error_photo_is_read_again_next_run(tmp_path, monkeypatch):
 
 def test_unreadable_file_goes_to_error(tmp_path, monkeypatch):
     f = pl.setup_month(tmp_path)
-    real_fp = reader.photo_fingerprint
+    real_fp = pipeline_run.photo_fingerprint
 
     def locked(path):
         if Path(path).name == "p2.jpg":
             raise PermissionError(13, "файл занят", path)
         return real_fp(path)
 
-    monkeypatch.setattr(reader, "photo_fingerprint", locked)
-    real_save = reader._save_annotated
+    monkeypatch.setattr(pipeline_run, "photo_fingerprint", locked)
+    real_save = pipeline_run.save_annotated
 
     def save(src, *a, **k):
         if Path(src).name == "p2.jpg":
             raise PermissionError(13, "файл занят", src)
         return real_save(src, *a, **k)
 
-    monkeypatch.setattr(reader, "_save_annotated", save)
+    monkeypatch.setattr(pipeline_run, "save_annotated", save)
     _run(f)
     log = _log(f)
     assert log["p2.jpg"]["outcome"] == "ERROR" and log["p2.jpg"]["photo_hash"] == ""
@@ -101,6 +101,6 @@ def test_save_error_on_normal_photo_still_stops_run(tmp_path, monkeypatch):
     def disk_full(*a, **k):
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(reader, "_save_annotated", disk_full)
+    monkeypatch.setattr(pipeline_run, "save_annotated", disk_full)
     with pytest.raises(OSError):
         _run(f)

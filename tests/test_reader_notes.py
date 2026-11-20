@@ -7,6 +7,7 @@ note_match.rescue. Модели — поддельные, фото с надпи
 import pytest
 
 import reader
+from src.gmr.pipeline import run as pipeline_run
 from src.gmr.domain import Outcome
 from src.gmr.domain.note_match import AccountIndex, NoteAnswer, rescue
 from src.gmr.overlay import GlyphBank
@@ -187,7 +188,7 @@ def test_month_run_passes_notes_when_switched_on(tmp_path, monkeypatch, fake_mod
     def spy(*args, **kw):
         seen.append(kw.get("notes"))
         return original(*args, **kw)
-    monkeypatch.setattr(reader, "process_photo", spy)
+    monkeypatch.setattr(pipeline_run, "process_photo", spy)
     folder = _pipeline.setup_month(tmp_path / "выкл")
     _pipeline.run(folder)
     assert seen and all(n is None for n in seen)                     # по умолчанию — как без надписей

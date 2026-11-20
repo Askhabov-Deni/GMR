@@ -9,6 +9,7 @@ import pytest
 
 import gmr
 import reader
+from src.gmr.pipeline import run as pipeline_run
 from src.gmr.application import month as month_app
 from src.gmr.application.recognition import describe_substitutions, read_meter_digits
 from src.gmr.domain import DigitPrediction, PipelineConfig
@@ -190,10 +191,10 @@ def test_run_applies_month_preset(tmp_path):
     f = make_month(tmp_path, [("100000", "A1", "1", "")])
     cfg = PipelineConfig(month_dir=str(f.root))
     log = logging.getLogger("test-preset")
-    reader._apply_month_preset(cfg, f, log)                    # без настроек — как есть
+    pipeline_run.apply_month_preset(cfg, f, log)                    # без настроек — как есть
     assert (cfg.ignore_last_digits, cfg.missing_digit_mode) == (2, "placeholder")
     month_app.set_month_preset(f.root, RecognitionPreset("operator", 0, "model", 0.05))
-    reader._apply_month_preset(cfg, f, log)
+    pipeline_run.apply_month_preset(cfg, f, log)
     assert (cfg.missing_digit_mode, cfg.ignore_last_digits, cfg.forgiven_digit_mode, cfg.serial_crop_pad) == (
         "operator", 0, "model", 0.05)
 

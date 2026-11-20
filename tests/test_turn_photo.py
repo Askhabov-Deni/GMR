@@ -14,6 +14,8 @@ import pytest
 
 import gmr
 import reader
+from src.gmr.pipeline import output as pipeline_output
+from src.gmr.pipeline import run as pipeline_run
 from src.gmr.application import detect_meter, recognize_photo
 from src.gmr.application.recognition import RecognitionModels
 from src.gmr.domain import Outcome, PipelineConfig
@@ -123,9 +125,9 @@ def test_reader_turns_photo_where_nothing_found(base_config, tmp_path):
     base_config.turn_if_nothing = True
     r = _reader_photo(base_config, path)
     assert (r.outcome, r.account_id, r.reading, r.photo_turn) == (Outcome.PLUS, "1300000065", 1200, 90)
-    notes = reader._make_log_row("p.png", r, base_config)["notes"]
+    notes = pipeline_output.make_log_row("p.png", r, base_config)["notes"]
     assert notes.startswith("фото повёрнуто на 90°: на исходном детектор ничего не нашёл")
-    assert reader._make_log_row("p.png", SimpleNamespace(**{**vars(r), "photo_turn": 0}),
+    assert pipeline_output.make_log_row("p.png", SimpleNamespace(**{**vars(r), "photo_turn": 0}),
                                 base_config)["notes"] == ""
 
 
@@ -133,11 +135,11 @@ def test_result_photo_saved_turned(tmp_path):
     from src.gmr.domain.models import PhotoResult
     src = _photo(tmp_path / "p.png", cv2.ROTATE_90_COUNTERCLOCKWISE, (400, 600))   # лежит боком
     r = PhotoResult(photo_path=src, outcome=Outcome.PLUS, photo_turn=90)
-    reader._save_annotated(src, str(tmp_path / "out"), "a.png", r, move=False)
+    pipeline_output.save_annotated(src, str(tmp_path / "out"), "a.png", r, move=False)
     saved = read_image(tmp_path / "out" / "a.png")
     assert saved.shape[:2] == (400, 600) and int(saved[399, 599, 0]) == 7    # стоит прямо
     r.photo_turn = 0
-    reader._save_annotated(src, str(tmp_path / "out"), "b.png", r, move=False)
+    pipeline_output.save_annotated(src, str(tmp_path / "out"), "b.png", r, move=False)
     assert read_image(tmp_path / "out" / "b.png").shape[:2] == (600, 400)
 
 
@@ -167,7 +169,7 @@ def test_preset_switch(tmp_path):
     f = make_month(tmp_path, [("100000", "A1", "1", "")])
     month_app.set_month_preset(f.root, p)
     cfg = reader.PipelineConfig(month_dir=str(f.root))
-    reader._apply_month_preset(cfg, f, logging.getLogger("t"))
+    pipeline_run.apply_month_preset(cfg, f, logging.getLogger("t"))
     assert cfg.turn_if_nothing
 
 
