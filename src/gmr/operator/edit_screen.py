@@ -4,7 +4,7 @@
 моделей не запускает."""
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
@@ -17,16 +17,13 @@ from src.gmr.domain.serial_match import normalize_serial as _normalize_serial
 from src.gmr.storage import LOG_COLUMNS as _LOG_COLUMNS
 
 from .common import (
-    CLR_BG,
-    CLR_BROWN,
     CLR_GRAY,
-    CLR_GREEN,
-    CLR_ORANGE,
     CLR_RED,
     REASON_LABELS,
     log,
 )
 from .decisions import accounts_with_serial, not_in_db_serial
+from .dialogs import ask_text
 from .files import (
     DB_SERIAL_FIX_LIST,
     append_db_serial_fix,
@@ -40,8 +37,20 @@ from .files import (
 )
 from .hints import CHOICE_NOTE, HINT_NOTE, SerialHint, serial_choices, serial_hints
 from .markup import save_cnn_markup, save_crnn_markup, save_meter_markup
-from .photos import _to_float, controller_dir, controller_name
+from .photos import _to_float, controller_dir, controller_name, list_question_photos
 from .run_read import RunRead, run_read_of
+from .theme import (
+    FONT,
+    MUTED,
+    PHOTO_BG,
+    SUCCESS,
+    SURFACE,
+    WARNING,
+    action_button,
+    card,
+    key_sequences,
+    set_enabled,
+)
 from .widgets import ReadingWidget
 
 if TYPE_CHECKING:                      # только для подсказки типов: окно импортирует экраны
@@ -81,24 +90,20 @@ class EditScreen(ttk.Frame):
         self.configure(padding=0)
 
         top = ttk.Frame(self)
-        top.pack(fill=tk.X, padx=12, pady=(10, 6))
-
-        ttk.Button(top, text="← Назад", command=self._back).pack(side=tk.LEFT)
-        ttk.Label(
-            top,
-            text=f"{REASON_LABELS.get(self.reason, self.reason)}  •  {Path(self.photo_path).name}",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(side=tk.LEFT, padx=16)
-
-        ttk.Label(top, text="🔍 колёсико — зум  |  ЛКМ тащить  |  2× клик — сброс",
-                  font=("Segoe UI", 8), foreground=CLR_GRAY).pack(side=tk.RIGHT, padx=8)
+        top.pack(fill=tk.X, padx=16, pady=(12, 8))
+        ttk.Button(top, text="←  К списку", command=self._back).pack(side=tk.LEFT)
+        tk.Label(top, text=REASON_LABELS.get(self.reason, self.reason), bg="#fdf0e1", fg=WARNING,
+                 font=(FONT, 10, "bold"), padx=10, pady=3).pack(side=tk.LEFT, padx=(16, 10))
+        ttk.Label(top, text=self._position_text(), style="Muted.TLabel").pack(side=tk.LEFT)
+        ttk.Label(top, text="колёсико — увеличить  ·  тащить мышью  ·  двойной щелчок — сброс",
+                  style="Muted.TLabel", font=(FONT, 9)).pack(side=tk.RIGHT)
 
         center = ttk.Frame(self)
-        center.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+        center.pack(fill=tk.BOTH, expand=True, padx=16, pady=4)
 
-        self._canvas = tk.Canvas(center, bg="#222222", width=560)
+        self._canvas = tk.Canvas(center, bg=PHOTO_BG, width=560, highlightthickness=0)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         self._canvas.bind("<Configure>",       lambda e: self._display_photo())
         self._canvas.bind("<MouseWheel>",      self._on_mousewheel)
         self._canvas.bind("<Button-4>",        self._on_mousewheel)
@@ -107,7 +112,8 @@ class EditScreen(ttk.Frame):
         self._canvas.bind("<B1-Motion>",       self._on_pan_move)
         self._canvas.bind("<Double-Button-1>", lambda e: self._reset_zoom())
 
-        right = ttk.Frame(center, width=320)
+        right = card(center)
+        right.configure(width=360)
         right.pack(side=tk.LEFT, fill=tk.Y, padx=(16, 0))
         right.pack_propagate(False)
         self._build_fields(right)
@@ -115,127 +121,112 @@ class EditScreen(ttk.Frame):
         self._build_buttons()
         self._bind_keys()
 
-    def _build_fields(self, parent):
-        self._status_var = tk.StringVar(value="⏳ Загрузка…")
-        ttk.Label(parent, textvariable=self._status_var,
-                  font=("Segoe UI", 9), foreground=CLR_GRAY).pack(anchor="w", pady=(0, 8))
+    def _position_text(self) -> str:
+        """«Фото 3 из 13 · имя файла»."""
+        name = Path(self.photo_path).name
+        try:
+            paths = [Path(p).resolve() for _, _, p in list_question_photos(self.app.results_dir)]
+            i = paths.index(Path(self.photo_path).resolve())
+            return f"Фото {i + 1} из {len(paths)}   ·   {name}"
+        except (ValueError, OSError):
+            return name
 
-        ttk.Label(parent, text="Серийный номер", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+    @staticmethod
+    def _title(parent, text: str):
+        ttk.Label(parent, text=text, style="CardTitle.TLabel").pack(anchor="w", pady=(0, 2))
+
+    @staticmethod
+    def _match_label(parent, var: tk.StringVar) -> tk.Label:
+        """Строка под полем: «✓ …» зелёным, «⚠ …» оранжевым."""
+        lbl = tk.Label(parent, textvariable=var, bg=SURFACE, font=(FONT, 9), anchor="w",
+                       justify="left", wraplength=320)
+        var.trace_add("write", lambda *a: lbl.config(fg=SUCCESS if var.get().startswith("✓") else WARNING))
+        lbl.pack(anchor="w", fill=tk.X, pady=(2, 10))
+        return lbl
+
+    def _build_fields(self, parent):
+        self._status_var = tk.StringVar(value="")
+        ttk.Label(parent, textvariable=self._status_var, style="CardMuted.TLabel").pack(anchor="w", pady=(0, 12))
+
+        self._title(parent, "НОМЕР СЧЁТЧИКА")
         self._serial_var = tk.StringVar()
         self._serial_var.trace_add("write", lambda *a: self._on_serial_change())
-        self._serial_entry = ttk.Entry(parent, textvariable=self._serial_var, width=24,
-                                       font=("Segoe UI", 13))
-        self._serial_entry.pack(anchor="w", pady=(2, 2))
-
+        self._serial_entry = ttk.Entry(parent, textvariable=self._serial_var, font=(FONT, 14))
+        self._serial_entry.pack(fill=tk.X)
         self._serial_match_var = tk.StringVar(value="")
-        ttk.Label(parent, textvariable=self._serial_match_var,
-                  font=("Segoe UI", 8), foreground=CLR_GREEN).pack(anchor="w", pady=(0, 6))
+        self._match_label(parent, self._serial_match_var)
 
         # Подсказка: похожие номера в базе (заполняется, если номера нет в таблице)
-        self._hint_frame = ttk.Frame(parent)
+        self._hint_frame = ttk.Frame(parent, style="Card.TFrame")
         self._hint_frame.pack(anchor="w", fill=tk.X)
         self._hints: list[SerialHint] = []
         self._hint_used: Optional[SerialHint] = None
 
-        ttk.Label(parent, text="Account ID", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self._title(parent, "ЛИЦЕВОЙ СЧЁТ")
         self._account_var = tk.StringVar()
         self._account_var.trace_add("write", lambda *a: self._on_account_change())
-        self._account_entry = ttk.Entry(parent, textvariable=self._account_var, width=24,
-                                        font=("Segoe UI", 13))
-        self._account_entry.pack(anchor="w", pady=(2, 2))
-
+        self._account_entry = ttk.Entry(parent, textvariable=self._account_var, font=(FONT, 14))
+        self._account_entry.pack(fill=tk.X)
         self._account_match_var = tk.StringVar(value="")
-        ttk.Label(parent, textvariable=self._account_match_var,
-                  font=("Segoe UI", 8), foreground=CLR_GREEN).pack(anchor="w", pady=(0, 6))
+        self._match_label(parent, self._account_match_var)
 
-        ttk.Label(parent, text="Показания", font=("Segoe UI", 9, "bold")).pack(anchor="w")
-        self._reading_widget = ReadingWidget(parent, on_change=self._on_reading_change)
-        self._reading_widget.pack(anchor="w", pady=(2, 8))
+        self._title(parent, "ПОКАЗАНИЕ")
+        self._reading_widget = ReadingWidget(parent, on_change=self._on_reading_change, style="Card.TFrame")
+        self._reading_widget.pack(anchor="w", pady=(2, 12))
 
-        ttk.Label(parent, text="Последние показания", font=("Segoe UI", 9)).pack(anchor="w")
+        row = ttk.Frame(parent, style="Card.TFrame")
+        row.pack(fill=tk.X)
+        ttk.Label(row, text="Прошлое показание:", style="CardMuted.TLabel").pack(side=tk.LEFT)
         self._last_reading_var = tk.StringVar(value="—")
-        ttk.Label(parent, textvariable=self._last_reading_var,
-                  font=("Segoe UI", 11)).pack(anchor="w", pady=(2, 4))
+        ttk.Label(row, textvariable=self._last_reading_var, style="Card.TLabel",
+                  font=(FONT, 11, "bold")).pack(side=tk.LEFT, padx=(6, 0))
 
-        self._delta_var = tk.StringVar(value="—")
+        self._delta_var = tk.StringVar(value="")
         self._delta_lbl = tk.Label(parent, textvariable=self._delta_var,
-                                   font=("Segoe UI", 14, "bold"), bg=CLR_BG)
-        self._delta_lbl.pack(anchor="w", pady=4)
-
-        self._outcome_var = tk.StringVar(value="—")
-        ttk.Label(parent, textvariable=self._outcome_var,
-                  font=("Segoe UI", 10, "bold")).pack(anchor="w")
+                                   font=(FONT, 15, "bold"), bg=SURFACE, anchor="w")
+        self._delta_lbl.pack(anchor="w", pady=(10, 0))
+        self._outcome_var = tk.StringVar(value="")
+        self._outcome_lbl = tk.Label(parent, textvariable=self._outcome_var, font=(FONT, 10),
+                                     bg=SURFACE, fg=MUTED, anchor="w", justify="left", wraplength=320)
+        self._outcome_lbl.pack(anchor="w", fill=tk.X)
+        self._outcome_code: Optional[str] = None     # PLUS / MINUS / SUSPICIOUS — для строки лога
+        self._delta_value: Optional[float] = None
 
         self._source_var = tk.StringVar(value="")
-        ttk.Label(parent, textvariable=self._source_var,
-                  font=("Segoe UI", 8), foreground=CLR_GRAY,
-                  wraplength=280, justify="left").pack(anchor="w", pady=(12, 0))
+        ttk.Label(parent, textvariable=self._source_var, style="CardMuted.TLabel",
+                  wraplength=320, justify="left").pack(side=tk.BOTTOM, anchor="w")
 
     def _build_buttons(self):
         bottom = ttk.Frame(self)
-        bottom.pack(fill=tk.X, padx=12, pady=(6, 10))
+        bottom.pack(fill=tk.X, padx=16, pady=(8, 14))
 
-        self._accept_btn = tk.Button(
-            bottom, text="✓  Принять  [Enter]",
-            bg=CLR_GREEN, fg="white", font=("Segoe UI", 11, "bold"),
-            relief="flat", padx=16, pady=8,
-            command=self._accept, state=tk.DISABLED,
-        )
-        self._accept_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self._accept_btn = action_button(bottom, "✓   Принять     Enter", self._accept, kind="primary",
+                                         state=tk.DISABLED)
+        self._accept_btn.pack(side=tk.LEFT, padx=(0, 12))
+        for text, command, kind in (
+            ("Дубль     D", self._duplicate, "secondary"),
+            ("Нечитаемо     Del", self._unreadable, "danger"),
+            ("Нет в базе     N", self._not_in_db, "secondary"),
+            ("Номер в таблице с ошибкой     B", self._db_serial_fix, "secondary"),
+        ):
+            action_button(bottom, text, command, kind=kind).pack(side=tk.LEFT, padx=4)
+        action_button(bottom, "Пропустить     Esc", self._back).pack(side=tk.RIGHT)
 
-        tk.Button(
-            bottom, text="↩  Дубль  [D]",
-            bg="#1565C0", fg="white", font=("Segoe UI", 10),
-            relief="flat", padx=12, pady=8,
-            command=self._duplicate,
-        ).pack(side=tk.LEFT, padx=4)
-
-        tk.Button(
-            bottom, text="✗  Нечитаемо  [Del]",
-            bg=CLR_RED, fg="white", font=("Segoe UI", 10),
-            relief="flat", padx=12, pady=8,
-            command=self._unreadable,
-        ).pack(side=tk.LEFT, padx=4)
-
-        tk.Button(
-            bottom, text="⊘  Нет в базе  [N]",
-            bg=CLR_BROWN, fg="white", font=("Segoe UI", 10),
-            relief="flat", padx=12, pady=8,
-            command=self._not_in_db,
-        ).pack(side=tk.LEFT, padx=4)
-
-        tk.Button(
-            bottom, text="≠  Серийник в базе с ошибкой  [B]",
-            bg="#8D6E63", fg="white", font=("Segoe UI", 10),
-            relief="flat", padx=12, pady=8,
-            command=self._db_serial_fix,
-        ).pack(side=tk.LEFT, padx=4)
-
-        tk.Button(
-            bottom, text="→  Пропустить  [Esc]",
-            bg=CLR_GRAY, fg="white", font=("Segoe UI", 10),
-            relief="flat", padx=12, pady=8,
-            command=self._back,
-        ).pack(side=tk.RIGHT, padx=4)
+    def _key_bindings(self) -> list:
+        """Горячие клавиши; буквы — в обеих раскладках (D — и «в»)."""
+        keys = [("<Return>", self._hotkey_accept), ("<KP_Enter>", self._hotkey_accept),
+                ("<Escape>", self._hotkey_back), ("<Delete>", self._hotkey_unreadable)]
+        for letter, handler in (("d", self._hotkey_duplicate), ("n", self._hotkey_not_in_db),
+                                ("b", self._hotkey_db_serial_fix)):
+            keys += [(seq, handler) for seq in key_sequences(letter)]
+        return keys
 
     def _bind_keys(self):
-        for seq, cb in [
-            ("<Return>",   self._hotkey_accept),
-            ("<KP_Enter>", self._hotkey_accept),
-            ("<Escape>",   self._hotkey_back),
-            ("<Delete>",   self._hotkey_unreadable),
-            ("<d>",        self._hotkey_duplicate),
-            ("<D>",        self._hotkey_duplicate),
-            ("<n>",        self._hotkey_not_in_db),
-            ("<N>",        self._hotkey_not_in_db),
-            ("<b>",        self._hotkey_db_serial_fix),
-            ("<B>",        self._hotkey_db_serial_fix),
-        ]:
+        for seq, cb in self._key_bindings():
             self.app.bind_all(seq, cb)
 
     def _unbind_keys(self):
-        for seq in ("<Return>", "<KP_Enter>", "<Escape>", "<Delete>",
-                    "<d>", "<D>", "<n>", "<N>", "<b>", "<B>"):
+        for seq, _ in self._key_bindings():
             try:
                 self.app.unbind_all(seq)
             except Exception:
@@ -382,12 +373,14 @@ class EditScreen(ttk.Frame):
         self._serial_var.set(r.serial)
         self._filling_other = False
 
-        self._serial_source = (f"Серийник: обработка ({r.serial_conf:.2f})" if r.serial_conf
-                               else "Серийник: обработка" if r.serial else "Серийник: нет")
-        self._reading_source = "Показания: обработка"
+        self._serial_source = (f"Номер: обработка ({r.serial_conf:.2f})" if r.serial_conf
+                               else "Номер: обработка" if r.serial else "Номер: нет")
 
         self._reading_widget.set_digits(r.reading_str or None, r.digit_preds())
+        # подпись — после set_digits: поле меняется по цифре, и на полпути
+        # «показание» не совпадало с прочитанным — писалось «вручную»
         self._reading_manually_changed = False
+        self._reading_source = "Показание: обработка"
 
         self._update_source_label()
         self._lookup_by_serial(r.serial)
@@ -426,7 +419,7 @@ class EditScreen(ttk.Frame):
             if not matches.empty:
                 choices = serial_choices(matches, cfg, self._current_reading_str())
                 if len(choices) > 1:
-                    self._serial_match_var.set(f"⚠ номер у нескольких абонентов ({len(choices)})")
+                    self._serial_match_var.set(f"⚠ номер у нескольких абонентов ({len(choices)}) — выберите")
                     self._show_choices(choices)
                     self._update_delta()
                     self._update_accept_state()
@@ -437,7 +430,7 @@ class EditScreen(ttk.Frame):
 
                 if candidate != serial:
                     self._model_serial = candidate
-                    self._serial_source = "Серийник: обработка (авто-нуль)"
+                    self._serial_source = "Номер: обработка (авто-нуль)"
                     self._update_source_label()
                     
                     self._filling_other = True
@@ -451,12 +444,12 @@ class EditScreen(ttk.Frame):
 
                 self._last_reading_var.set(str(last) if pd.notna(last) else "—")
                 self._abonent_found = True
-                self._serial_match_var.set(f"✓ в базе → account: {account}")
+                self._serial_match_var.set(f"✓ есть в таблице: л/с {account}")
                 self._update_delta()
                 self._update_accept_state()
                 return
 
-        self._serial_match_var.set("⚠ не найден в базе")
+        self._serial_match_var.set("⚠ нет в таблице")
         self._show_hints(serial)
         self._update_delta()
         self._update_accept_state()
@@ -472,7 +465,7 @@ class EditScreen(ttk.Frame):
         self._hints = serial_hints(serial, self._current_reading_str(), self.app.serial_index())
         if not self._hints:
             return
-        ttk.Label(self._hint_frame, text="Похожие номера в базе:",
+        ttk.Label(self._hint_frame, style="Card.TLabel", text="Похожие номера в базе:",
                   font=("Segoe UI", 8, "bold")).pack(anchor="w")
         for i, h in enumerate(self._hints):
             last = f"{h.last_reading:.0f}" if h.last_reading is not None else "—"
@@ -480,10 +473,10 @@ class EditScreen(ttk.Frame):
             tk.Button(
                 self._hint_frame,
                 text=f"{h.serial}   л/с {h.account}\nпосл. {last}   расход {delta}",
-                font=("Segoe UI", 9), relief="groove", anchor="w", justify="left",
+                font=("Segoe UI", 9), relief="groove", anchor="w", justify="left", bg=SURFACE,
                 command=lambda h=h: self._use_hint(h),
             ).pack(anchor="w", fill=tk.X, pady=1)
-        ttk.Label(self._hint_frame,
+        ttk.Label(self._hint_frame, style="Card.TLabel",
                   text="Клик — подставить лицевой счёт. Дальше: «Принять», если это он "
                        "(модель ошиблась), или «Серийник в базе с ошибкой».",
                   font=("Segoe UI", 8), foreground=CLR_GRAY,
@@ -494,7 +487,7 @@ class EditScreen(ttk.Frame):
         for w in self._hint_frame.winfo_children():
             w.destroy()
         self._hints = choices
-        ttk.Label(self._hint_frame, text="Этот номер в базе у нескольких абонентов:",
+        ttk.Label(self._hint_frame, style="Card.TLabel", text="Этот номер в базе у нескольких абонентов:",
                   font=("Segoe UI", 8, "bold")).pack(anchor="w")
         for h in choices:
             last = f"{h.last_reading:.0f}" if h.last_reading is not None else "—"
@@ -502,10 +495,10 @@ class EditScreen(ttk.Frame):
             tk.Button(
                 self._hint_frame,
                 text=f"л/с {h.account}\nпосл. {last}   расход {delta}",
-                font=("Segoe UI", 9), relief="groove", anchor="w", justify="left",
+                font=("Segoe UI", 9), relief="groove", anchor="w", justify="left", bg=SURFACE,
                 command=lambda h=h: self._use_choice(h),
             ).pack(anchor="w", fill=tk.X, pady=1)
-        ttk.Label(self._hint_frame,
+        ttk.Label(self._hint_frame, style="Card.TLabel",
                   text="Клик — выбрать абонента, потом «Принять». У другой записи в базе "
                        "номер с ошибкой.",
                   font=("Segoe UI", 8), foreground=CLR_GRAY,
@@ -554,11 +547,11 @@ class EditScreen(ttk.Frame):
 
             self._last_reading_var.set(str(last) if pd.notna(last) else "—")
             self._abonent_found = True
-            self._account_match_var.set(f"✓ в базе → serial: {serial}")
+            self._account_match_var.set(f"✓ есть в таблице: номер {serial}")
             self._update_delta()
             self._update_accept_state()
         else:
-            self._account_match_var.set("⚠ не найден в базе")
+            self._account_match_var.set("⚠ нет в таблице")
             self._update_delta()
             self._update_accept_state()
 
@@ -567,11 +560,11 @@ class EditScreen(ttk.Frame):
             return
         model_serial = getattr(self, "_model_serial", None)
         if model_serial is not None and self._serial_var.get() != model_serial:
-            self._serial_source = "Серийник: вручную"
+            self._serial_source = "Номер: вручную"
         elif model_serial is not None and self._serial_var.get() == model_serial:
-            self._serial_source = "Серийник: обработка"
+            self._serial_source = "Номер: обработка"
         else:
-            self._serial_source = "Серийник: вручную"
+            self._serial_source = "Номер: вручную"
         self._serial_match_var.set("")
         self._update_source_label()
         self._abonent_found = False             # до поиска по новому номеру
@@ -601,46 +594,44 @@ class EditScreen(ttk.Frame):
         if not manually:
             if model_r is not None and current != model_r:
                 self._reading_manually_changed = True
-                self._reading_source = "Показания: вручную"
+                self._reading_source = "Показание: вручную"
             elif model_r is not None and current == model_r:
                 self._reading_manually_changed = False
-                self._reading_source = "Показания: обработка"
+                self._reading_source = "Показание: обработка"
         self._update_source_label()
         self._update_delta()
         self._update_accept_state()
 
     def _update_delta(self):
-        last_str = self._last_reading_var.get()
+        """Разница с прошлым показанием и что она значит — словами (исход для
+        строки лога — в _outcome_code)."""
+        self._delta_value = None
         if not self._reading_widget.is_complete():
-            self._delta_var.set("—")
-            self._outcome_var.set("—")
-            self._delta_lbl.config(fg=CLR_GRAY)
+            self._delta_var.set("")
+            self._outcome_var.set("")
+            self._outcome_code = None
             return
-        try:
-            last = float(last_str.replace(",", ".")) if last_str and last_str != "—" else None
-        except ValueError:
-            last = None
-
+        last = _to_float(self._last_reading_var.get())
         reading = int(self._reading_widget.get_string())
-        if last is not None:
-            delta = reading - last
-            cfg   = self.app.config
-            if abs(delta) > cfg.delta_threshold:
-                self._delta_var.set(f"Δ {delta:+.0f}")
-                self._outcome_var.set("⚠ SUSPICIOUS")
-                self._delta_lbl.config(fg=CLR_ORANGE)
-            elif delta >= 0:
-                self._delta_var.set(f"Δ {delta:+.0f}")
-                self._outcome_var.set("▲ PLUS")
-                self._delta_lbl.config(fg=CLR_GREEN)
-            else:
-                self._delta_var.set(f"Δ {delta:+.0f}")
-                self._outcome_var.set("▼ MINUS")
-                self._delta_lbl.config(fg=CLR_RED)
+        if last is None:
+            self._delta_var.set("")
+            self._outcome_var.set("Прошлого показания нет")
+            self._outcome_lbl.config(fg=MUTED)
+            self._outcome_code = "PLUS"
+            return
+        delta = reading - last
+        self._delta_value = delta
+        self._delta_var.set(f"Расход {delta:+.0f}")
+        if abs(delta) > self.app.config.delta_threshold:
+            color, text, code = WARNING, "⚠ Очень большая разница — проверьте показание", "SUSPICIOUS"
+        elif delta >= 0:
+            color, text, code = SUCCESS, "▲ больше прошлого — обычный расход", "PLUS"
         else:
-            self._delta_var.set("—")
-            self._outcome_var.set("PLUS (нет истории)")
-            self._delta_lbl.config(fg=CLR_GREEN)
+            color, text, code = CLR_RED, "▼ меньше прошлого", "MINUS"
+        self._delta_lbl.config(fg=color)
+        self._outcome_lbl.config(fg=color)
+        self._outcome_var.set(text)
+        self._outcome_code = code
 
     def _update_accept_state(self):
         # Решение владельца 2026-11-20: принять можно, только если абонент
@@ -653,7 +644,7 @@ class EditScreen(ttk.Frame):
             and (self._serial_var.get().strip() or self._account_var.get().strip())
             and (self.app.df is None or getattr(self, "_abonent_found", False))
         )
-        self._accept_btn.config(state=tk.NORMAL if ok else tk.DISABLED)
+        set_enabled(self._accept_btn, bool(ok))
 
     def _back(self):
         try:
@@ -662,14 +653,7 @@ class EditScreen(ttk.Frame):
             self._unbind_keys()
 
     def _get_outcome_str(self) -> str:
-        outcome = self._outcome_var.get()
-        if "SUSPICIOUS" in outcome:
-            return "SUSPICIOUS"
-        if "PLUS" in outcome:
-            return "PLUS"
-        if "MINUS" in outcome:
-            return "MINUS"
-        return "PLUS"
+        return self._outcome_code or "PLUS"
 
     def _flush_lookups(self) -> bool:
         """Поиск по таблице, отложенный на 0,35 с после ввода номера или счёта,
@@ -701,19 +685,15 @@ class EditScreen(ttk.Frame):
         outcome_str = self._get_outcome_str()
 
         if outcome_str == "SUSPICIOUS" and not self._confirmed_suspicious:
-            delta_text = self._delta_var.get()
             if not messagebox.askyesno(
-                "Подозрительные показания",
-                f"Дельта: {delta_text}\n\nЭто большое отклонение. Всё верно?",
+                "Очень большая разница",
+                f"Разница с прошлым показанием: {self._delta_value:+.0f}.\n\n"
+                f"Это очень много. Показание верное?",
                 parent=self.app,
             ):
                 return
             self._confirmed_suspicious = True
-            try:
-                delta_val = float(self._delta_var.get().replace("Δ", "").replace(",", ".").strip())
-                outcome_str = "PLUS" if delta_val >= 0 else "MINUS"
-            except Exception:
-                outcome_str = "PLUS"
+            outcome_str = "PLUS" if (self._delta_value or 0) >= 0 else "MINUS"
 
         serial    = self._serial_var.get().strip()
         account   = self._account_var.get().strip()
@@ -861,7 +841,7 @@ class EditScreen(ttk.Frame):
             self._unbind_keys()
 
     def _ask_serial_not_in_table(self, prompt: str, suggested: str) -> Optional[str]:
-        return simpledialog.askstring("Нет в базе", prompt, initialvalue=suggested, parent=self.app)
+        return ask_text(self.app, "Нет в базе", prompt, suggested)
 
     def _not_in_db(self):
         """
@@ -892,7 +872,7 @@ class EditScreen(ttk.Frame):
                               if s and not accounts_with_serial(df, cfg, s)), "")
             typed = self._ask_serial_not_in_table(
                 f"{what}\n\n"
-                f"Если на фото этот счётчик — Cancel, затем «Принять».\n"
+                f"Если на фото этот счётчик — «Отмена», затем «Принять».\n"
                 f"Если на фото другой номер — впишите его, как на фото:",
                 suggested)
             serial = (typed or "").strip()
@@ -915,8 +895,8 @@ class EditScreen(ttk.Frame):
             if not messagebox.askyesno(
                 "Нет в базе",
                 f"Счётчик не найден в базе абонентов.\n\n"
-                f"Серийник: {serial or '—'}{by_run}\n"
-                f"Account:  {account or '—'}\n\n"
+                f"Номер счётчика: {serial or '—'}{by_run}\n"
+                f"Лицевой счёт: {account or '—'}\n\n"
                 f"Переместить в папку «not_in_db»?",
                 parent=self.app,
             ):
@@ -948,11 +928,8 @@ class EditScreen(ttk.Frame):
             self._unbind_keys()
 
     def _ask_photo_serial(self, suggested: str) -> Optional[str]:
-        return simpledialog.askstring(
-            "Серийник на фото",
-            "Серийный номер — как на фото (не как в базе):",
-            initialvalue=suggested, parent=self.app,
-        )
+        return ask_text(self.app, "Номер на фото", "Номер счётчика — как на фото (не как в таблице):",
+                        suggested)
 
     def _db_serial_fix(self):
         """

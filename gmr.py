@@ -12,7 +12,7 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py inspect <модель> <фото|папка> [...]                  посмотреть модель
   python gmr.py weights [--write]                                     файлы весов
   python gmr.py check                                                 проверка перед коммитом
-  python gmr.py shortcut                                              ярлык «Счётчики» на рабочем столе
+  python gmr.py shortcut                                              ярлык «GMR Оператор» на рабочем столе
   python gmr.py datasets [--list]                                     папки датасетов и их проверка
   python gmr.py datasets --build <фото> --table <таблица>             кропы для датасетов из фото и таблицы
   python gmr.py datasets --review serials|accounts|digits             кропы, где модель не согласна, — на проверку
@@ -156,7 +156,7 @@ COMMANDS = {
     "inspect": (_inspect, "посмотреть, что делает модель (tools/inspect_model.py)"),
     "weights": (_weights, "какие файлы весов в работе (tools/weights_manifest.py)"),
     "check":   (_check,   "проверка перед коммитом: данные, код, тесты (tools/check.py)"),
-    "shortcut": (_shortcut, "ярлык «Счётчики» на рабочем столе — окно оператора (tools/shortcut.py)"),
+    "shortcut": (_shortcut, "ярлык «GMR Оператор» на рабочем столе — окно оператора (tools/shortcut.py)"),
     "datasets": (_datasets, "датасеты: проверить, собрать из фото (--build), на проверку глазами (--review) "
                             "(tools/datasets.py)"),
     "etalon":   (_etalon,   "эталон: трудные фото из месяца, обычные — из архива; проверить на нём модели (tools/etalon.py)"),

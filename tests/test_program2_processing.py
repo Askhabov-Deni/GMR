@@ -582,7 +582,7 @@ def test_not_in_db_writes_run_serial(app):
     _run_read(app, "99999")                                 # номера нет в таблице
     scr = _open_first(app)
     scr._not_in_db()
-    assert "Серийник: 99999\n" in app.asked[0][1]
+    assert "Номер счётчика: 99999\n" in app.asked[0][1]
     (r,) = _manual(app)
     assert (r["serial_id"], r["account_id"]) == ("99999", "")
 
@@ -593,7 +593,7 @@ def test_not_in_db_empty_field_writes_run_serial(app):
     scr = _open_first(app)
     scr._serial_var.set("")                                 # оператор стёр номер
     scr._not_in_db()
-    assert "Серийник: 99999 (прочитан при обработке фото)" in app.asked[0][1]
+    assert "Номер счётчика: 99999 (прочитан при обработке фото)" in app.asked[0][1]
     assert _manual(app)[0]["serial_id"] == "99999"
 
 
@@ -604,7 +604,7 @@ def test_not_in_db_writes_operator_serial_without_previous_abonent(app):
     scr._serial_var.set("55555")                            # оператор: на фото другой номер
     scr._not_in_db()                                        # поиск по нему — сразу, до решения
     text = app.asked[0][1]
-    assert "Серийник: 55555\n" in text and "Account:  —" in text
+    assert "Номер счётчика: 55555\n" in text and "Лицевой счёт: —" in text
     (r,) = _manual(app)
     assert (r["serial_id"], r["account_id"]) == ("55555", "")    # счёт A1 — от прежнего номера
 
@@ -630,7 +630,7 @@ def test_window_shows_what_processing_read(app):
     assert scr._serial_var.get() == "1234567" and scr._account_var.get() == "A1"
     assert scr._reading_widget.get_string() == "01?5?"   # неуверенные цифры — «?», как раньше в окне
     assert scr._status_var.get() == "✓ Прочитано при обработке фото"
-    assert "Серийник: обработка (0.97)" in scr._source_var.get()
+    assert "Номер: обработка (0.97)" in scr._source_var.get()
     _fill(scr, "A1", "01253")
     scr._accept()
     r = _manual(app)[-1]
@@ -644,7 +644,7 @@ def test_window_photo_processed_before_stage_e(app):
     scr = _open_first(app)
     assert (scr._serial_var.get(), scr._account_var.get()) == ("7654321", "A2")
     assert scr._reading_widget.get_string() == "00?00"
-    assert "Серийник: обработка (0.88)" in scr._source_var.get()
+    assert "Номер: обработка (0.88)" in scr._source_var.get()
 
 
 @needs_display

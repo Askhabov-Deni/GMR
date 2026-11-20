@@ -11,6 +11,7 @@ from src.gmr.domain.preset import (
 )
 
 from .settings import AppSettings
+from .theme import BG, FONT, action_button
 
 
 class SettingsDialog(tk.Toplevel):
@@ -176,3 +177,52 @@ class LoginDialog(tk.Toplevel):
     def _change(self):
         self.action = "change"
         self.destroy()
+
+
+class TextDialog(tk.Toplevel):
+    """Ввод строки: кнопки «ОК» / «Отмена» (у simpledialog.askstring — английские
+    OK / Cancel). Enter и Esc дальше диалога не уходят: иначе их ловили
+    горячие клавиши экрана («Принять», «Назад»)."""
+    def __init__(self, parent, title: str, prompt: str, initial: str = ""):
+        super().__init__(parent)
+        self.title(title)
+        self.transient(parent)
+        self.resizable(False, False)
+        self.configure(bg=BG)
+        self.result: Optional[str] = None
+        f = ttk.Frame(self, padding=20)
+        f.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(f, text=prompt, wraplength=440, justify="left").pack(anchor="w")
+        self._var = tk.StringVar(value=initial)
+        entry = ttk.Entry(f, textvariable=self._var, font=(FONT, 13), width=26)
+        entry.pack(anchor="w", pady=(12, 16))
+        buttons = ttk.Frame(f)
+        buttons.pack(fill=tk.X)
+        action_button(buttons, "Отмена", self._cancel).pack(side=tk.RIGHT)
+        action_button(buttons, "ОК", self._ok, kind="accent").pack(side=tk.RIGHT, padx=(0, 8))
+        self.bind("<Return>", lambda e: self._ok() or "break")
+        self.bind("<KP_Enter>", lambda e: self._ok() or "break")
+        self.bind("<Escape>", lambda e: self._cancel() or "break")
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 3
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        entry.focus_set()
+        entry.select_range(0, tk.END)
+        self.wait_visibility()
+        self.grab_set()
+        self.wait_window()
+
+    def _ok(self):
+        self.result = self._var.get()
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+
+def ask_text(parent, title: str, prompt: str, initial: str = "") -> Optional[str]:
+    """Строка от оператора; None — «Отмена»."""
+    return TextDialog(parent, title, prompt, initial).result

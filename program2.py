@@ -1,7 +1,7 @@
 """
-program2.py — окно оператора: ручной разбор фото из question/, с которыми не
-справилась автоматическая обработка, и выборочная проверка её результатов.
-Запуск: `python program2.py` (или ярлык «Счётчики»: `python gmr.py shortcut`).
+program2.py — прежнее имя окна оператора «GMR Оператор» (с 2026-11-21 запуск —
+gmr_operator.py или ярлык «GMR Оператор»: `python gmr.py shortcut`). Оставлен
+для старых ярлыков и тестов: `python program2.py` открывает то же окно.
 
 Код окна — src/gmr/operator/; здесь — точка входа и прежние имена
 (program2.MainWindow, program2.list_verify_photos, …). Что окно читает и

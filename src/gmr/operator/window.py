@@ -19,13 +19,20 @@ from src.gmr.ui.run_dialog import ProcessDialog, process_command, show_text
 from .common import (
     _BASE,
     _LOG_FILE,
-    CLR_BG,
-    CLR_GREEN,
     REASON_LABELS,
     _log_handlers,
     log,
 )
 from .dialogs import LoginDialog, PresetDialog, SettingsDialog
+from .theme import (
+    APP_NAME,
+    HEADER,
+    MUTED,
+    SURFACE,
+    ZEBRA,
+    action_button,
+    apply_theme,
+)
 from .edit_screen import EditScreen
 from .files import move_photo, now_iso, open_in_explorer, place_decision
 from .hints import SerialIndex, build_serial_index
@@ -42,10 +49,10 @@ from .verify_screen import VerifyScreen
 class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Обработка газовых счётчиков")
-        self.geometry("960x640")
-        self.minsize(800, 500)
-        self.configure(bg=CLR_BG)
+        self.title(APP_NAME)
+        self.geometry("1280x800")
+        self.minsize(960, 600)
+        apply_theme(self)
 
         self.settings  = load_settings()
         self.session:   Optional[OperatorSession] = None
@@ -254,7 +261,7 @@ class MainWindow(tk.Tk):
                 self.settings = old
                 self._load_data()
         save_settings(self.settings)
-        self._month_var.set(f"Месяц: {self.session.folder.root}")
+        self._show_month()
         self.refresh_tabs()
 
     def new_month(self):
@@ -324,29 +331,49 @@ class MainWindow(tk.Tk):
         self.configure(menu=menubar)        # self.config — это PipelineConfig, поэтому configure
         self._month_menu = m
 
-        top = ttk.Frame(self)
-        top.pack(fill=tk.X, padx=8, pady=(8, 0))
-        self._month_var = tk.StringVar(value=f"Месяц: {self.session.folder.root}")
-        ttk.Label(top, textvariable=self._month_var, font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        ttk.Button(top, text="⇩  Выгрузить показания", command=self.export).pack(side=tk.RIGHT)
-        ttk.Button(top, text="Итог месяца", command=self.show_summary).pack(side=tk.RIGHT, padx=(0, 8))
-        tk.Button(top, text="▶  Обработать новые", command=self.process_new,
-                  bg=CLR_GREEN, fg="white", relief="flat", padx=10).pack(side=tk.RIGHT, padx=8)
+        # Шапка: программа, месяц, оператор; справа — главные действия месяца
+        top = ttk.Frame(self, style="Header.TFrame", padding=(16, 10))
+        top.pack(fill=tk.X)
+        ttk.Label(top, text=APP_NAME, style="HeaderTitle.TLabel").pack(side=tk.LEFT)
+        self._month_var = tk.StringVar()
+        ttk.Label(top, textvariable=self._month_var, style="HeaderInfo.TLabel").pack(side=tk.LEFT, padx=(18, 0))
+        ttk.Button(top, text="⇩  Выгрузить в Excel", style="Header.TButton",
+                   command=self.export).pack(side=tk.RIGHT)
+        ttk.Button(top, text="Итог месяца", style="Header.TButton",
+                   command=self.show_summary).pack(side=tk.RIGHT, padx=(0, 8))
+        action_button(top, "▶  Обработать новые фото", self.process_new, kind="accent",
+                      highlightbackground=HEADER).pack(side=tk.RIGHT, padx=(0, 12))
+        self._show_month()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._notebook = ttk.Notebook(self)
-        self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
 
         self._proc_tab = ProcessingTab(self._notebook, self)
         self._verify_tab = VerifyTab(self._notebook, self)
 
-        self._notebook.add(self._proc_tab,   text="  Обработка  ")
-        self._notebook.add(self._verify_tab, text="  Проверка  ")
+        self._notebook.add(self._proc_tab,   text="Очередь")
+        self._notebook.add(self._verify_tab, text="Проверка")
+        self._update_tab_titles()
+
+    def _show_month(self):
+        """В шапке — имя папки месяца и оператор (полный путь — «Месяц» →
+        «Открыть папку месяца»): длинный путь вытеснял кнопки за край окна."""
+        self._month_var.set(f"{self.session.folder.root.name}   ·   {self.settings.operator_name}")
+        self.title(f"{APP_NAME} — {self.session.folder.root.name}")
+
+    def _update_tab_titles(self):
+        if not hasattr(self, "_notebook"):
+            return
+        q, v = len(self._proc_tab._items), len(self._verify_tab._items)
+        self._notebook.tab(self._proc_tab, text=f"Очередь  {q}" if q else "Очередь")
+        self._notebook.tab(self._verify_tab, text=f"Проверка  {v}" if v else "Проверка")
 
     def refresh_tabs(self):
         self.reload()
         self._proc_tab.refresh()
         self._verify_tab.refresh()
+        self._update_tab_titles()
 
     def _close_screen(self):
         """Вернуться к спискам (экран разбора закрывается)."""
@@ -504,7 +531,7 @@ class MainWindow(tk.Tk):
         if index < len(items):
             self.open_verify_screen(items[index], index)
         else:
-            self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+            self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
             self.refresh_tabs()
             messagebox.showinfo("Готово", "Все фото на проверке просмотрены.")
 
@@ -512,7 +539,7 @@ class MainWindow(tk.Tk):
         if hasattr(self, "_current_screen"):
             self._current_screen.pack_forget()
             self._current_screen.destroy()
-        self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
         self.refresh_tabs()
 
     def open_next_or_back(self, current_path: str):
@@ -528,11 +555,41 @@ class MainWindow(tk.Tk):
             screen.pack(fill=tk.BOTH, expand=True)
             self._current_screen = screen
         else:
-            self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+            self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
             self.refresh_tabs()
-            messagebox.showinfo("Готово", "Все фото в очереди обработаны!")
+            messagebox.showinfo("Готово", "Все фото в очереди разобраны.")
 
-# ─── Таб «Обработка» ──────────────────────────────────────────────────────────
+# ─── Вкладка «Очередь» (фото, которые программа не прочитала сама) ──────────
+def _table_with_buttons(tab: ttk.Frame, columns: list, buttons: list) -> ttk.Treeview:
+    """Таблица со скроллом и колонка кнопок справа (первая — главная)."""
+    body = ttk.Frame(tab)
+    body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
+    tree = ttk.Treeview(body, columns=[c for c, *_ in columns], show="headings", selectmode="browse")
+    for col, title, width, stretch in columns:
+        tree.heading(col, text=title, anchor="w")
+        tree.column(col, width=width, stretch=stretch, anchor="w")
+    tree.tag_configure("odd", background=ZEBRA)
+    vsb = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=vsb.set)
+    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    vsb.pack(side=tk.LEFT, fill=tk.Y)
+    side = ttk.Frame(body)
+    side.pack(side=tk.LEFT, fill=tk.Y, padx=(16, 0))
+    for i, (text, command) in enumerate(buttons):
+        action_button(side, text, command, kind="accent" if i == 0 else "secondary",
+                      width=16).pack(fill=tk.X, pady=(0, 8))
+    return tree
+
+
+def _tab_header(tab: ttk.Frame, hint: str) -> tk.StringVar:
+    head = ttk.Frame(tab)
+    head.pack(fill=tk.X, padx=16, pady=(14, 10))
+    var = tk.StringVar()
+    ttk.Label(head, textvariable=var, style="Title.TLabel").pack(side=tk.LEFT)
+    ttk.Label(head, text=hint, style="Muted.TLabel").pack(side=tk.RIGHT)
+    return var
+
+
 class ProcessingTab(ttk.Frame):
     def __init__(self, parent, app: MainWindow):
         super().__init__(parent)
@@ -541,43 +598,25 @@ class ProcessingTab(ttk.Frame):
         self.refresh()
 
     def _build(self):
-        self._counter_var = tk.StringVar(value="Загрузка...")
-        ttk.Label(self, textvariable=self._counter_var, font=("Segoe UI", 10), wraplength=900).pack(
-            anchor="w", padx=12, pady=(10, 4)
-        )
-
-        cols = ("reason", "controller", "filename")
-        self._tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="browse")
-        self._tree.heading("reason",     text="Причина")
-        self._tree.heading("controller", text="Контролёр")
-        self._tree.heading("filename",   text="Имя файла")
-        self._tree.column("reason",     width=240, stretch=False)
-        self._tree.column("controller", width=160, stretch=False)
-        self._tree.column("filename",   width=320)
+        self._counter_var = _tab_header(self, "Двойной щелчок или Enter — открыть фото")
         self._items: list[tuple[str, str, str]] = []
-
-        vsb = ttk.Scrollbar(self, orient="vertical", command=self._tree.yview)
-        self._tree.configure(yscrollcommand=vsb.set)
-
-        self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0), pady=(0, 12))
-        vsb.pack(side=tk.LEFT, fill=tk.Y, pady=(0, 12))
-
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(side=tk.LEFT, fill=tk.Y, padx=12, pady=12)
-
-        ttk.Button(btn_frame, text="✎  Открыть",    command=self._open,       width=18).pack(pady=6)
-        ttk.Button(btn_frame, text="✗  Нечитаемо",  command=self._unreadable, width=18).pack(pady=6)
-        ttk.Button(btn_frame, text="⟳  Обновить",   command=self.refresh,     width=18).pack(pady=6)
-
+        self._tree = _table_with_buttons(
+            self,
+            [("reason", "Причина", 260, False), ("controller", "Контролёр", 200, False),
+             ("filename", "Фото", 360, True)],
+            [("Открыть", self._open), ("Нечитаемо", self._unreadable), ("⟳  Обновить", self.refresh)])
+        self._empty = ttk.Label(self._tree, text="Очередь пуста — все фото разобраны",
+                                background=SURFACE, foreground=MUTED, font=("Segoe UI", 12))
         self._tree.bind("<Double-Button-1>", lambda e: self._open())
+        self._tree.bind("<Return>", lambda e: self._open())
 
     def refresh(self):
         self._tree.delete(*self._tree.get_children())
         self._items = list_question_photos(self.app.results_dir)
-        for reason, fname, path in self._items:
+        for i, (reason, fname, path) in enumerate(self._items):
             label = REASON_LABELS.get(reason, reason)
             ctrl = controller_name(path, self.app.results_dir)
-            self._tree.insert("", tk.END, values=(label, ctrl, fname))
+            self._tree.insert("", tk.END, values=(label, ctrl, fname), tags=("odd",) if i % 2 else ())
 
         remaining = len(self._items)
         processed = sum(
@@ -585,8 +624,15 @@ class ProcessingTab(ttk.Frame):
             if r.get("source") == "manual"
             and r.get("outcome") not in ("", None)
         )
-        total = remaining + processed
-        self._counter_var.set(f"Всего: {total} | Обработано: {processed} | Осталось: {remaining}")
+        self._counter_var.set(f"Ждут разбора: {remaining}" + (f"   ·   разобрано оператором: {processed}"
+                                                              if processed else ""))
+        if remaining:
+            self._empty.place_forget()
+            first = self._tree.get_children()[0]
+            self._tree.selection_set(first)
+            self._tree.focus(first)
+        else:
+            self._empty.place(relx=0.5, rely=0.4, anchor="center")
 
     def _selected_path(self) -> Optional[tuple[str, str]]:
         sel = self._tree.selection()
@@ -610,7 +656,7 @@ class ProcessingTab(ttk.Frame):
         if not sel:
             return
         reason, path = sel
-        if not messagebox.askyesno("Нечитаемо", f"Пометить как нечитаемо?\n{Path(path).name}"):
+        if not messagebox.askyesno("Нечитаемо", f"Фото не прочитать?\n{Path(path).name}"):
             return
         row = {k: "" for k in _LOG_COLUMNS}
         row.update({
@@ -631,7 +677,10 @@ class ProcessingTab(ttk.Frame):
             return
         self.refresh()
 
-# ─── Таб «Проверка» ───────────────────────────────────────────────────────────
+# ─── Вкладка «Проверка» (показания, которые программа записала сама) ────────
+OUTCOME_WORDS = {"PLUS": "▲ больше прошлого", "MINUS": "▼ меньше прошлого"}
+
+
 class VerifyTab(ttk.Frame):
     def __init__(self, parent, app: MainWindow):
         super().__init__(parent)
@@ -640,52 +689,38 @@ class VerifyTab(ttk.Frame):
         self.refresh()
 
     def _build(self):
-        self._counter_var = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self._counter_var, font=("Segoe UI", 10), wraplength=900).pack(
-            anchor="w", padx=12, pady=(10, 4)
-        )
-
-        cols = ("outcome", "controller", "account_id", "reading", "processed_at")
-        self._tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="browse")
-        self._tree.heading("controller",   text="Контролёр")
-        self._tree.column("controller",   width=140, stretch=False)
-        self._tree.heading("outcome",      text="Результат")
-        self._tree.heading("account_id",   text="Account ID")
-        self._tree.heading("reading",      text="Показания")
-        self._tree.heading("processed_at", text="Обработано")
-        self._tree.column("outcome",      width=80,  stretch=False)
-        self._tree.column("account_id",   width=140, stretch=False)
-        self._tree.column("reading",      width=100, stretch=False)
-        self._tree.column("processed_at", width=200)
-
-        vsb = ttk.Scrollbar(self, orient="vertical", command=self._tree.yview)
-        self._tree.configure(yscrollcommand=vsb.set)
-        self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0), pady=(0, 12))
-        vsb.pack(side=tk.LEFT, fill=tk.Y, pady=(0, 12))
-
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(side=tk.LEFT, fill=tk.Y, padx=12, pady=12)
-        ttk.Button(btn_frame, text="✎  Открыть",  command=self._open,   width=18).pack(pady=6)
-        ttk.Button(btn_frame, text="⟳  Обновить", command=self.refresh, width=18).pack(pady=6)
-
-        self._tree.bind("<Double-Button-1>", lambda e: self._open())
+        self._counter_var = _tab_header(self, "Показания, которые программа записала сама: «Верно» или «Исправить»")
         self._items: list[dict] = []
+        self._tree = _table_with_buttons(
+            self,
+            [("outcome", "Расход", 170, False), ("controller", "Контролёр", 190, False),
+             ("account_id", "Лицевой счёт", 150, False), ("reading", "Показание", 110, False),
+             ("processed_at", "Прочитано", 200, True)],
+            [("Открыть", self._open), ("⟳  Обновить", self.refresh)])
+        self._empty = ttk.Label(self._tree, text="Проверять нечего",
+                                background=SURFACE, foreground=MUTED, font=("Segoe UI", 12))
+        self._tree.bind("<Double-Button-1>", lambda e: self._open())
+        self._tree.bind("<Return>", lambda e: self._open())
 
     def refresh(self):
         self._tree.delete(*self._tree.get_children())
         self._items = list_verify_photos(self.app.results_dir, self.app.log_rows)
-        for item in self._items:
+        for i, item in enumerate(self._items):
             r = item["log_row"]
             self._tree.insert("", tk.END, values=(
-                r.get("outcome", ""),
+                OUTCOME_WORDS.get(r.get("outcome", ""), r.get("outcome", "")),
                 controller_name(item["path"], self.app.results_dir),
                 r.get("account_id", ""),
                 r.get("reading", ""),
-                r.get("processed_at", "")[:16],
-            ))
+                r.get("processed_at", "")[:16].replace("T", " "),
+            ), tags=("odd",) if i % 2 else ())
 
         total = len(self._items)
-        self._counter_var.set(f"Всего для проверки: {total}")
+        self._counter_var.set(f"На проверку: {total}")
+        if total:
+            self._empty.place_forget()
+        else:
+            self._empty.place(relx=0.5, rely=0.4, anchor="center")
 
     def _open(self):
         sel = self._tree.selection()

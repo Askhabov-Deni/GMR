@@ -114,7 +114,7 @@ def test_cli_process_end_to_end_same_as_reader(tmp_path, fake_models):  # noqa: 
     assert pl.reading(cli, "A-1") == pl.reading(direct, "A-1") == "1200"
 
 
-# ─── Этап 4: ярлык «Счётчики» на рабочем столе ───────────────────────────────
+# ─── Этап 4: ярлык на рабочем столе («GMR Оператор», раньше «Счётчики») ───
 
 from tools import shortcut  # noqa: E402
 
@@ -127,6 +127,12 @@ def test_shortcut_script():
     assert f"$s.Arguments = '\"{Path('C:/x/program2.py')}\"'" in ps
     assert "$s.Save()" in ps
     assert shortcut._q("O'Brien") == "'O''Brien'"                 # кавычка в пути не ломает команду
+
+
+def test_operator_window_entry_point():
+    # 2026-11-21: окно называется «GMR Оператор», запуск — gmr_operator.py
+    import gmr_operator
+    assert shortcut.NAME == "GMR Оператор" and callable(gmr_operator.main)
 
 
 def test_shortcut_only_windows(monkeypatch, capsys):
@@ -145,14 +151,14 @@ def test_shortcut_creates_via_powershell(tmp_path, monkeypatch, capsys):
 
     def run(cmd, **kw):
         calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="C:\\Users\\op\\Desktop\\Счётчики.lnk\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="C:\\Users\\op\\Desktop\\GMR Оператор.lnk\n", stderr="")
 
     monkeypatch.setattr(shortcut.subprocess, "run", run)
     assert gmr.main(["shortcut"]) == 0
     (cmd,) = calls
     assert cmd[0] == "powershell" and str(tmp_path / "pythonw.exe") in cmd[-1]
-    assert str(ROOT / "program2.py") in cmd[-1]
-    assert "Ярлык создан: C:\\Users\\op\\Desktop\\Счётчики.lnk" in capsys.readouterr().out
+    assert str(ROOT / "gmr_operator.py") in cmd[-1] and "GMR Оператор.lnk" in cmd[-1]
+    assert "Ярлык создан: C:\\Users\\op\\Desktop\\GMR Оператор.lnk" in capsys.readouterr().out
     monkeypatch.setattr(shortcut.subprocess, "run",
                         lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="доступ запрещён"))
     assert gmr.main(["shortcut"]) == 1

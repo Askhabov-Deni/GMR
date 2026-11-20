@@ -6,11 +6,23 @@ from typing import TYPE_CHECKING, Optional
 
 from PIL import Image, ImageTk
 
-from .common import CLR_BG, CLR_GRAY, CLR_GREEN, CLR_RED
 from .decisions import plan_verify_correction
 from .files import free_photo_path, move_photo, now_iso, redraw_annotation
 from .photos import controller_dir
+from .theme import (
+    FONT,
+    MUTED,
+    PHOTO_BG,
+    SUCCESS,
+    SURFACE,
+    TEXT,
+    action_button,
+    card,
+    key_sequences,
+)
 from .widgets import ReadingWidget
+
+OUTCOME_WORDS = {"PLUS": "▲ больше прошлого", "MINUS": "▼ меньше прошлого"}
 
 if TYPE_CHECKING:                      # только для подсказки типов: окно импортирует экраны
     from .window import MainWindow
@@ -40,22 +52,21 @@ class VerifyScreen(ttk.Frame):
         r = self.item["log_row"]
 
         top = ttk.Frame(self)
-        top.pack(fill=tk.X, padx=12, pady=(10, 6))
-        ttk.Button(top, text="← Назад", command=self._back).pack(side=tk.LEFT)
-        ttk.Label(
-            top,
-            text=f"Проверка  •  {Path(self.item['path']).name}",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(side=tk.LEFT, padx=16)
-        ttk.Label(top, text="🔍 колёсико — зум  |  ЛКМ тащить  |  2× клик — сброс",
-                  font=("Segoe UI", 8), foreground=CLR_GRAY).pack(side=tk.RIGHT, padx=8)
+        top.pack(fill=tk.X, padx=16, pady=(12, 8))
+        ttk.Button(top, text="←  К списку", command=self._back).pack(side=tk.LEFT)
+        tk.Label(top, text="Проверка", bg="#e3edfd", fg="#1858bd", font=(FONT, 10, "bold"),
+                 padx=10, pady=3).pack(side=tk.LEFT, padx=(16, 10))
+        ttk.Label(top, text=f"Фото {self.index + 1}   ·   {Path(self.item['path']).name}",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        ttk.Label(top, text="колёсико — увеличить  ·  тащить мышью  ·  двойной щелчок — сброс",
+                  style="Muted.TLabel", font=(FONT, 9)).pack(side=tk.RIGHT)
 
         center = ttk.Frame(self)
-        center.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
+        center.pack(fill=tk.BOTH, expand=True, padx=16, pady=4)
 
-        self._canvas = tk.Canvas(center, bg="#222222", width=560)
+        self._canvas = tk.Canvas(center, bg=PHOTO_BG, width=560, highlightthickness=0)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         self._canvas.bind("<Configure>",       lambda e: self._load_photo())
         self._canvas.bind("<MouseWheel>",      self._on_mousewheel)
         self._canvas.bind("<Button-4>",        self._on_mousewheel)
@@ -64,7 +75,8 @@ class VerifyScreen(ttk.Frame):
         self._canvas.bind("<B1-Motion>",       self._on_pan_move)
         self._canvas.bind("<Double-Button-1>", lambda e: self._reset_zoom())
 
-        right = ttk.Frame(center, width=320)
+        right = card(center)
+        right.configure(width=360)
         right.pack(side=tk.LEFT, fill=tk.Y, padx=(16, 0))
         right.pack_propagate(False)
         self._build_right(right, r)
@@ -72,85 +84,66 @@ class VerifyScreen(ttk.Frame):
         self._build_buttons()
 
     def _build_right(self, parent, r: dict):
-        def row(label, value, bold=False, color=None):
-            ttk.Label(parent, text=label, font=("Segoe UI", 9)).pack(anchor="w", pady=(6, 0))
-            lbl = tk.Label(parent, text=value,
-                           font=("Segoe UI", 12, "bold" if bold else "normal"),
-                           fg=color or "black", bg=CLR_BG, anchor="w")
-            lbl.pack(anchor="w")
+        ttk.Label(parent, text="Программа записала сама — верно?", style="CardMuted.TLabel").pack(
+            anchor="w", pady=(0, 12))
+
+        def row(label, value, big=False, color=None):
+            ttk.Label(parent, text=label, style="CardTitle.TLabel").pack(anchor="w")
+            lbl = tk.Label(parent, text=value, font=(FONT, 18 if big else 13, "bold" if big else "normal"),
+                           fg=color or TEXT, bg=SURFACE, anchor="w")
+            lbl.pack(anchor="w", pady=(0, 10))
             return lbl
 
-        row("Serial ID",           r.get("serial_id", "—"))
-        row("Account ID",          r.get("account_id", "—"))
-        row("Показания",           r.get("reading", "—"),   bold=True)
-        row("Последние показания", r.get("last_reading", "—"))
+        row("НОМЕР СЧЁТЧИКА", r.get("serial_id") or "—")
+        row("ЛИЦЕВОЙ СЧЁТ", r.get("account_id") or "—")
+        row("ПОКАЗАНИЕ", r.get("reading") or "—", big=True)
+        row("ПРОШЛОЕ ПОКАЗАНИЕ", r.get("last_reading") or "—")
 
-        delta_str = r.get("delta", "")
         try:
-            delta_val = float(delta_str)
-            color = CLR_GREEN if delta_val >= 0 else CLR_RED
-            delta_label = f"Δ {delta_val:+.0f}"
+            delta_val = float(r.get("delta", ""))
+            color, delta_label = (SUCCESS if delta_val >= 0 else "#c62828"), f"{delta_val:+.0f}"
         except (ValueError, TypeError):
-            color = CLR_GRAY
-            delta_label = "—"
-        row("Дельта", delta_label, bold=True, color=color)
+            color, delta_label = MUTED, "—"
+        row("РАСХОД", delta_label, color=color)
+        ttk.Label(parent, text=f"{OUTCOME_WORDS.get(r.get('outcome', ''), r.get('outcome', ''))}   ·   "
+                               f"прочитано {r.get('processed_at', '')[:16].replace('T', ' ')}",
+                  style="CardMuted.TLabel").pack(anchor="w")
 
-        row("Статус",      r.get("outcome", "—"), bold=True)
-        row("Обработано",  f"auto | {r.get('processed_at', '')[:16]}")
-
-        self._edit_frame = ttk.LabelFrame(parent, text="Исправление", padding=6)
-        ttk.Label(self._edit_frame, text="Серийный номер").pack(anchor="w")
+        self._edit_frame = ttk.LabelFrame(parent, text="ИСПРАВЛЕНИЕ", padding=10)
+        ttk.Label(self._edit_frame, text="Номер счётчика", style="Card.TLabel").pack(anchor="w")
         self._serial_var = tk.StringVar(value=r.get("serial_id", ""))
-        ttk.Entry(self._edit_frame, textvariable=self._serial_var, width=22).pack(anchor="w")
-        ttk.Label(self._edit_frame, text="Показания").pack(anchor="w", pady=(6, 0))
-        self._reading_widget = ReadingWidget(self._edit_frame)
+        ttk.Entry(self._edit_frame, textvariable=self._serial_var, font=(FONT, 13)).pack(fill=tk.X)
+        ttk.Label(self._edit_frame, text="Показание", style="Card.TLabel").pack(anchor="w", pady=(8, 0))
+        self._reading_widget = ReadingWidget(self._edit_frame, style="Card.TFrame")
         self._reading_widget.pack(anchor="w")
         self._reading_widget.set_digits(r.get("reading", ""), None)
 
     def _build_buttons(self):
         bottom = ttk.Frame(self)
-        bottom.pack(fill=tk.X, padx=12, pady=(6, 10))
+        bottom.pack(fill=tk.X, padx=16, pady=(8, 14))
 
-        self._ok_btn = tk.Button(
-            bottom, text="✓  Верно  [Enter]",
-            bg=CLR_GREEN, fg="white", font=("Segoe UI", 11, "bold"),
-            relief="flat", padx=16, pady=8,
-            command=self._verify_ok,
-        )
-        self._ok_btn.pack(side=tk.LEFT, padx=(0, 8))
-
-        self._edit_btn = tk.Button(
-            bottom, text="✎  Исправить  [E]",
-            bg="#1565C0", fg="white", font=("Segoe UI", 10),
-            relief="flat", padx=12, pady=8,
-            command=self._enter_edit,
-        )
+        self._ok_btn = action_button(bottom, "✓   Верно     Enter", self._verify_ok, kind="primary")
+        self._ok_btn.pack(side=tk.LEFT, padx=(0, 12))
+        self._edit_btn = action_button(bottom, "Исправить     E", self._enter_edit)
         self._edit_btn.pack(side=tk.LEFT, padx=4)
+        self._save_edit_btn = action_button(bottom, "✓   Сохранить исправление     Enter", self._save_edit,
+                                            kind="accent")
+        action_button(bottom, "Пропустить     →", self._skip).pack(side=tk.RIGHT)
 
-        self._save_edit_btn = tk.Button(
-            bottom, text="💾  Сохранить правку  [Enter]",
-            bg="#6A1B9A", fg="white", font=("Segoe UI", 10),
-            relief="flat", padx=12, pady=8,
-            command=self._save_edit,
-        )
-
-        tk.Button(
-            bottom, text="→  Пропустить  [→]",
-            bg=CLR_GRAY, fg="white", font=("Segoe UI", 10),
-            relief="flat", padx=12, pady=8,
-            command=self._skip,
-        ).pack(side=tk.RIGHT, padx=4)
+    def _key_bindings(self) -> list:
+        edit = lambda e: None if self._edit_mode else self._enter_edit()   # noqa: E731
+        return ([("<Return>", lambda e: self._on_return() if self.app.take_return(e) else None),
+                 ("<Escape>", lambda e: self._back()),
+                 ("<Right>", lambda e: None if self._edit_mode else self._skip())]
+                + [(seq, edit) for seq in key_sequences("e")])
 
     def _bind_keys(self):
-        # Enter: «Верно», а в режиме исправления — «Сохранить правку»
-        self.app.bind_all("<Return>", lambda e: self._on_return() if self.app.take_return(e) else None)
-        self.app.bind_all("<Escape>", lambda e: self._back())
-        self.app.bind_all("<e>",      lambda e: None if self._edit_mode else self._enter_edit())
-        self.app.bind_all("<E>",      lambda e: None if self._edit_mode else self._enter_edit())
-        self.app.bind_all("<Right>",  lambda e: None if self._edit_mode else self._skip())
+        # Enter: «Верно», а в режиме исправления — «Сохранить исправление»
+        for seq, cb in self._key_bindings():
+            self.app.bind_all(seq, cb)
 
     def _unbind_keys(self):
-        for seq in ("<Return>", "<Escape>", "<e>", "<E>", "<Right>"):
+        for seq, _ in self._key_bindings():
             try:
                 self.app.unbind_all(seq)
             except Exception:
