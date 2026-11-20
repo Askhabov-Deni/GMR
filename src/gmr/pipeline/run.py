@@ -11,6 +11,14 @@ from typing import Optional
 
 import pandas as pd
 
+from src.gmr.application.cycle import close_waiting, free_name, move_files, result_file
+from src.gmr.application.month import (
+    ExportLocked,
+    NotAMonth,
+    export_month,
+    is_month,
+    month_preset,
+)
 from src.gmr.domain import (
     OUTCOME_FOLDER,
     Outcome,
@@ -19,18 +27,29 @@ from src.gmr.domain import (
     RunSelection,
     RunSelectionPolicy,
 )
+from src.gmr.domain.photo_date import reading_date
 from src.gmr.domain.serial_match import lookup_variants, normalize_serial
 from src.gmr.ml.loader import default_device, load_models
-from src.gmr.application.cycle import close_waiting, free_name, move_files, result_file
-from src.gmr.application.month import ExportLocked, NotAMonth, export_month, is_month, month_preset
-from src.gmr.domain.photo_date import reading_date
-from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
 from src.gmr.storage import photo_fingerprint
 from src.gmr.storage.backup import KEEP, backup_sqlite, remove_old
+from src.gmr.storage.month import MonthDB, MonthFolder, Reading, now_text
 
 from .output import make_log_row, save_annotated
-from .photo import RunState, account_groups_of, note_context_of, process_photo, serial_groups_of
-from .report import format_folder_ranking, format_report, not_taken_line, save_report, skip_lines, where
+from .photo import (
+    RunState,
+    account_groups_of,
+    note_context_of,
+    process_photo,
+    serial_groups_of,
+)
+from .report import (
+    format_folder_ranking,
+    format_report,
+    not_taken_line,
+    save_report,
+    skip_lines,
+    where,
+)
 
 _run_selection = RunSelectionPolicy()
 

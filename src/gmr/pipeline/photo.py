@@ -18,6 +18,13 @@ from typing import Optional
 
 import pandas as pd
 
+from src.gmr.application import (
+    RecognitionModels,
+    describe_substitutions,
+    detect_meter,
+    find_detection,
+    read_meter_digits_for_config,
+)
 from src.gmr.domain import (
     AccountPrediction,
     AccountRecognizer,
@@ -32,16 +39,15 @@ from src.gmr.domain import (
     ProcessedPhotoPolicy,
     SerialRecognizer,
 )
-from src.gmr.domain.account_match import AccountMarkerPolicy, account_groups as build_account_groups
-from src.gmr.domain.note_match import AccountIndex, interpret, rescue as note_rescue, shown
+from src.gmr.domain.account_match import AccountMarkerPolicy
+from src.gmr.domain.account_match import account_groups as build_account_groups
 from src.gmr.domain.datasets import ACCOUNT, METER, SERIAL
-from src.gmr.domain.serial_match import build_serial_groups, lookup_variants, normalize_serial
-from src.gmr.application import (
-    RecognitionModels,
-    describe_substitutions,
-    detect_meter,
-    find_detection,
-    read_meter_digits_for_config,
+from src.gmr.domain.note_match import AccountIndex, interpret, shown
+from src.gmr.domain.note_match import rescue as note_rescue
+from src.gmr.domain.serial_match import (
+    build_serial_groups,
+    lookup_variants,
+    normalize_serial,
 )
 from src.gmr.render import read_image
 

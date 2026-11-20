@@ -16,7 +16,6 @@ from src.gmr.domain import PhotoResult, PipelineConfig
 from src.gmr.domain.datasets import standard_class
 from src.gmr.render import draw_annotation, read_image, turn_image, write_image
 
-
 # ─── Цвета боксов ────────────────────────────────────────────────────────────
 
 _BOX_COLORS = {                         # классы — одним словом (standard_class)

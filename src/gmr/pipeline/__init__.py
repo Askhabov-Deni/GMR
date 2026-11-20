@@ -9,7 +9,14 @@ src/gmr/pipeline — автоматическая обработка фото м
 Запуск — `python gmr.py process <месяц>` (или `python reader.py <месяц>`).
 Как результаты использует окно оператора — docs/contract_reader_program2.md.
 """
-from .photo import NoteContext, RunState, account_groups_of, note_context_of, process_photo, serial_groups_of
+from .photo import (
+    NoteContext,
+    RunState,
+    account_groups_of,
+    note_context_of,
+    process_photo,
+    serial_groups_of,
+)
 from .run import PhotosInRoot, run_pipeline
 
 __all__ = [

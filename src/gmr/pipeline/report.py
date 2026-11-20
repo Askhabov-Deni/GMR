@@ -4,7 +4,6 @@ from typing import Optional
 
 from src.gmr.domain import Outcome, RunSelection
 
-
 # ─── Формирование отчёта ──────────────────────────────────────────────────────
 
 # Группы исходов для сводных метрик отчёта.

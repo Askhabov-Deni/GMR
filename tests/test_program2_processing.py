@@ -14,6 +14,9 @@ import numpy as np
 import pytest
 
 program2 = pytest.importorskip("program2")
+from src.gmr.operator import edit_screen as op_edit  # noqa: E402
+from src.gmr.operator import settings as op_settings  # noqa: E402
+from src.gmr.operator import window as op_window  # noqa: E402
 from src.gmr.domain import PipelineConfig  # noqa: E402
 from src.gmr.storage import LOG_COLUMNS  # noqa: E402
 from src.gmr.storage.month import MonthDB, Reading  # noqa: E402
@@ -121,7 +124,7 @@ def test_old_settings_ask_for_month_folder(tmp_path, monkeypatch):
     f = tmp_path / "settings.json"
     f.write_text('{"operator_name": "Оператор", "photos_dir": "output/Аюб", '
                  '"table_path": "t.csv", "training_dir": "train"}', encoding="utf-8")
-    monkeypatch.setattr(program2, "SETTINGS_FILE", f)
+    monkeypatch.setattr(op_settings, "SETTINGS_FILE", f)
     assert program2.load_settings() == program2.AppSettings("Оператор", "")
 
 
@@ -136,10 +139,10 @@ AUTO = [  # авто-строки reader.py, создавшие файлы в qu
 
 
 def _window(monkeypatch, settings, answers=None):
-    monkeypatch.setattr(program2, "load_settings", lambda: settings)
-    monkeypatch.setattr(program2, "save_settings", lambda s: None)
+    monkeypatch.setattr(op_window, "load_settings", lambda: settings)
+    monkeypatch.setattr(op_window, "save_settings", lambda s: None)
     monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
-    monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
+    monkeypatch.setattr(op_window, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
     # настройки распознавания нового месяца — как предложено (окно не открывается)
     monkeypatch.setattr(program2.MainWindow, "ask_preset",
                         staticmethod(lambda parent, preset, title, ok_text="Сохранить": preset))
@@ -513,7 +516,7 @@ def test_not_a_month_folder_asks_settings_again(tmp_path, monkeypatch):
         assert kw["new_month"] == parent.ask_new_month         # в настройках есть «Новый месяц…»
         return SimpleNamespace(result=program2.AppSettings("Оператор", str(f.root)))
 
-    monkeypatch.setattr(program2, "SettingsDialog", settings_dialog)
+    monkeypatch.setattr(op_window, "SettingsDialog", settings_dialog)
     # «Создать в этой папке новый месяц?» — Нет: окно снова спрашивает папку
     w = _window(monkeypatch, program2.AppSettings("Оператор", str(tmp_path / "нет")), answers=[False])
     try:
@@ -527,9 +530,9 @@ def test_not_a_month_folder_asks_settings_again(tmp_path, monkeypatch):
 @needs_display
 def test_change_user_cancelled_keeps_settings(tmp_path, monkeypatch):
     f = make_month(tmp_path, [("1234567", "A1", "1000", "")])
-    monkeypatch.setattr(program2, "SettingsDialog", lambda parent, settings, **kw: SimpleNamespace(result=None))
+    monkeypatch.setattr(op_window, "SettingsDialog", lambda parent, settings, **kw: SimpleNamespace(result=None))
     w = _window(monkeypatch, program2.AppSettings("Оператор", str(f.root)))
-    monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: SimpleNamespace(action="change"))
+    monkeypatch.setattr(op_window, "LoginDialog", lambda *a, **k: SimpleNamespace(action="change"))
     w.destroy()
     w = new_window(program2.MainWindow)            # «Сменить пользователя» → «Отмена»
     try:
@@ -584,9 +587,9 @@ def _fake_run(monkeypatch, app, slow=0, code=0, calls=None, new_photo=()):
             calls.append((month, reread))
         return [sys.executable, "-c", FAKE_RUN, str(app.month.stop_file), str(app.month.results),
                 str(slow), str(code), *map(str, new_photo)]
-    monkeypatch.setattr(program2, "process_command", cmd)
+    monkeypatch.setattr(op_window, "process_command", cmd)
     shown = []
-    monkeypatch.setattr(program2, "show_text", lambda parent, title, text: shown.append((title, text)))
+    monkeypatch.setattr(op_window, "show_text", lambda parent, title, text: shown.append((title, text)))
     return shown
 
 
@@ -633,7 +636,7 @@ def test_reread_runs_with_reread(app, monkeypatch):
     calls, titles = [], []
     _fake_run(monkeypatch, app, calls=calls)
     real = program2.ProcessDialog
-    monkeypatch.setattr(program2, "ProcessDialog", lambda *a, **k: titles.append(k["title"]) or real(*a, **k))
+    monkeypatch.setattr(op_window, "ProcessDialog", lambda *a, **k: titles.append(k["title"]) or real(*a, **k))
     app.process_new(reread=True)
     assert calls == [(str(app.month.root), True)] and titles == ["Обработка фото с ошибками"]
 
@@ -677,7 +680,7 @@ def _dialogs(monkeypatch, files=(), dirs=(), saves=()):
     monkeypatch.setattr(program2.filedialog, "askdirectory", lambda **k: str(dirs.pop(0)) if dirs else "")
     monkeypatch.setattr(program2.filedialog, "asksaveasfilename", lambda **k: str(saves.pop(0)) if saves else "")
     shown = []
-    monkeypatch.setattr(program2, "show_text", lambda parent, title, text: shown.append((title, text)))
+    monkeypatch.setattr(op_window, "show_text", lambda parent, title, text: shown.append((title, text)))
     return shown
 
 
@@ -700,7 +703,7 @@ def test_new_month_from_menu_switches_window(app, tmp_path, monkeypatch):
     table = _table_csv(tmp_path / "компания" / "Июнь.csv", [("7777777", "B1", "10", "")])
     shown = _dialogs(monkeypatch, files=[table], saves=[tmp_path / "Июнь_2026"])
     saved = []
-    monkeypatch.setattr(program2, "save_settings", lambda s: saved.append(s.month_dir))
+    monkeypatch.setattr(op_window, "save_settings", lambda s: saved.append(s.month_dir))
     app.new_month()
     assert app.session.folder.root == tmp_path / "Июнь_2026"
     assert saved == [str(tmp_path / "Июнь_2026")] and "Июнь_2026" in app._month_var.get()
@@ -776,7 +779,7 @@ def test_summary_and_choose_month(app, tmp_path, monkeypatch):
 @needs_display
 def test_month_that_does_not_open_keeps_window_in_old_month(app, tmp_path, monkeypatch):
     saved = []
-    monkeypatch.setattr(program2, "save_settings", lambda s: saved.append(s.month_dir))
+    monkeypatch.setattr(op_window, "save_settings", lambda s: saved.append(s.month_dir))
     app.answers.append(False)                              # не месяц и создавать не нужно
     app._switch_month(str(tmp_path / "пусто"))
     assert app.session.folder.root == app.month.root and saved == [str(app.month.root)]
@@ -827,7 +830,7 @@ def test_error_in_button_shown_to_operator(app):
 
 @needs_display
 def test_markup_of_etalon_photo_not_saved(app, monkeypatch):
-    monkeypatch.setattr(program2, "to_etalon", lambda h: h == "h-IMG-20260915-WA0001.jpg")
+    monkeypatch.setattr(op_edit, "to_etalon", lambda h: h == "h-IMG-20260915-WA0001.jpg")
     scr = _open_first(app)
     scr._model_result = {"serial_text": "1284567", "serial_crop": np.full((20, 60, 3), 5, np.uint8),
                          "reading_str": "01?00", "digit_crops": [np.full((30, 15, 3), 1, np.uint8)] * 5,
@@ -880,7 +883,7 @@ def test_ask_new_month_like_save_as(app, tmp_path, monkeypatch):
     monkeypatch.setattr(program2.filedialog, "askopenfilename", lambda **k: str(files.pop(0)))
     monkeypatch.setattr(program2.filedialog, "asksaveasfilename",
                         lambda **k: asked.append(k) or saves.pop(0))
-    monkeypatch.setattr(program2, "show_text", lambda *a: None)
+    monkeypatch.setattr(op_window, "show_text", lambda *a: None)
     assert app.ask_new_month(who="Мадина") == str(tmp_path / "Ноябрь_2026")
     assert asked[0]["initialfile"] == program2.default_month_name()
     assert asked[0]["initialdir"] == str(app.month.root.parent)    # рядом с текущим месяцем
@@ -944,9 +947,9 @@ def test_preset_dialog(app):
 
 def test_ask_preset_marker_only_with_model(monkeypatch):
     seen = []
-    monkeypatch.setattr(program2, "PresetDialog", lambda *a, **k: seen.append(k) or SimpleNamespace(result="r"))
+    monkeypatch.setattr(op_window, "PresetDialog", lambda *a, **k: seen.append(k) or SimpleNamespace(result="r"))
     assert program2.MainWindow.ask_preset(None, RecognitionPreset(), "t") == "r"
-    monkeypatch.setattr(program2, "PipelineConfig", lambda: SimpleNamespace(account_ocr_model="acc.pt"))
+    monkeypatch.setattr(op_window, "PipelineConfig", lambda: SimpleNamespace(account_ocr_model="acc.pt"))
     program2.MainWindow.ask_preset(None, RecognitionPreset(), "t", ok_text="Дальше")
     assert [(k["marker_model"], k["ok_text"]) for k in seen] == [(False, "Сохранить"), (True, "Дальше")]
 

@@ -18,6 +18,7 @@ import pytest
 from src.gmr.storage import LOG_COLUMNS
 
 program2 = pytest.importorskip("program2")
+from src.gmr.operator import window as op_window  # noqa: E402
 from program2 import (  # noqa: E402
     find_verify_row, free_photo_path, list_verify_photos, plan_verify_correction,
 )
@@ -178,10 +179,10 @@ VERIFY_LOG = [
 
 
 def _window(monkeypatch, settings):
-    monkeypatch.setattr(program2, "load_settings", lambda: settings)
-    monkeypatch.setattr(program2, "save_settings", lambda s: None)
+    monkeypatch.setattr(op_window, "load_settings", lambda: settings)
+    monkeypatch.setattr(op_window, "save_settings", lambda s: None)
     monkeypatch.setattr(program2.MainWindow, "_load_models_async", lambda self: None)
-    monkeypatch.setattr(program2, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
+    monkeypatch.setattr(op_window, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
     answers = []
     monkeypatch.setattr(program2.messagebox, "askyesno", lambda *a, **k: answers.pop(0) if answers else True)
     for name in ("showinfo", "showwarning", "showerror"):
