@@ -96,6 +96,25 @@ def test_list_verify_photos_all_controllers(tmp_path):
             for i in items] == [("Аюб", "A1.jpg"), ("Сулиман С", "A2.jpg")]
 
 
+def test_verify_index_finds_same_row_as_find_verify_row():
+    """Список «Проверки» ищет строки по индексу (2026-11-20, скорость) —
+    выбор тот же, что у find_verify_row: на случайных логах строка та же."""
+    import random
+    rng = random.Random(7)
+    names = ["A1.jpg", "A1", "A2.jpg", "A2.JPG", "IMG-1.jpg", "IMG-1", "B.png", ""]
+    for _ in range(300):
+        rows = [row(final_filename=rng.choice(names), original_filename=rng.choice(names),
+                    outcome=rng.choice(["PLUS", "MINUS", "REPEAT", "PLUS"]),
+                    source=rng.choice(["auto", "auto", "manual"]),
+                    source_folder=rng.choice(["Аюб", "Сулиман С", ""]))
+                for _ in range(rng.randint(0, 12))]
+        index = program2._VerifyIndex(rows)
+        for name in ("A1.jpg", "A2.jpg", "IMG-1.jpg", "B.png", "C.jpg"):
+            for folder in ("plus", "minus"):
+                for ctrl in (None, "Аюб", "Другой", ""):
+                    assert index.find(name, folder, ctrl) is find_verify_row(rows, name, folder, ctrl)
+
+
 # ─── 4. Исправление: что изменится ───────────────────────────────────────────
 # (запись в базу — tests/test_operator.py)
 
@@ -566,3 +585,43 @@ def test_ambiguous_serial_operator_chooses_account(tmp_path, monkeypatch):
         assert readings(f) == {"A9": "1050"}
     finally:
         app.destroy()
+
+
+# ─── Enter (2026-11-20) ──────────────────────────────────────────────────────
+
+class _Key:
+    def __init__(self, time):
+        self.time = time
+
+
+@needs_display
+def test_held_enter_verifies_one_photo(app):
+    """Удержание Enter: автоповтор — нажатия без отпускания. «Верно» — только
+    у первого фото; после отпускания Enter снова работает."""
+    app.open_verify_screen(_items(app)[0], 0)
+    for t in (1000, 1500, 1533, 1566):                   # первое нажатие и автоповтор
+        if app.take_return(_Key(t)):                     # как в привязке Enter экрана
+            app._current_screen._on_return()
+    assert [r["original_filename"] for r in log_rows(app.month) if r["verified_by"]] == ["w.jpg"]
+    app._on_return_release()
+    assert app.take_return(_Key(1700))                  # отпустили и нажали снова
+    assert not app.take_return(_Key(1733))
+    assert app.take_return(_Key(3000))                  # отпускание потерялось — через секунду можно
+
+
+@needs_display
+def test_enter_right_after_serial_edit_waits_for_lookup(edit_app):
+    """Номер исправили и сразу Enter (поиск по таблице ещё не прошёл): раньше
+    показание уходило прежнему абоненту. Теперь первый Enter показывает
+    найденного абонента, второй — принимает."""
+    app, photos, photo = edit_app
+    app.open_edit_screen(str(photo), "serial_not_found")
+    scr = app._current_screen
+    scr._reading_widget.set_digits("01050", None)
+    scr._lookup_by_serial("1284567")
+    assert scr._account_var.get() == "A1"
+    scr._serial_var.set("7654321")                      # номер абонента A2, поиск — через 0,35 с
+    scr._accept()
+    assert readings(app.month) == {} and scr._account_var.get() == "A2"
+    scr._accept()
+    assert readings(app.month) == {"A2": "1050"}

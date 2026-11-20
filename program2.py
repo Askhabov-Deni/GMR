@@ -437,6 +437,12 @@ def find_verify_row(log_rows: list[dict], file_name: str, folder: str,
         names |= {Path(n).stem for n in names}
         if file_name in names or stem in names:
             found.append(r)
+    return _pick_verify_row(found, controller)
+
+
+def _pick_verify_row(found: list[dict], controller: Optional[str]) -> Optional[dict]:
+    """Из подходящих строк (в порядке лога) — последняя; если задан controller —
+    последняя строка этого контролёра, а без таких — просто последняя."""
     if controller is not None:
         same = [r for r in found if (r.get("source_folder") or "") == controller]
         if same:
@@ -444,9 +450,35 @@ def find_verify_row(log_rows: list[dict], file_name: str, folder: str,
     return found[-1] if found else None
 
 
+class _VerifyIndex:
+    """Тот же поиск, что find_verify_row, но лог просматривается один раз:
+    строки PLUS/MINUS разложены по (исход, имя файла / имя без расширения).
+    Раньше список «Проверки» сравнивал каждое фото со всем логом — на месяце
+    в 1000 фото это 18 с на каждое «Верно» (замер 2026-11-20)."""
+
+    def __init__(self, log_rows: list[dict]):
+        wanted = set(VERIFY_FOLDER_OUTCOME.values())
+        self._by_name: dict[tuple, list[tuple[int, dict]]] = {}
+        for pos, r in enumerate(log_rows):
+            outcome = r.get("outcome")
+            if r.get("source") != "auto" or outcome not in wanted:
+                continue
+            names = {n for n in (r.get("final_filename", ""), r.get("original_filename", "")) if n}
+            names |= {Path(n).stem for n in names}
+            for n in names:
+                self._by_name.setdefault((outcome, n), []).append((pos, r))
+
+    def find(self, file_name: str, folder: str, controller: Optional[str] = None) -> Optional[dict]:
+        wanted = VERIFY_FOLDER_OUTCOME.get(folder)
+        hits = dict(self._by_name.get((wanted, file_name), ()))
+        hits.update(self._by_name.get((wanted, Path(file_name).stem), ()))
+        return _pick_verify_row([hits[p] for p in sorted(hits)], controller)
+
+
 def list_verify_photos(results_dir: str, log_rows: list[dict]) -> list[dict]:
     """Фото из plus/ и minus/ всех контролёров, у которых авто-строка PLUS/MINUS
     ещё не проверена."""
+    index = _VerifyIndex(log_rows)
     result = []
     for ctrl in controller_dirs(results_dir):
         name = "" if ctrl == Path(results_dir) else ctrl.name
@@ -457,7 +489,7 @@ def list_verify_photos(results_dir: str, log_rows: list[dict]) -> list[dict]:
             for p in sorted(d.iterdir()):
                 if not (p.is_file() and p.suffix.lower() in PHOTO_EXTS):
                     continue
-                row = find_verify_row(log_rows, p.name, folder, controller=name)
+                row = index.find(p.name, folder, controller=name)
                 if row is not None and not row.get("verified_by"):
                     result.append({"path": str(p), "log_row": row, "folder": folder})
     return result
@@ -915,7 +947,29 @@ class MainWindow(tk.Tk):
         self.models:    Optional[ModelBundle] = None
         self.config      = PipelineConfig()
 
+        # Удержание Enter: автоповтор Windows шлёт нажатия без отпускания —
+        # без защиты «Верно» отмечало подряд фото, которых оператор не видел
+        # (замер 2026-11-20: 3 нажатия подряд — 3 фото). Действие — только
+        # если Enter отпускали после прошлого действия или нажатие через
+        # секунду после прошлого (отпускание могло уйти в окно-вопрос).
+        self._return_released = True
+        self._last_return_time = 0
+        self.bind_all("<KeyRelease-Return>", self._on_return_release, add="+")
+
         self._do_login()
+
+    def _on_return_release(self, event=None):
+        self._return_released = True
+
+    def take_return(self, event=None) -> bool:
+        """Enter с клавиатуры: True — выполнить действие, False — это автоповтор."""
+        t = int(getattr(event, "time", 0) or 0)
+        ok = (self._return_released or t - self._last_return_time > 1000
+              or t < self._last_return_time)
+        self._last_return_time = t
+        if ok:
+            self._return_released = False
+        return ok
 
     def report_callback_exception(self, exc, val, tb):
         """Ошибка в обработчике кнопки: в журнал и оператору (с ярлыка консоли
@@ -1782,6 +1836,8 @@ class EditScreen(ttk.Frame):
         return self._focused_widget() in self._reading_widget.get_entry_widgets()
 
     def _hotkey_accept(self, event):
+        if event is not None and not self.app.take_return(event):
+            return "break"
         self._accept()
         return "break"
 
@@ -1863,7 +1919,7 @@ class EditScreen(ttk.Frame):
             # Кеш: не пересчитываем LANCZOS если размер не изменился
             cached = getattr(self, "_cached_render", None)
             if cached is None or cached[0] != (disp_w, disp_h):
-                img = self._orig_image.resize((disp_w, disp_h), Image.LANCZOS)
+                img = self._orig_image.resize((disp_w, disp_h), Image.LANCZOS, reducing_gap=3.0)
                 self._tk_img = ImageTk.PhotoImage(img)
                 self._cached_render = ((disp_w, disp_h), self._tk_img)
             else:
@@ -2115,7 +2171,7 @@ class EditScreen(ttk.Frame):
             self._serial_source = "Серийник: вручную"
         self._serial_match_var.set("")
         self._update_source_label()
-        if hasattr(self, "_serial_lookup_job"):
+        if getattr(self, "_serial_lookup_job", None):
             self.after_cancel(self._serial_lookup_job)
         self._serial_lookup_job = self.after(
             350, lambda: self._lookup_by_serial(self._serial_var.get())
@@ -2125,7 +2181,7 @@ class EditScreen(ttk.Frame):
         if self._filling_other:
             return
         self._account_match_var.set("")
-        if hasattr(self, "_account_lookup_job"):
+        if getattr(self, "_account_lookup_job", None):
             self.after_cancel(self._account_lookup_job)
         self._account_lookup_job = self.after(
             350, lambda: self._lookup_by_account(self._account_var.get())
@@ -2202,7 +2258,30 @@ class EditScreen(ttk.Frame):
             return "MINUS"
         return "PLUS"
 
+    def _flush_lookups(self) -> bool:
+        """Поиск по таблице, отложенный на 0,35 с после ввода номера или счёта,
+        выполнить сейчас. True — поля абонента от этого изменились."""
+        before = (self._serial_var.get(), self._account_var.get(), self._last_reading_var.get())
+        for attr, lookup, var in (("_serial_lookup_job", self._lookup_by_serial, self._serial_var),
+                                  ("_account_lookup_job", self._lookup_by_account, self._account_var)):
+            job = getattr(self, attr, None)
+            if not job:
+                continue
+            setattr(self, attr, None)
+            try:
+                self.tk.call("after", "info", job)      # ошибка — поиск уже выполнен
+            except tk.TclError:
+                continue
+            self.after_cancel(job)
+            lookup(var.get())
+        return before != (self._serial_var.get(), self._account_var.get(), self._last_reading_var.get())
+
     def _accept(self):
+        # Номер исправили и сразу «Принять»: поиск абонента ещё не прошёл, и
+        # показание уходило прежнему счёту (замер 2026-11-20). Сначала поиск;
+        # если абонент от этого сменился — показать, второй Enter примет.
+        if self._flush_lookups():
+            return
         if self._accept_btn["state"] == tk.DISABLED:
             return
 
@@ -2643,7 +2722,7 @@ class VerifyScreen(ttk.Frame):
 
     def _bind_keys(self):
         # Enter: «Верно», а в режиме исправления — «Сохранить правку»
-        self.app.bind_all("<Return>", lambda e: self._on_return())
+        self.app.bind_all("<Return>", lambda e: self._on_return() if self.app.take_return(e) else None)
         self.app.bind_all("<Escape>", lambda e: self._back())
         self.app.bind_all("<e>",      lambda e: None if self._edit_mode else self._enter_edit())
         self.app.bind_all("<E>",      lambda e: None if self._edit_mode else self._enter_edit())
@@ -2689,13 +2768,19 @@ class VerifyScreen(ttk.Frame):
         try:
             if self._orig_image is None:
                 self._orig_image = Image.open(self.item["path"])
-            img = self._orig_image.copy()
-            orig_w, orig_h = img.size
+            orig_w, orig_h = self._orig_image.size
             base_scale = min(w / orig_w, h / orig_h)
             disp_w = max(1, int(orig_w * base_scale * self._zoom_scale))
             disp_h = max(1, int(orig_h * base_scale * self._zoom_scale))
-            img = img.resize((disp_w, disp_h), Image.LANCZOS)
-            self._tk_img = ImageTk.PhotoImage(img)
+            # Кеш, как на экране «Обработка»: перетаскивание не пересчитывает
+            # фото заново (было 0,2 с на каждый шаг мыши, замер 2026-11-20)
+            cached = getattr(self, "_cached_render", None)
+            if cached is None or cached[0] != (disp_w, disp_h):
+                img = self._orig_image.resize((disp_w, disp_h), Image.LANCZOS, reducing_gap=3.0)
+                self._tk_img = ImageTk.PhotoImage(img)
+                self._cached_render = ((disp_w, disp_h), self._tk_img)
+            else:
+                self._tk_img = cached[1]
             self._canvas.delete("all")
             cx = w // 2 + self._pan_offset[0]
             cy = h // 2 + self._pan_offset[1]
