@@ -2009,6 +2009,7 @@ class EditScreen(ttk.Frame):
         self._source_var.set("  |  ".join(parts))
 
     def _lookup_by_serial(self, serial: str):
+        self._abonent_found = False
         self._serial_match_var.set("")
         for w in self._hint_frame.winfo_children():   # подсказка — только для ненайденного номера
             w.destroy()
@@ -2050,6 +2051,7 @@ class EditScreen(ttk.Frame):
                 self._account_match_var.set("")
 
                 self._last_reading_var.set(str(last) if pd.notna(last) else "—")
+                self._abonent_found = True
                 self._serial_match_var.set(f"✓ в базе → account: {account}")
                 self._update_delta()
                 self._update_accept_state()
@@ -2129,6 +2131,7 @@ class EditScreen(ttk.Frame):
         return f" | {HINT_NOTE}: {self._hint_used.serial}" if self._hint_used else ""
 
     def _lookup_by_account(self, account: str):
+        self._abonent_found = False
         self._account_match_var.set("")
 
         if self.app.df is None or not account:
@@ -2151,6 +2154,7 @@ class EditScreen(ttk.Frame):
             self._serial_match_var.set("")
 
             self._last_reading_var.set(str(last) if pd.notna(last) else "—")
+            self._abonent_found = True
             self._account_match_var.set(f"✓ в базе → serial: {serial}")
             self._update_delta()
             self._update_accept_state()
@@ -2171,6 +2175,8 @@ class EditScreen(ttk.Frame):
             self._serial_source = "Серийник: вручную"
         self._serial_match_var.set("")
         self._update_source_label()
+        self._abonent_found = False             # до поиска по новому номеру
+        self._update_accept_state()
         if getattr(self, "_serial_lookup_job", None):
             self.after_cancel(self._serial_lookup_job)
         self._serial_lookup_job = self.after(
@@ -2181,6 +2187,8 @@ class EditScreen(ttk.Frame):
         if self._filling_other:
             return
         self._account_match_var.set("")
+        self._abonent_found = False             # до поиска по новому счёту
+        self._update_accept_state()
         if getattr(self, "_account_lookup_job", None):
             self.after_cancel(self._account_lookup_job)
         self._account_lookup_job = self.after(
@@ -2236,9 +2244,15 @@ class EditScreen(ttk.Frame):
             self._delta_lbl.config(fg=CLR_GREEN)
 
     def _update_accept_state(self):
+        # Решение владельца 2026-11-20: принять можно, только если абонент
+        # найден в таблице по номеру или счёту. Иначе в поле счёта мог
+        # остаться прежний абонент, и показание уходило ему.
+        if not hasattr(self, "_accept_btn"):
+            return
         ok = (
             self._reading_widget.is_complete()
             and (self._serial_var.get().strip() or self._account_var.get().strip())
+            and (self.app.df is None or getattr(self, "_abonent_found", False))
         )
         self._accept_btn.config(state=tk.NORMAL if ok else tk.DISABLED)
 

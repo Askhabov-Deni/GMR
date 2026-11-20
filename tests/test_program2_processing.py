@@ -248,14 +248,17 @@ def test_accept_disabled_without_full_reading(app):
 
 
 @needs_display
-def test_accept_unknown_account_writes_log_only(app):
+def test_accept_blocked_for_unknown_account(app):
+    """Решение владельца 2026-11-20: абонента нет в таблице — «Принять»
+    недоступна (раньше — строка лога без показания); для таких фото «Нет в базе»."""
     scr = _open_first(app)
     scr._serial_var.set("5555555")
     scr._account_var.set("A9")                     # нет в таблице
     scr._reading_widget.set_digits("01200", None)
-    scr._update_accept_state()
     scr._accept()
-    assert _db_log(app)[-1]["account_id"] == "A9" and readings(app.month) == {}
+    scr._accept()
+    assert str(scr._accept_btn["state"]) == "disabled"
+    assert _db_log(app) == [] and readings(app.month) == {}
 
 
 @needs_display
@@ -442,9 +445,10 @@ def test_no_question_for_account_not_in_table(app):
     scr._serial_var.set("5555555")
     scr._account_var.set("A9")
     scr._reading_widget.set_digits("01200", None)
-    scr._update_accept_state()
     scr._accept()
-    assert app.asked == [] and _db_log(app)[-1]["account_id"] == "A9"
+    scr._accept()
+    assert app.asked == [] and _db_log(app) == []            # «Принять» недоступна
+    assert readings(app.month) == {"A9": "100"}
 
 
 @needs_display

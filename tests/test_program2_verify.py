@@ -625,3 +625,26 @@ def test_enter_right_after_serial_edit_waits_for_lookup(edit_app):
     assert readings(app.month) == {} and scr._account_var.get() == "A2"
     scr._accept()
     assert readings(app.month) == {"A2": "1050"}
+
+
+@needs_display
+def test_accept_blocked_when_serial_not_in_table(edit_app):
+    """Номер исправили на такой, которого нет в таблице: в поле счёта остался
+    прежний абонент. «Принять» недоступна, показание не пишется (решение
+    владельца 2026-11-20). Найденный по счёту абонент снова разрешает."""
+    app, photos, photo = edit_app
+    app.open_edit_screen(str(photo), "serial_not_found")
+    scr = app._current_screen
+    scr._reading_widget.set_digits("01050", None)
+    scr._lookup_by_serial("1284567")
+    assert scr._account_var.get() == "A1" and str(scr._accept_btn["state"]) == "normal"
+    scr._serial_var.set("9999999")
+    assert str(scr._accept_btn["state"]) == "disabled"   # сразу, до поиска
+    scr._accept()
+    scr._accept()
+    assert readings(app.month) == {} and scr._account_var.get() == "A1"
+    assert str(scr._accept_btn["state"]) == "disabled"
+    scr._account_var.set("A2")
+    scr._accept()                                       # поиск по счёту, подставлен номер A2
+    scr._accept()
+    assert readings(app.month) == {"A2": "1050"}
