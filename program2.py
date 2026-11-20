@@ -70,6 +70,8 @@ from src.gmr.operator.photos import (  # noqa: E402, F401
     _VerifyIndex,
 )
 from src.gmr.operator.decisions import (  # noqa: E402, F401
+    accounts_with_serial,
+    not_in_db_serial,
     plan_verify_correction,
     VerifyCorrection,
 )

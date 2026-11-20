@@ -11,13 +11,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 
 program2 = pytest.importorskip("program2")
 from src.gmr.operator import edit_screen as op_edit  # noqa: E402
 from src.gmr.operator import settings as op_settings  # noqa: E402
 from src.gmr.operator import window as op_window  # noqa: E402
-from src.gmr.domain import PipelineConfig  # noqa: E402
+from src.gmr.domain import PipelineConfig, RunSelection, RunSelectionPolicy  # noqa: E402
 from src.gmr.storage import LOG_COLUMNS  # noqa: E402
 from src.gmr.storage.month import MonthDB, Reading  # noqa: E402
 from tests._month import changes, img, log_rows, make_month, readings  # noqa: E402
@@ -476,6 +477,146 @@ def test_decision_does_not_overwrite_photo_with_same_name(app, action, folder):
     assert (app.photos / folder / "IMG-20260915-WA0001_2.jpg").exists()
     assert program2.read_image(str(taken))[0, 0, 0] == 77
     assert _db_log(app)[-1]["final_filename"] == "IMG-20260915-WA0001_2.jpg"
+
+
+# ─── «Нет в базе»: номер для следующего прогона (решение владельца 2026-11-21) ─
+# Прогон читает фото заново, если номер из строки «Нет в базе» появился в
+# таблице. Окно читает копию с подписью и может прочитать другой номер, чем
+# прогон с исходного фото; номер, который есть в таблице, возвращал фото в
+# очередь при первом же прогоне (тест месяца 2026-11-20).
+
+def test_not_in_db_serial_rule():
+    nid = program2.not_in_db_serial
+    assert nid("88888", "88888", "99999") == "99999"     # номер окна не меняли — номер прогона
+    assert nid("", None, "99999") == "99999"             # модели окна не ответили, поле пустое
+    assert nid("", "88888", "99999") == "99999"          # номер стёрли — пустое поле ничего не говорит
+    assert nid("77777", "88888", "99999") == "77777"     # оператор вписал свой номер
+    assert nid(" 77777 ", None, "") == "77777"
+    assert nid("88888", "88888", "") == "88888"          # авто-строки нет — номер окна
+    assert nid("", "88888", "") == ""
+
+
+def test_accounts_with_serial_looks_up_as_run():
+    from src.gmr.pipeline.run import serial_lookup
+    df = pd.DataFrame({CFG.col_serial: ["1234567", "0056", "0056", "nan", ""],
+                       CFG.col_account_id: ["A1", "A2", "A3", "A4", "A5"]})
+    assert program2.accounts_with_serial(df, CFG, " 1234567 ") == ["A1"]
+    assert program2.accounts_with_serial(df, CFG, "56") == ["A2", "A3"]          # '00'+номер
+    assert program2.accounts_with_serial(df, CFG, "") == []
+    assert program2.accounts_with_serial(None, CFG, "1234567") == []
+    in_table = serial_lookup(df, CFG)                                            # правило прогона
+    for s in ("1234567", "234567", "56", "056", "0056", "00056", "nan", "99999"):
+        assert bool(program2.accounts_with_serial(df, CFG, s)) == in_table(s), s
+
+
+def _run_read(app, serial, outcome="SERIAL_NOT_FOUND", name="IMG-20260915-WA0001.jpg"):
+    """Прогон прочитал с исходного фото номер serial (авто-строка, создавшая файл в question/)."""
+    with MonthDB(app.month.db) as db, db.transaction():
+        db.append_log_rows([{c: "" for c in LOG_COLUMNS} | {
+            "original_filename": name, "serial_id": serial, "outcome": outcome, "source": "auto",
+            "processed_by": "auto", "photo_hash": f"h-{name}", "source_folder": "Аюб"}])
+    app.reload()
+
+
+def _window_read(scr, serial):
+    """Модели окна прочитали копию фото с подписью: номер serial."""
+    scr._apply_model_result({"serial_text": serial, "serial_conf": 0.99, "reading_str": "01200",
+                             "digit_preds": None})
+
+
+def _ask_serial(scr, monkeypatch, answer):
+    """Окно спрашивает номер с фото — ответ answer (None — Cancel)."""
+    asked = []
+    monkeypatch.setattr(scr, "_ask_serial_not_in_table",
+                        lambda prompt, suggested: asked.append((prompt, suggested)) or answer)
+    return asked
+
+
+def _manual(app):
+    return [r for r in log_rows(app.month) if r["source"] == "manual"]
+
+
+def _next_run(app, name="IMG-20260915-WA0001.jpg"):
+    """Что сделает с фото следующий прогон (правило и поиск номера — как у прогона)."""
+    from src.gmr.pipeline.run import serial_lookup
+    rows = [r for r in log_rows(app.month) if r["photo_hash"] == f"h-{name}"]
+    return RunSelectionPolicy().decide(rows, False, serial_lookup(app.df, CFG))
+
+
+@needs_display
+def test_not_in_db_when_window_found_other_abonent(app, monkeypatch):
+    # прогон: номера нет в таблице; окно по копии с подписью — номер абонента A1
+    _run_read(app, "99999")
+    scr = _open_first(app)
+    _window_read(scr, "1234567")
+    assert scr._account_var.get() == "A1"
+    asked = _ask_serial(scr, monkeypatch, "99999")         # номер с фото — как предложено
+    scr._not_in_db()
+    ((prompt, suggested),) = asked
+    assert "л/с A1" in prompt and "1234567" in prompt and suggested == "99999"
+    assert app.asked == []                                 # второго вопроса нет
+    (r,) = _manual(app)
+    assert (r["outcome"], r["serial_id"], r["account_id"]) == ("NOT_IN_DB", "99999", "")
+    assert r["photo_hash"] == "h-IMG-20260915-WA0001.jpg"
+    assert (app.photos / "not_in_db" / "IMG-20260915-WA0001.jpg").exists()
+    assert _next_run(app) == RunSelection.SKIP_DONE        # раньше — READ: фото снова в очереди
+
+
+@needs_display
+def test_not_in_db_found_abonent_cancel_or_table_serial_changes_nothing(app, monkeypatch):
+    _run_read(app, "99999")
+    scr = _open_first(app)
+    _window_read(scr, "1234567")
+    _ask_serial(scr, monkeypatch, None)                     # Cancel
+    scr._not_in_db()
+    _ask_serial(scr, monkeypatch, "  ")                     # пусто
+    scr._not_in_db()
+    _ask_serial(scr, monkeypatch, "7654321")                # этот номер в таблице — у A2
+    scr._not_in_db()
+    assert _manual(app) == []
+    ((kind, (title, text)),) = [(k, a[:2]) for k, a in app.shown]
+    assert kind == "showwarning" and "7654321" in text and "л/с A2" in text and "«Принять»" in text
+    assert (app.photos / "question" / "serial_not_found" / "IMG-20260915-WA0001.jpg").exists()
+    assert app._current_screen is scr
+
+
+@needs_display
+def test_not_in_db_writes_run_serial_if_operator_did_not_change_it(app):
+    _run_read(app, "99999")
+    scr = _open_first(app)
+    _window_read(scr, "88888")                              # окно — другой номер, его тоже нет в таблице
+    scr._not_in_db()
+    assert "Серийник: 99999 (прочитан при обработке фото)" in app.asked[0][1]
+    (r,) = _manual(app)
+    assert (r["serial_id"], r["account_id"]) == ("99999", "")
+
+
+@needs_display
+def test_not_in_db_writes_operator_serial_without_previous_abonent(app):
+    _run_read(app, "99999")
+    scr = _open_first(app)
+    _window_read(scr, "1234567")                            # окно нашло A1
+    scr._serial_var.set("55555")                            # оператор: на фото другой номер
+    scr._not_in_db()                                        # поиск по нему — сразу, до решения
+    text = app.asked[0][1]
+    assert "Серийник: 55555\n" in text and "Account:  —" in text
+    (r,) = _manual(app)
+    assert (r["serial_id"], r["account_id"]) == ("55555", "")    # счёт A1 — от прежнего номера
+
+
+@needs_display
+def test_not_in_db_asks_when_run_serial_is_in_table(app, monkeypatch):
+    # прогон прочитал номер A2 неуверенно; окно — номер, которого нет в таблице
+    _run_read(app, "7654321", outcome="SERIAL_LOW_CONF")
+    scr = _open_first(app)
+    _window_read(scr, "88888")
+    asked = _ask_serial(scr, monkeypatch, "88888")
+    scr._not_in_db()
+    ((prompt, suggested),) = asked
+    assert "Номер 7654321 есть в таблице: л/с A2" in prompt and suggested == "88888"
+    (r,) = _manual(app)
+    assert (r["serial_id"], r["account_id"]) == ("88888", "")
+    assert _next_run(app) == RunSelection.SKIP_DONE
 
 
 # ─── Выгрузка и закрытие окна ────────────────────────────────────────────────

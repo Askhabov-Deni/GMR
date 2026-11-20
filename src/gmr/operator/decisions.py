@@ -1,4 +1,4 @@
-"""Исправление на «Проверке»: что поменяется в базе."""
+"""Решения оператора без окна: исправление на «Проверке», номер для «Нет в базе»."""
 from dataclasses import dataclass
 from typing import Optional
 
@@ -61,3 +61,33 @@ def plan_verify_correction(df: Optional[pd.DataFrame], cfg: PipelineConfig, row:
     c.delta = (c.reading - c.last_reading) if c.last_reading is not None else None
     c.outcome = "MINUS" if c.delta is not None and c.delta < 0 else "PLUS"
     return c
+
+
+# ─── «Нет в базе»: какой номер записать (решение владельца 2026-11-21) ───────
+# Номер в строке «Нет в базе» нужен прогону: если номер потом появится в
+# таблице, фото прочитается заново (RunSelectionPolicy). Окно читает копию
+# фото с подписью из question/ и может прочитать другой номер, чем прогон с
+# исходного фото (тест месяца 2026-11-20: одна цифра другая, и такой номер у
+# другого абонента есть в таблице). По такому номеру окно находило абонента,
+# номер из таблицы попадал в строку, и следующий прогон сразу возвращал фото
+# в очередь.
+
+def accounts_with_serial(df: Optional[pd.DataFrame], cfg: PipelineConfig, serial: str) -> list[str]:
+    """Лицевые счета таблицы с этим номером — так же, как ищет прогон: номер,
+    '0'+номер, '00'+номер. Пустой номер — ни одного."""
+    serial = _normalize_serial(serial or "")
+    if df is None or not serial:
+        return []
+    variants = set(lookup_variants(serial))
+    mask = df[cfg.col_serial].apply(lambda x: _normalize_serial(str(x)) in variants)
+    return list(dict.fromkeys(str(a).strip() for a in df.loc[mask, cfg.col_account_id]))
+
+
+def not_in_db_serial(field: str, model_serial: Optional[str], run_serial: str) -> str:
+    """Номер для строки «Нет в базе». Оператор вписал свой номер — его номер.
+    Иначе (в поле номер, прочитанный окном, или пусто) — номер, который
+    прочитал прогон с исходного фото: его же прочитает и следующий прогон."""
+    field = (field or "").strip()
+    if field and field != (model_serial or "").strip():
+        return field
+    return (run_serial or "").strip() or field

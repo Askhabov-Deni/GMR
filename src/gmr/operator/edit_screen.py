@@ -25,6 +25,7 @@ from .common import (
     REASON_LABELS,
     log,
 )
+from .decisions import accounts_with_serial, not_in_db_serial
 from .files import (
     DB_SERIAL_FIX_LIST,
     append_db_serial_fix,
@@ -64,6 +65,7 @@ class EditScreen(ttk.Frame):
         self._model_serial:  Optional[str] = None
         self._model_reading: Optional[str] = None
         self._reading_manually_changed: bool = False
+        self._abonent_found: bool = False      # абонент найден в таблице по номеру или счёту
 
         self._zoom_scale = 1.0
         self._pan_start  = (0, 0)
@@ -875,19 +877,75 @@ class EditScreen(ttk.Frame):
         finally:
             self._unbind_keys()
 
-    def _not_in_db(self):
-        serial  = self._serial_var.get().strip()
-        account = self._account_var.get().strip()
+    def _run_serial(self) -> str:
+        """Номер, который прочитал прогон с исходного фото (авто-строка лога,
+        создавшая этот файл в question/)."""
+        src = find_auto_row_for_output_file(
+            self.app.log_rows, Path(self.photo_path).name,
+            controller_name(self.photo_path, self.app.results_dir))
+        return ((src or {}).get("serial_id") or "").strip()
 
-        if not messagebox.askyesno(
-            "Нет в базе",
-            f"Счётчик не найден в базе абонентов.\n\n"
-            f"Серийник: {serial or '—'}\n"
-            f"Account:  {account or '—'}\n\n"
-            f"Переместить в папку «not_in_db»?",
-            parent=self.app,
-        ):
-            return
+    def _ask_serial_not_in_table(self, prompt: str, suggested: str) -> Optional[str]:
+        return simpledialog.askstring("Нет в базе", prompt, initialvalue=suggested, parent=self.app)
+
+    def _not_in_db(self):
+        """
+        «Нет в базе»: счётчика нет в таблице компании. По номеру в строке лога
+        прогон решает, читать ли фото заново: появился номер в таблице — читает.
+        Решение владельца 2026-11-21 (decisions.not_in_db_serial):
+          - оператор номер не менял — пишется номер, прочитанный прогоном;
+          - окно нашло абонента или номер есть в таблице — окно спрашивает
+            номер с фото: с номером из таблицы следующий прогон сразу вернул
+            бы фото в очередь;
+          - лицевой счёт из таблицы не пишется: это другой абонент (в поле
+            мог остаться счёт, найденный по прежнему номеру).
+        """
+        self._flush_lookups()
+        cfg, df = self.app.config, self.app.df
+        field   = self._serial_var.get().strip()
+        account = self._account_var.get().strip()
+        run_serial = self._run_serial()
+        serial = not_in_db_serial(field, self._model_serial, run_serial)
+        in_table = accounts_with_serial(df, cfg, serial)
+
+        if self._abonent_found or in_table:
+            if self._abonent_found:
+                what = f"В таблице найден абонент: л/с {account}" + (f", номер {field}" if field else "") + "."
+            else:
+                what = f"Номер {serial} есть в таблице: л/с {', '.join(in_table)}."
+            suggested = next((s for s in (run_serial, field)
+                              if s and not accounts_with_serial(df, cfg, s)), "")
+            typed = self._ask_serial_not_in_table(
+                f"{what}\n\n"
+                f"Если на фото этот счётчик — Cancel, затем «Принять».\n"
+                f"Если на фото другой номер — впишите его, как на фото:",
+                suggested)
+            serial = (typed or "").strip()
+            if not serial:
+                return
+            again = accounts_with_serial(df, cfg, serial)
+            if again:
+                messagebox.showwarning(
+                    "Номер есть в таблице",
+                    f"Номер {serial} есть в таблице: л/с {', '.join(again)}.\n\n"
+                    f"Если на фото этот счётчик — впишите номер в поле "
+                    f"«Серийный номер» и нажмите «Принять».",
+                    parent=self.app)
+                return
+            account = ""
+        else:
+            if table_serial_for_account(df, cfg, account) is not None:
+                account = ""            # счёт из таблицы, найденный по прежнему номеру
+            by_run = " (прочитан при обработке фото)" if serial and serial != field else ""
+            if not messagebox.askyesno(
+                "Нет в базе",
+                f"Счётчик не найден в базе абонентов.\n\n"
+                f"Серийник: {serial or '—'}{by_run}\n"
+                f"Account:  {account or '—'}\n\n"
+                f"Переместить в папку «not_in_db»?",
+                parent=self.app,
+            ):
+                return
 
         dst_dir = str(self.folder / "not_in_db")
         mr = self._model_result or {}
