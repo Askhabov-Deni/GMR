@@ -39,8 +39,9 @@ from src.gmr.domain import (
     ProcessedPhotoPolicy,
     SerialRecognizer,
 )
-from src.gmr.domain.account_match import AccountMarkerPolicy
+from src.gmr.domain.account_match import AccountMarkerPolicy, account_variants
 from src.gmr.domain.account_match import account_groups as build_account_groups
+from src.gmr.domain.area_code import other_code_note
 from src.gmr.domain.datasets import ACCOUNT, METER, SERIAL
 from src.gmr.domain.note_match import AccountIndex, interpret, shown
 from src.gmr.domain.note_match import rescue as note_rescue
@@ -203,6 +204,7 @@ def process_photo(
     serial_groups: Optional[dict] = None,
     notes: Optional["NoteContext"] = None,
     state: Optional[RunState] = None,
+    area_code: Optional[str] = None,
 ) -> PhotoResult:
     """
     Обрабатывает одну фотографию. Возвращает PhotoResult.
@@ -221,6 +223,9 @@ def process_photo(
     (account_groups_of(df, config): прогон строит его один раз).
     notes — надписи контролёров поверх фото (note_context_of, настройка
     месяца overlay_notes; None — не смотрим, всё как без них).
+    area_code — код участка контролёра (src/gmr/domain/area_code.py); прогон
+    тогда даёт account_groups только из счетов этого кода. Счёт по серийнику
+    с другим кодом — пометка в account_notes, исход тот же.
     """
     state = state if state is not None else RunState()
     models = RecognitionModels(
@@ -414,6 +419,9 @@ def process_photo(
     last_val   = df.at[row_idx, config.col_last_reading]
 
     result.account_id = account_id
+    other_code = other_code_note(account_id, area_code)
+    if other_code is not None:
+        result.account_notes = "; ".join(n for n in (result.account_notes, other_code) if n)
 
     try:
         last_reading = (
@@ -434,6 +442,12 @@ def process_photo(
     # это счётчик, неизвестно, и показание счёта по серийнику с другого фото
     # не должно молча закрыть это фото (close_waiting ищет по account_id).
     if failure is None:
+        if marker is not None and account_groups is not None and account_id.strip() not in account_groups:
+            # словарь — только счета участка, а серийник нашёл счёт другого кода:
+            # надпись сверяется и с ним, иначе спор был бы всегда
+            marker = _read_marker(account_recognizer, crops,
+                                  {**account_groups, account_id.strip(): account_variants(account_id.strip())},
+                                  config)
         conflict = _account_policy.conflict(account_id, marker, config.account_conf_thresh)
         if conflict is None and known is not None and known.conflict:
             # надпись поверх фото явно про другой счёт («лс…») — тоже спор

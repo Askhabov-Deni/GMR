@@ -27,6 +27,7 @@ from src.gmr.domain import (
     RunSelection,
     RunSelectionPolicy,
 )
+from src.gmr.domain.area_code import accounts_by_controller, controller_code, only_code
 from src.gmr.domain.photo_date import reading_date
 from src.gmr.domain.serial_match import lookup_variants, normalize_serial
 from src.gmr.ml.loader import default_device, load_models
@@ -327,6 +328,10 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
     account_groups_cache = None                         # словарь счетов для модели надписи (один на прогон)
     serial_groups_cache = None                          # словарь номеров для серийника по таблице (этап 6b)
     notes_cache = None                                  # надписи поверх фото: счета таблицы, образцы
+    # код участка контролёра (area_code.py): счета таблицы, найденные по его фото
+    table_accounts = set(df[config.col_account_id].astype(str).str.strip())
+    area_accounts = accounts_by_controller(store.log_rows, table_accounts)
+    groups_by_code: dict = {}                           # словарь надписи для каждого кода
 
     def load():
         log.info("Загружаем модели...")
@@ -408,6 +413,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
 
         stats: dict[Outcome, int] = {o: 0 for o in Outcome}
         skipped: dict[str, int] = {}
+        code_logged = None
 
         for photo_path_obj in photos:
             photo_path = photo_path_obj  # совместимость с process_photo (ожидает str)
@@ -445,6 +451,15 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                 if old is not None and old.is_file():
                     old.unlink()
 
+            code = controller_code(area_accounts.get(subfolder_name, ()))
+            if code != code_logged:
+                log.info(f"  Код участка контролёра: {code}" if code else "  Код участка контролёра пока не известен")
+                code_logged = code
+            groups = account_groups_cache
+            if groups is not None and code is not None:
+                if code not in groups_by_code:
+                    groups_by_code[code] = only_code(account_groups_cache, code)
+                groups = groups_by_code[code]
             try:
                 if hash_error is not None:
                     raise hash_error
@@ -454,10 +469,11 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
                     models.digit_recognizer, models.serial_recognizer,
                     photo_hash=photo_hash, reread=bool(rows),
                     account_recognizer=models.account_recognizer,
-                    account_groups=account_groups_cache,
+                    account_groups=groups,
                     serial_groups=serial_groups_cache,
                     notes=notes_cache,
                     state=state,
+                    area_code=code,
                 )
             except Exception as e:
                 # Ошибка на одном фото не останавливает прогон: фото → question/error,
@@ -508,6 +524,8 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
             for row in [log_row, *closed]:
                 state.log_rows.append(row)
                 index.add(row)
+            for folder, accounts in accounts_by_controller([log_row, *closed], table_accounts).items():
+                area_accounts.setdefault(folder, set()).update(accounts)
             # Счёт «обработан в прогоне», только если получил показание: неудачное
             # фото не блокирует следующее фото того же счётчика (этап 3, пункт 3)
             if result.account_id and result.outcome in (Outcome.PLUS, Outcome.MINUS):

@@ -11,6 +11,7 @@ import pandas as pd
 from PIL import Image, ImageTk
 
 from src.gmr.domain import find_auto_row_for_output_file
+from src.gmr.domain.area_code import other_code_note
 from src.gmr.domain.datasets import to_etalon
 from src.gmr.domain.serial_match import lookup_variants
 from src.gmr.domain.serial_match import normalize_serial as _normalize_serial
@@ -444,7 +445,11 @@ class EditScreen(ttk.Frame):
 
                 self._last_reading_var.set(str(last) if pd.notna(last) else "—")
                 self._abonent_found = True
-                self._serial_match_var.set(f"✓ есть в таблице: л/с {account}")
+                other = other_code_note(account, self.app.controller_code(
+                    controller_name(self.photo_path, self.app.results_dir)))
+                # счёт другого участка — строка оранжевая (начинается не с «✓»)
+                self._serial_match_var.set(f"⚠ есть в таблице: л/с {account}, но {other}" if other
+                                           else f"✓ есть в таблице: л/с {account}")
                 self._update_delta()
                 self._update_accept_state()
                 return

@@ -11,6 +11,7 @@ from src.gmr.application import month as month_app
 from src.gmr.application.month import ExportLocked, NotAMonth
 from src.gmr.application.operator import OperatorSession
 from src.gmr.domain import PipelineConfig, find_auto_row_for_output_file
+from src.gmr.domain.area_code import accounts_by_controller, controller_code
 from src.gmr.domain.preset import RecognitionPreset
 from src.gmr.storage import LOG_COLUMNS as _LOG_COLUMNS
 from src.gmr.storage import log_path_for
@@ -497,6 +498,13 @@ class MainWindow(tk.Tk):
         self._serial_index = None
         self.log_rows.append(row)
         return old
+
+    def controller_code(self, controller: str) -> Optional[str]:
+        """Код участка контролёра — по счетам таблицы из его строк лога (area_code.py)."""
+        if self.df is None or not controller:
+            return None
+        table = set(self.df[self.config.col_account_id].astype(str).str.strip())
+        return controller_code(accounts_by_controller(self.log_rows, table).get(controller, ()))
 
     def serial_index(self) -> Optional[SerialIndex]:
         """Индекс серийников таблицы для подсказки (строится один раз: номера,

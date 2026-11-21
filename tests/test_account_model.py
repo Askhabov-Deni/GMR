@@ -475,3 +475,52 @@ def test_dataset_margin_only_when_reading(tmp_path, monkeypatch):
     assert calls == []                                          # обучение — своё, случайное поле
     ds.AccountDataset(items, 48, 224)[0]
     assert calls == [(40, 120)]                                 # проверка и тест — как при чтении
+
+
+# ─── код участка контролёра (area_code.py) ───────────────────────────────────
+
+AREA_TABLE = TABLE + [{"serial": "555555", "account_id": "0429000011", "last_reading": "1100"}]
+
+
+def _area_photo(config, serial_text, marker, **kw):
+    from src.gmr.domain.account_match import account_groups
+    from src.gmr.domain.area_code import only_code
+    crops = make_meter_crops()
+    crops.append({"class": "marker_id", "conf": 0.9, "angle": 0.0,
+                  "bbox": (0, 150, 120, 190), "crop": make_crop(40, 120), "path": None})
+    digit_crops, arrays = make_digit_crops_with_centers([i * 40 for i in range(5)])
+    docr = FakeDigitOCR({id(a): (d, 0.95) for a, d in zip(arrays, "01200")})
+    df = make_df(AREA_TABLE)
+    groups = only_code(account_groups(df[config.col_account_id]), "1300")
+    return process_photo("p.jpg", df, config, FakeMeterDetector(crops), FakeDigitDetector(digit_crops), docr,
+                         FakeSerialOCR(serial_text, 0.95), account_recognizer=CrnnAccountRecognizer(marker),
+                         account_groups=groups, area_code="1300", **kw)
+
+
+def test_marker_looks_only_among_controller_code(base_config):
+    marker = FakeAccountInferer("1300000065", 0.99)
+    r = _area_photo(base_config, "123456", marker)
+    assert (r.outcome, r.account_id) == (Outcome.PLUS, "1300000065")
+    assert set(marker.calls[0]) == {"1300000065", "1300000082"}     # счёта 0429… в словаре нет
+    assert len(marker.calls) == 1 and r.account_notes is None
+
+
+def test_serial_account_of_other_code_is_checked_and_noted(base_config):
+    # серийник нашёл счёт чужого кода: надпись сверяется и с ним (иначе спор
+    # был бы всегда), исход тот же, в пояснении — «не с участка»
+    marker = FakeAccountInferer("0429000011", 0.99)
+    r = _area_photo(base_config, "555555", marker)
+    assert (r.outcome, r.account_id) == (Outcome.PLUS, "0429000011")
+    assert "0429000011" in marker.calls[1]
+    assert r.account_notes == "счёт не с участка контролёра: код 0429, у контролёра 1300"
+
+
+def test_other_code_note_without_marker_model(base_config):
+    from src.gmr.pipeline import output as pipeline_output
+    crops = make_meter_crops()
+    digit_crops, arrays = make_digit_crops_with_centers([i * 40 for i in range(5)])
+    docr = FakeDigitOCR({id(a): (d, 0.95) for a, d in zip(arrays, "01200")})
+    r = process_photo("p.jpg", make_df(AREA_TABLE), base_config, FakeMeterDetector(crops),
+                      FakeDigitDetector(digit_crops), docr, FakeSerialOCR("555555", 0.95), area_code="1300")
+    assert (r.outcome, r.account_id) == (Outcome.PLUS, "0429000011")
+    assert "не с участка" in pipeline_output.make_log_row("p.jpg", r, base_config)["notes"]

@@ -1196,3 +1196,27 @@ def test_edit_preset_from_menu(app, monkeypatch):
     assert "Настройки распознавания…" in [app._month_menu.entrycget(i, "label")
                                          for i in range(app._month_menu.index("end") + 1)
                                          if app._month_menu.type(i) == "command"]
+
+
+# ─── Код участка контролёра (area_code.py) ───────────────────────────────────
+
+@needs_display
+def test_serial_of_other_area_is_marked(tmp_path, monkeypatch):
+    # у «Аюб» найдено 10 счетов кода 1300 — номер, ведущий к счёту 0429…, оранжевый с пояснением
+    table = [(f"10000{i:02d}", f"13000000{i:02d}", "100", "") for i in range(1, 11)]
+    table.append(("7654321", "0429000001", "500", ""))
+    done = [{"original_filename": f"d{i}.jpg", "outcome": "PLUS", "source": "auto", "processed_by": "auto",
+             "account_id": f"13000000{i:02d}", "source_folder": "Аюб"} for i in range(1, 11)]
+    f = make_month(tmp_path, table, AUTO + done)
+    img(f.results / "Аюб" / "question" / "serial_not_found" / "IMG-20260915-WA0001.jpg", 10)
+    app = _window(monkeypatch, program2.AppSettings(operator_name="Оператор", month_dir=str(f.root)))
+    try:
+        assert app.controller_code("Аюб") == "1300" and app.controller_code("Фатима Я") is None
+        scr = _open_first(app)
+        scr._lookup_by_serial("7654321")
+        assert scr._serial_match_var.get() == ("⚠ есть в таблице: л/с 0429000001, но счёт не с участка "
+                                               "контролёра: код 0429, у контролёра 1300")
+        scr._lookup_by_serial("1000001")
+        assert scr._serial_match_var.get() == "✓ есть в таблице: л/с 1300000001"
+    finally:
+        app.destroy()
