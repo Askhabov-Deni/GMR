@@ -1236,3 +1236,22 @@ def test_queue_next_photo_keeps_hotkeys_and_one_screen(app):
     assert nxt is not scr and app._keys_owner is nxt and app.bind_all("<Delete>")
     from src.gmr.operator.edit_screen import EditScreen
     assert [c for c in app.winfo_children() if isinstance(c, EditScreen) and c.winfo_manager()] == [nxt]
+
+
+@needs_display
+def test_login_enter_continues(monkeypatch):
+    # вход при каждом запуске: Enter = «Продолжить» (раньше — только мышью)
+    import tkinter as tk
+    from src.gmr.operator.dialogs import LoginDialog
+    root = new_window(tk.Tk)
+    root.withdraw()
+    seen = []
+
+    def press_enter():
+        dlg = next(w for w in root.winfo_children() if isinstance(w, LoginDialog))
+        seen.append((bool(dlg.bind("<Return>")), str(dlg.focus_lastfor()).endswith("button")))
+        dlg._continue()
+    root.after(50, press_enter)
+    dlg = LoginDialog(root, program2.AppSettings(operator_name="Оператор", month_dir=""))
+    assert dlg.action == "continue" and seen == [(True, True)]
+    root.destroy()

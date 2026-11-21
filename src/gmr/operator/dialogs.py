@@ -172,8 +172,12 @@ class LoginDialog(tk.Toplevel):
         f.pack()
         ttk.Label(f, text="Вы вошли как:", font=("Segoe UI", 10)).pack()
         ttk.Label(f, text=s.operator_name, font=("Segoe UI", 14, "bold")).pack(pady=(4, 20))
-        ttk.Button(f, text="Продолжить", command=self._continue).pack(fill=tk.X, pady=4)
+        go = ttk.Button(f, text="Продолжить   Enter", command=self._continue)
+        go.pack(fill=tk.X, pady=4)
         ttk.Button(f, text="Сменить пользователя", command=self._change).pack(fill=tk.X)
+        self.bind("<Return>", lambda e: self._continue())     # при каждом запуске — без мыши
+        self.bind("<KP_Enter>", lambda e: self._continue())
+        go.focus_set()
 
     def _continue(self):
         self.action = "continue"
