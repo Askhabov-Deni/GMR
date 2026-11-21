@@ -10,6 +10,8 @@ from src.gmr.domain.preset import (
     RecognitionPreset,
 )
 
+from src.gmr.ui.run_dialog import center_on
+
 from .settings import AppSettings
 from .theme import BG, FONT, action_button
 
@@ -26,6 +28,7 @@ class SettingsDialog(tk.Toplevel):
         self._new_month = new_month
         self._build(settings)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
+        center_on(self, self.master)
         self.wait_window()
 
     def _build(self, s: AppSettings):
@@ -136,6 +139,7 @@ class PresetDialog(tk.Toplevel):
         ttk.Button(btns, text=ok_text, command=self._save).pack(side=tk.LEFT, padx=6)
         ttk.Button(btns, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=6)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
+        center_on(self, self.master)
         self.wait_window()
 
     def _save(self):
@@ -160,6 +164,7 @@ class LoginDialog(tk.Toplevel):
         self.action = None  # "continue" | "change"
         self._build(settings)
         self.protocol("WM_DELETE_WINDOW", lambda: None)
+        center_on(self, self.master)
         self.wait_window()
 
     def _build(self, s: AppSettings):
@@ -212,6 +217,7 @@ class TextDialog(tk.Toplevel):
         entry.select_range(0, tk.END)
         self.wait_visibility()
         self.grab_set()
+        center_on(self, self.master)
         self.wait_window()
 
     def _ok(self):

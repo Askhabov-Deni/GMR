@@ -1,11 +1,11 @@
 """Общее для окна: журнал окна (program2.log), цвета, папки очереди."""
 import logging
 import sys
-from pathlib import Path
 
 from src.gmr.domain import QUESTION_REASONS
+from src.gmr.frozen import program_dir
 
-_BASE = Path(__file__).resolve().parents[3]   # папка проекта (рядом — program2.py)
+_BASE = program_dir()          # папка проекта (рядом — program2.py); в сборке — папка exe
 _LOG_FILE = _BASE / "program2.log"
 
 

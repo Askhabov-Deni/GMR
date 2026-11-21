@@ -23,6 +23,7 @@ from models.yolo_all_detect.infer_yolo import YOLOInferer
 from src.gmr.application.recognition import RecognitionModels
 from src.gmr.domain.config import PipelineConfig
 from src.gmr.domain.datasets import ACCOUNT, METER, SERIAL, standard_class
+from src.gmr.frozen import resolve
 from src.gmr.ml.adapters import (
     CnnDigitRecognizer,
     CrnnAccountRecognizer,
@@ -36,7 +37,7 @@ def default_device() -> "torch.device":
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def load_meter_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = str) -> YoloMeterDetector:
+def load_meter_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = resolve) -> YoloMeterDetector:
     # запас вокруг рамки серийника (этап 5b): при 0 YOLOInferer создаётся как раньше
     p = config.serial_crop_pad                                 # класс у детектора — по-старому или по-новому
     pad = {"pad": {"serial_number": p, "serial": p}} if p else {}
@@ -47,7 +48,7 @@ def load_meter_detector(config: PipelineConfig, resolve_path: Callable[[str], st
     ))
 
 
-def load_digit_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = str) -> YoloDigitDetector:
+def load_digit_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = resolve) -> YoloDigitDetector:
     return YoloDigitDetector(YOLOInferer(
         resolve_path(config.digit_detect_model),
         conf_thresh=config.digit_detect_conf_thresh,
@@ -57,7 +58,7 @@ def load_digit_detector(config: PipelineConfig, resolve_path: Callable[[str], st
 
 def load_digit_recognizer(
     config: PipelineConfig, device: Optional["torch.device"] = None,
-    resolve_path: Callable[[str], str] = str,
+    resolve_path: Callable[[str], str] = resolve,
 ) -> CnnDigitRecognizer:
     return CnnDigitRecognizer(
         CNNInferer(resolve_path(config.digit_ocr_model), device=device or default_device())
@@ -66,7 +67,7 @@ def load_digit_recognizer(
 
 def load_serial_recognizer(
     config: PipelineConfig, device: Optional["torch.device"] = None,
-    resolve_path: Callable[[str], str] = str,
+    resolve_path: Callable[[str], str] = resolve,
 ) -> CrnnSerialRecognizer:
     return CrnnSerialRecognizer(
         CRNNInferer(resolve_path(config.serial_ocr_model), device=device or default_device())
@@ -75,7 +76,7 @@ def load_serial_recognizer(
 
 def load_account_recognizer(
     config: PipelineConfig, device: Optional["torch.device"] = None,
-    resolve_path: Callable[[str], str] = str,
+    resolve_path: Callable[[str], str] = resolve,
 ) -> Optional[CrnnAccountRecognizer]:
     """Модель надписи маркером; None, если account_ocr_model пуст."""
     if not config.account_ocr_model:
@@ -126,7 +127,7 @@ def check_account_class(meter_detector) -> None:
 def load_models(
     config: PipelineConfig,
     device: Optional["torch.device"] = None,
-    resolve_path: Callable[[str], str] = str,
+    resolve_path: Callable[[str], str] = resolve,
 ) -> RecognitionModels:
     """
     resolve_path — как превратить путь из конфига в путь к файлу весов

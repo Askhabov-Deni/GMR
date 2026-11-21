@@ -29,7 +29,12 @@ _MODELS = "Загружаем модели"
 
 def process_command(project: Path, month_dir: str, reread: bool = False) -> list[str]:
     """Команда прогона. Под pythonw.exe (ярлык без консоли) вывод нужен
-    процессу прогона, поэтому он запускается обычным python.exe."""
+    процессу прогона, поэтому он запускается обычным python.exe. В сборке
+    (docs/BUILD.md) прогон — gmr.exe рядом с окном."""
+    from src.gmr.frozen import FROZEN
+    if FROZEN:
+        cmd = [str(Path(sys.executable).with_name("gmr.exe")), "process", str(month_dir)]
+        return cmd + (["--reread"] if reread else [])
     exe = Path(sys.executable)
     if exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").is_file():
         exe = exe.with_name("python.exe")

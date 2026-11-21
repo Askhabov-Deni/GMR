@@ -35,7 +35,9 @@ from typing import Optional
 import cv2
 import numpy as np
 
-BANK_PATH = Path(__file__).resolve().parents[2] / "models" / "overlay" / "glyphs.npz"
+from src.gmr.frozen import bundle_dir
+
+BANK_PATH = bundle_dir() / "models" / "overlay" / "glyphs.npz"
 CHARS = "0123456789покслцПОКЛСЦ/"       # «/» — в «л/с», «ц» — в «лц»
 GLYPH_H, GLYPH_W = 48, 36
 MAX_SIDE = 1280             # ищется на уменьшенном фото: надпись крупная
