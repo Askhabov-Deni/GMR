@@ -125,7 +125,7 @@ def to_html(md: str, base: Path, title: str = "Инструкция операт
         i += 1
     flush_para()
     close_lists()
-    ver = f'<p class="ver">GMR Оператор {html.escape(version)}</p>' if version else ""
+    ver = f'<p class="ver">GMR {html.escape(version)}</p>' if version else ""
     return (f'<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>{html.escape(title)}</title>'
             f"<style>{CSS}</style></head><body>{ver}{''.join(out)}</body></html>\n")
 

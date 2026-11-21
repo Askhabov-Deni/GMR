@@ -348,12 +348,25 @@ class ExportReport:
     with_reading: int
     log_path: str
     log_rows: int
+    paths: list = field(default_factory=list)      # все файлы показаний (по форматам)
 
     def text(self) -> str:
-        return (f"Выгрузка: {self.path}\n"
+        files = "\n".join(f"Выгрузка: {p}" for p in (self.paths or [self.path]))
+        return (f"{files}\n"
                 f"  абонентов: {self.rows}, с показанием: {self.with_reading}, "
                 f"без показания: {self.rows - self.with_reading}\n"
                 f"Лог: {self.log_path} ({self.log_rows} строк)")
+
+
+# Форматы выгрузки показаний (2026-11-22, просьба владельца: «выбор, в каком
+# виде»): расширение → название для оператора. показания.xlsx пишется всегда
+# (его ждёт закрытие окна и `gmr.py export`), остальные — по выбору.
+EXPORT_FORMATS = {
+    "xlsx": "Excel (.xlsx) — обычный",
+    "xls": "Excel 97–2003 (.xls) — для старых программ",
+    "csv": "CSV (.csv) — текст с «;», открывается везде",
+    "ods": "OpenDocument (.ods) — LibreOffice, «Мой Офис»",
+}
 
 
 _INT = re.compile(r"-?(0|[1-9]\d*)")
@@ -381,20 +394,20 @@ def _replace(tmp: Path, target: Path) -> None:
         ) from None
 
 
-def export_month(month_dir: str, config: Optional[PipelineConfig] = None) -> ExportReport:
+def export_month(month_dir: str, config: Optional[PipelineConfig] = None,
+                 formats: tuple = ("xlsx",)) -> ExportReport:
     """показания.xlsx (столбцы таблицы компании, абоненты «в таблице», показания
-    из базы, «Разница» — формулой, как в исходнике) и лог.csv. Файлы
-    заменяются целиком; если показания.xlsx открыт — ExportLocked, база не
-    меняется."""
-    import openpyxl
-    from openpyxl.styles import Font
-    from openpyxl.utils import get_column_letter
-
+    из базы, «Разница» — формулой, как в исходнике) и лог.csv; formats — ещё
+    показания.xls / .csv / .ods (EXPORT_FORMATS). Файлы заменяются целиком;
+    если файл открыт в Excel — ExportLocked, база не меняется."""
     cfg = config or PipelineConfig()
     folder = MonthFolder(Path(month_dir))
     if not is_month(folder):
         raise ValueError(f"Месяц не создан: {folder.root}. Сначала: "
                          f"python gmr.py month \"{folder.root}\" --table <таблица компании>")
+    unknown = [f for f in formats if f not in EXPORT_FORMATS]
+    if unknown:
+        raise ValueError(f"Нет такого формата выгрузки: {', '.join(unknown)} (есть: {', '.join(EXPORT_FORMATS)})")
     with MonthDB(folder.db) as db:
         columns = db.columns()
         sheet = db.meta("sheet") or "Лист1"
@@ -404,21 +417,16 @@ def export_month(month_dir: str, config: Optional[PipelineConfig] = None) -> Exp
         log_rows = db.log_rows()
         readings_ignored = db.meta(META_TABLE_READINGS) == "ignored"
 
-    letter = {c: get_column_letter(i) for i, c in enumerate(columns, start=1)}
     # лицевой счёт и номер — всегда текст (ведущие нули); остальное — как было
     # в исходнике; показания — числом
     text_cols = ({cfg.col_account_id, cfg.col_serial} | (set(columns) - numeric)) - {cfg.col_new_reading}
-    formula = cfg.col_difference in letter and cfg.col_new_reading in letter and cfg.col_last_reading in letter
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = sheet[:31]
-    ws.append(columns)
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-    widths = {c: len(c) for c in columns}
+    formula = cfg.col_difference in columns and cfg.col_new_reading in columns and cfg.col_last_reading in columns
+    grid = _ExportGrid(columns, sheet[:31], [c in text_cols for c in columns],
+                       columns.index(cfg.col_difference) if formula else None,
+                       columns.index(cfg.col_new_reading) if formula else None,
+                       columns.index(cfg.col_last_reading) if formula else None)
     with_reading = 0
-    for n, a in enumerate(abonents, start=2):
+    for a in abonents:
         r = readings.get(a.account)
         with_reading += r is not None
         row = []
@@ -430,24 +438,17 @@ def export_month(month_dir: str, config: Optional[PipelineConfig] = None) -> Exp
                 text = r.date
             elif col == cfg.col_date and r is None and readings_ignored:
                 text = ""                                      # дата показания, которое не взято
-            if col == cfg.col_difference and formula:
-                row.append(f"={letter[cfg.col_new_reading]}{n}-{letter[cfg.col_last_reading]}{n}")
-                continue
-            widths[col] = max(widths[col], len(text))
             row.append(_cell_value(text, col in text_cols))
-        ws.append(row)
-    for col in columns:
-        ws.column_dimensions[letter[col]].width = min(widths[col] + 2, 50)
-        if col in text_cols:
-            for (cell,) in ws.iter_rows(min_row=2, min_col=columns.index(col) + 1,
-                                        max_col=columns.index(col) + 1):
-                cell.number_format = "@"
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
+        grid.rows.append(row)
 
-    tmp = folder.root / ".показания.tmp.xlsx"
-    wb.save(str(tmp))
-    _replace(tmp, folder.export_xlsx)
+    written = {}
+    for fmt in dict.fromkeys(("xlsx", *formats)):      # xlsx — всегда
+        target = folder.export_xlsx if fmt == "xlsx" else folder.root / f"показания.{fmt}"
+        tmp = folder.root / f".показания.tmp.{fmt}"
+        _WRITERS[fmt](grid, tmp)
+        _replace(tmp, target)
+        written[fmt] = str(target)
+    chosen = [written[f] for f in dict.fromkeys(formats)] or [written["xlsx"]]
 
     tmp = folder.root / ".лог.tmp.csv"
     with open(tmp, "w", newline="", encoding="utf-8") as f:
@@ -456,8 +457,142 @@ def export_month(month_dir: str, config: Optional[PipelineConfig] = None) -> Exp
         w.writerows(log_rows)
     _replace(tmp, folder.export_log)
 
-    return ExportReport(str(folder.export_xlsx), len(abonents), with_reading,
-                        str(folder.export_log), len(log_rows))
+    return ExportReport(chosen[0], len(abonents), with_reading, str(folder.export_log), len(log_rows),
+                        paths=chosen)
+
+
+@dataclass
+class _ExportGrid:
+    """Таблица выгрузки: значения ячеек и что в каком столбце."""
+    columns: list
+    sheet: str
+    is_text: list                      # столбец — текст (ведущие нули не теряются)
+    diff: Optional[int]                # «Разница» = показание − прошлое (индексы столбцов)
+    new: Optional[int]
+    last: Optional[int]
+    rows: list = field(default_factory=list)
+
+    def difference(self, row: list):
+        """Разница значением — для форматов, где формулу не пишем (csv, ods)."""
+        try:
+            return row[self.new] - row[self.last] if row[self.new] != "" and row[self.last] != "" else ""
+        except TypeError:
+            return ""
+
+    def widths(self) -> list[int]:
+        out = [len(str(c)) for c in self.columns]
+        for row in self.rows:
+            for i, v in enumerate(row):
+                out[i] = max(out[i], len(str(v)))
+        return [min(w + 2, 50) for w in out]
+
+
+def _write_xlsx(g: _ExportGrid, path: Path) -> None:
+    import openpyxl
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    letters = [get_column_letter(i) for i in range(1, len(g.columns) + 1)]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = g.sheet
+    ws.append(g.columns)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for n, row in enumerate(g.rows, start=2):
+        if g.diff is not None:
+            row = list(row)
+            row[g.diff] = f"={letters[g.new]}{n}-{letters[g.last]}{n}"
+        ws.append(row)
+    for i, width in enumerate(g.widths()):
+        ws.column_dimensions[letters[i]].width = width
+        if g.is_text[i]:
+            for (cell,) in ws.iter_rows(min_row=2, min_col=i + 1, max_col=i + 1):
+                cell.number_format = "@"
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    wb.save(str(path))
+
+
+def _write_xls(g: _ExportGrid, path: Path) -> None:
+    """Excel 97–2003: до 65 535 абонентов (больше в .xls не помещается)."""
+    import xlwt
+    from openpyxl.utils import get_column_letter
+
+    if len(g.rows) >= 65536:
+        raise ValueError(f"В .xls не помещается {len(g.rows)} строк — выгрузите в .xlsx")
+    wb = xlwt.Workbook(encoding="utf-8")
+    ws = wb.add_sheet(g.sheet)
+    bold, text = xlwt.easyxf("font: bold on"), xlwt.easyxf(num_format_str="@")
+    for i, c in enumerate(g.columns):
+        ws.write(0, i, c, bold)
+    for n, row in enumerate(g.rows, start=1):
+        for i, v in enumerate(row):
+            if i == g.diff:
+                ws.write(n, i, xlwt.Formula(f"{get_column_letter(g.new + 1)}{n + 1}-{get_column_letter(g.last + 1)}{n + 1}"))
+            elif g.is_text[i]:
+                ws.write(n, i, v, text)
+            else:
+                ws.write(n, i, v)
+    for i, width in enumerate(g.widths()):
+        ws.col(i).width = 256 * width
+    ws.set_panes_frozen(True)
+    ws.set_horz_split_pos(1)
+    wb.save(str(path))
+
+
+def _write_csv(g: _ExportGrid, path: Path) -> None:
+    """«;» и UTF-8 с BOM — Excel открывает двойным щелчком без мастера импорта."""
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(g.columns)
+        for row in g.rows:
+            if g.diff is not None:
+                row = list(row)
+                row[g.diff] = g.difference(row)
+            w.writerow(row)
+
+
+def _write_ods(g: _ExportGrid, path: Path) -> None:
+    """OpenDocument без лишних библиотек: zip с content.xml (как его пишет LibreOffice)."""
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    def cell(v, as_text):
+        if v == "" or v is None:
+            return "<table:table-cell/>"
+        if not as_text and isinstance(v, (int, float)):
+            return f'<table:table-cell office:value-type="float" office:value="{v}"><text:p>{v}</text:p></table:table-cell>'
+        return f'<table:table-cell office:value-type="string"><text:p>{escape(str(v))}</text:p></table:table-cell>'
+
+    rows = ["<table:table-row>" + "".join(cell(c, True) for c in g.columns) + "</table:table-row>"]
+    for row in g.rows:
+        if g.diff is not None:
+            row = list(row)
+            row[g.diff] = g.difference(row)
+        rows.append("<table:table-row>" + "".join(cell(v, g.is_text[i]) for i, v in enumerate(row))
+                    + "</table:table-row>")
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2">'
+        f'<office:body><office:spreadsheet><table:table table:name="{escape(g.sheet)}">'
+        f'<table:table-column table:number-columns-repeated="{len(g.columns)}"/>'
+        + "".join(rows) + "</table:table></office:spreadsheet></office:body></office:document-content>")
+    manifest = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2">'
+        '<manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet"/>'
+        '<manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>'
+        "</manifest:manifest>")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("mimetype"), "application/vnd.oasis.opendocument.spreadsheet")   # первым, без сжатия
+        z.writestr("content.xml", content, compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("META-INF/manifest.xml", manifest, compress_type=zipfile.ZIP_DEFLATED)
+
+
+_WRITERS = {"xlsx": _write_xlsx, "xls": _write_xls, "csv": _write_csv, "ods": _write_ods}
 
 
 # ─── Сводка ──────────────────────────────────────────────────────────────────
@@ -501,48 +636,106 @@ def _write_without_reading(path: Path, columns: list[str], abonents: list) -> Op
     return None
 
 
-def month_summary(month_dir: str) -> str:
-    """Итог месяца (этап 3, пункт 6а, решение владельца 2026-10-03): сколько
-    показаний записано и кем, кто без показания (полный список — в
-    без_показаний.csv), сколько фото ждут оператора и по каким причинам,
-    сколько номеров исправил оператор."""
+@dataclass
+class MonthStats:
+    """Цифры «Итога месяца»: из них — и текст (month_summary), и экран с
+    графиками в окне (src/gmr/operator/summary_screen.py, 2026-11-22)."""
+    root: Path
+    created: str
+    table: str
+    table_loaded: str
+    no_table_readings: bool
+    preset: str                        # «распознавание: …»
+    abonents: int                      # в таблице
+    by_source: dict                    # показания по источникам: {"программа": n, "оператор": n, "было в таблице": n}
+    without: int                       # без показания
+    without_list: Path
+    without_list_error: Optional[str]
+    not_in_table: int
+    waiting: dict                      # ждут оператора: {причина (по-русски): n}
+    serial_fixes: int
+    log_rows: int
+    quality: object                    # application.quality.Quality
+
+    @property
+    def with_reading(self) -> int:
+        return sum(self.by_source.values())
+
+
+SUMMARY_FILE = "итог_месяца.txt"       # в папке месяца — пишет month_summary
+
+
+def month_stats(month_dir: str) -> Optional[MonthStats]:
+    """Цифры итога месяца (None — месяц не создан). Пишет без_показаний.csv."""
     folder = MonthFolder(Path(month_dir))
     if not is_month(folder):
-        return (f"Месяц не создан: {folder.root}\n"
-                f"Создать: python gmr.py month \"{folder.root}\" --table <таблица компании>")
+        return None
     with MonthDB(folder.db) as db:
         in_table = db.abonents(only_in_table=True)
         everyone = db.abonents()
         readings = db.readings()
         columns = db.columns()
         all_rows = db.log_rows()
-        log_rows = len(all_rows)
         serial_fixes = {c["account"] for c in db.changes() if c["action"] == SERIAL_FIX_ACTION}
         meta = (db.meta("created_at"), db.meta("table"), db.meta("table_loaded_at"))
         no_table_readings = db.meta(META_TABLE_READINGS) == "ignored"
         preset_text = db.meta(META_RECOGNITION)
     with_reading = [a for a in in_table if a in readings]
-    by_source = {src: sum(1 for a in with_reading if readings[a].source == src) for src, _ in _SOURCE_NAMES}
+    by_source = {name: sum(1 for a in with_reading if readings[a].source == src) for src, name in _SOURCE_NAMES}
     without = [ab for a, ab in in_table.items() if a not in readings]
     list_path = folder.root / WITHOUT_READING_LIST
     list_error = _write_without_reading(list_path, columns, without)
-    waiting = waiting_photos(folder.results)
+    waiting = {QUESTION_REASONS[r]: n for r, n in waiting_photos(folder.results).items()}
+    return MonthStats(
+        root=folder.root, created=meta[0] or "", table=meta[1] or "", table_loaded=meta[2] or "",
+        no_table_readings=no_table_readings,
+        preset=(RecognitionPreset.from_json(preset_text).describe() if preset_text
+                else "по умолчанию (как до настроек месяца)"),
+        abonents=len(in_table), by_source=by_source, without=len(without), without_list=list_path,
+        without_list_error=list_error, not_in_table=len(everyone) - len(in_table), waiting=waiting,
+        serial_fixes=len(serial_fixes), log_rows=len(all_rows), quality=month_quality(all_rows))
+
+
+def summary_text(st: MonthStats) -> str:
     lines = [
-        f"Месяц: {folder.root}",
-        f"  создан: {meta[0]}, таблица: {meta[1]} (загружена {meta[2]})"
-        + (", показания из таблицы не взяты" if no_table_readings else ""),
-        "  распознавание: " + (RecognitionPreset.from_json(preset_text).describe() if preset_text
-                               else "по умолчанию (как до настроек месяца)"),
-        f"  абонентов в таблице: {len(in_table)}",
-        f"  с показанием: {len(with_reading)} — "
-        + ", ".join(f"{name} {by_source[src]}" for src, name in _SOURCE_NAMES),
-        f"  без показания: {len(without)} — список: {list_path}" + (f" ({list_error})" if list_error else ""),
-        f"  нет в таблице (после обновления): {len(everyone) - len(in_table)}",
-        f"  ждут оператора: {sum(waiting.values())} фото"
-        + (" — " + ", ".join(f"{QUESTION_REASONS[r]} {n}" for r, n in waiting.items()) if waiting else ""),
-        f"  номера счётчиков исправлены оператором: {len(serial_fixes)}"
-        + (" (для компании — db_serial_fix.csv)" if serial_fixes else ""),
-        f"  строк в логе обработки: {log_rows}",
-        *quality_lines(month_quality(all_rows)),
+        f"Месяц: {st.root}",
+        f"  создан: {st.created}, таблица: {st.table} (загружена {st.table_loaded})"
+        + (", показания из таблицы не взяты" if st.no_table_readings else ""),
+        "  распознавание: " + st.preset,
+        f"  абонентов в таблице: {st.abonents}",
+        f"  с показанием: {st.with_reading} — " + ", ".join(f"{name} {n}" for name, n in st.by_source.items()),
+        f"  без показания: {st.without} — список: {st.without_list}"
+        + (f" ({st.without_list_error})" if st.without_list_error else ""),
+        f"  нет в таблице (после обновления): {st.not_in_table}",
+        f"  ждут оператора: {sum(st.waiting.values())} фото"
+        + (" — " + ", ".join(f"{r} {n}" for r, n in st.waiting.items()) if st.waiting else ""),
+        f"  номера счётчиков исправлены оператором: {st.serial_fixes}"
+        + (" (для компании — db_serial_fix.csv)" if st.serial_fixes else ""),
+        f"  строк в логе обработки: {st.log_rows}",
+        *quality_lines(st.quality),
     ]
     return "\n".join(lines)
+
+
+def month_summary(month_dir: str) -> str:
+    """Итог месяца (этап 3, пункт 6а, решение владельца 2026-10-03): сколько
+    показаний записано и кем, кто без показания (полный список — в
+    без_показаний.csv), сколько фото ждут оператора и по каким причинам,
+    сколько номеров исправил оператор. Тот же текст — в итог_месяца.txt в
+    папке месяца (его открывает и экран «Итог месяца» в окне)."""
+    st = month_stats(month_dir)
+    if st is None:
+        folder = MonthFolder(Path(month_dir))
+        return (f"Месяц не создан: {folder.root}\n"
+                f"Создать: python gmr.py month \"{folder.root}\" --table <таблица компании>")
+    return save_summary(st)
+
+
+def save_summary(st: MonthStats) -> str:
+    """Текст итога — и в итог_месяца.txt в папке месяца."""
+    text = summary_text(st)
+    try:
+        (st.root / SUMMARY_FILE).write_text(f"Итог месяца на {now_text()}\n\n{text}\n", encoding="utf-8-sig")
+    except OSError:                    # открыт в другой программе — итог всё равно показан
+        pass
+    return text

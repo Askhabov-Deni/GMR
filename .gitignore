@@ -73,6 +73,8 @@ run_logs/
 !tests/data/*.xls
 # Снимки экрана для docs/OPERATOR.md (выдуманные данные) — в git
 !docs/img/*.png
+# значок окна программы (tools/make_icon.py) — рисунок, не фото
+!src/gmr/operator/gmr.png
 # Windows thumbnails and WhatsApp videos
 Thumbs.db
 *.mp4

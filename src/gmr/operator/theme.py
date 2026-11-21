@@ -1,5 +1,5 @@
 """
-Внешний вид окна «GMR Оператор»: цвета, шрифты, стили ttk, кнопки действий,
+Внешний вид окна «GMR»: цвета, шрифты, стили ttk, кнопки действий,
 горячие клавиши в обеих раскладках.
 
 Спокойная светлая тема для работы целый день: белые карточки на светло-сером
@@ -7,9 +7,11 @@
 «Обработать»), остальные — белые.
 """
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 
-APP_NAME = "GMR Оператор"
+APP_NAME = "GMR"                             # до 1.3.0 — «GMR Оператор»
+ICON_PNG = Path(__file__).with_name("gmr.png")   # значок окна (tools/make_icon.py; в exe — packaging/gmr.ico)
 MANUAL_NAME = "Инструкция оператора.html"     # рядом с exe (python gmr.py build, tools/manual_html.py)
 FONT = "Segoe UI"
 
@@ -100,6 +102,26 @@ def apply_theme(root: tk.Misc) -> None:
     style.configure("TLabelframe.Label", background=SURFACE, foreground=MUTED, font=(FONT, 9, "bold"))
     style.configure("Vertical.TScrollbar", background="#dde3ea", troughcolor=BG, bordercolor=BG,
                     arrowcolor=MUTED, lightcolor="#dde3ea", darkcolor="#dde3ea")
+
+
+def set_window_icon(root: tk.Misc) -> None:
+    """Свой значок в заголовке окна и на панели задач (вместо пёрышка Tk)."""
+    try:
+        img = tk.PhotoImage(master=root, file=str(ICON_PNG))
+    except tk.TclError:          # файла нет — остаётся значок Tk
+        return
+    root.iconphoto(True, img)
+    root._gmr_icon = img         # картинку держит окно — иначе её уберёт сборщик мусора
+
+
+def logo_image(root: tk.Misc, size: int) -> "tk.PhotoImage | None":
+    """Значок крупно — для экрана входа (gmr.png 128×128; меньше — в целое число раз)."""
+    try:
+        img = tk.PhotoImage(master=root, file=str(ICON_PNG))
+    except tk.TclError:
+        return None
+    k = max(1, round(img.width() / size))
+    return img.subsample(k, k) if k > 1 else img
 
 
 def action_button(parent, text: str, command, kind: str = "secondary", **kw) -> tk.Button:

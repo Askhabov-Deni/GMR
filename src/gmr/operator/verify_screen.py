@@ -110,8 +110,9 @@ class VerifyScreen(ttk.Frame):
         except (ValueError, TypeError):
             color, delta_label = MUTED, "—"
         row("РАСХОД", delta_label, color=color)
-        ttk.Label(parent, text=OUTCOME_WORDS.get(r.get("outcome", ""), r.get("outcome", "")),
-                  style="CardMuted.TLabel").pack(anchor="w")
+        outcome = r.get("outcome", "")      # стрелка: зелёная — больше прошлого, красная — меньше
+        tk.Label(parent, text=OUTCOME_WORDS.get(outcome, outcome), font=(FONT, 10, "bold"), bg=SURFACE,
+                 fg={"PLUS": SUCCESS, "MINUS": "#c62828"}.get(outcome, MUTED)).pack(anchor="w")
         ttk.Label(parent, text=f"прочитано {r.get('processed_at', '')[:16].replace('T', ' ')}",
                   style="CardMuted.TLabel").pack(anchor="w")
 

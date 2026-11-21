@@ -143,7 +143,7 @@ AUTO = [  # авто-строки reader.py, создавшие файлы в qu
 def _window(monkeypatch, settings, answers=None):
     monkeypatch.setattr(op_window, "load_settings", lambda: settings)
     monkeypatch.setattr(op_window, "save_settings", lambda s: None)
-    monkeypatch.setattr(op_window, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
+    monkeypatch.setattr(op_window, "ask_login", lambda *a, **k: "continue")
     # настройки распознавания нового месяца — как предложено (окно не открывается)
     monkeypatch.setattr(program2.MainWindow, "ask_preset",
                         staticmethod(lambda parent, preset, title, ok_text="Сохранить": preset))
@@ -687,8 +687,30 @@ def test_export_button(app):
     scr = _open_first(app)
     _fill(scr, "A1", "01200")
     scr._accept()
-    assert app.export() is True
+    assert app.export_as("xlsx").path == str(app.month.export_xlsx)
     assert app.month.export_xlsx.is_file() and app.month.export_log.is_file()
+
+
+@needs_display
+def test_export_dialog_formats_and_remembers_choice(app, monkeypatch):
+    # 1.3.0: «Выгрузить» спрашивает формат; выбранный запоминается в настройках
+    from src.gmr.operator.dialogs import ExportDialog
+    saved, opened = [], []
+    monkeypatch.setattr(op_window, "save_settings", saved.append)
+    monkeypatch.setattr(app, "_open_export", lambda path, folder=False: opened.append((path, folder)))
+
+    def choose_and_export():
+        dlg = next(w for w in app.winfo_children() if isinstance(w, ExportDialog))
+        assert dlg._fmt.get() == "xlsx"                  # по умолчанию — обычный Excel
+        dlg._fmt.set("csv")
+        dlg._go()                                       # «Выгрузить»
+        dlg._go()                                       # Enter ещё раз — закрыть
+    app.after(50, choose_and_export)
+    assert app.export() is True
+    assert (app.month.root / "показания.csv").is_file() and app.month.export_xlsx.is_file()
+    assert app.settings.export_format == "csv" and saved[-1].export_format == "csv"
+    app.after(50, lambda: next(w for w in app.winfo_children() if isinstance(w, ExportDialog)).destroy())
+    assert app.export() is False                        # «Отмена» — ничего
 
 
 @needs_display
@@ -734,7 +756,7 @@ def test_change_user_cancelled_keeps_settings(tmp_path, monkeypatch):
     f = make_month(tmp_path, [("1234567", "A1", "1000", "")])
     monkeypatch.setattr(op_window, "SettingsDialog", lambda parent, settings, **kw: SimpleNamespace(result=None))
     w = _window(monkeypatch, program2.AppSettings("Оператор", str(f.root)))
-    monkeypatch.setattr(op_window, "LoginDialog", lambda *a, **k: SimpleNamespace(action="change"))
+    monkeypatch.setattr(op_window, "ask_login", lambda *a, **k: "change")
     w.destroy()
     w = new_window(program2.MainWindow)            # «Сменить пользователя» → «Отмена»
     try:
@@ -958,12 +980,32 @@ def test_update_table_from_menu(app, tmp_path, monkeypatch):
     assert list(app.month.backups.glob("*/gmr.sqlite"))
 
 
+def _all_children(w):
+    for c in w.winfo_children():
+        yield c
+        yield from _all_children(c)
+
+
 @needs_display
 def test_summary_and_choose_month(app, tmp_path, monkeypatch):
     other = make_month(tmp_path / "другой", [("9999999", "C1", "5", "")], name="Июль")
-    shown = _dialogs(monkeypatch, dirs=[other.root, tmp_path / "пусто"])
+    _dialogs(monkeypatch, dirs=[other.root, tmp_path / "пусто"])
     app.show_summary()
-    assert shown[-1][0] == "Итог месяца" and shown[-1][1] == month_app.month_summary(str(app.month.root))
+    # 1.3.0: итог — экраном с полосами в окне; текст — в итог_месяца.txt
+    from src.gmr.operator.summary_screen import SummaryScreen
+    scr = app._current_screen
+    assert isinstance(scr, SummaryScreen) and scr.st.abonents == 2
+    txt = (app.month.root / month_app.SUMMARY_FILE).read_text(encoding="utf-8-sig")
+    assert month_app.month_summary(str(app.month.root)) in txt
+    scr.update()
+    from src.gmr.operator.summary_screen import Chart
+    charts = [w for w in _all_children(scr) if isinstance(w, Chart)]
+    assert len(charts) == 4
+    for chart in charts:
+        chart.redraw()                                     # рисунки не падают
+    assert app.bind_all("<Escape>")                         # Esc — к спискам
+    scr._back()
+    assert not app.screen_open() and not app.bind_all("<Escape>")
     app.choose_month()
     assert app.session.folder.root == other.root
     (tmp_path / "пусто").mkdir()
@@ -1271,18 +1313,22 @@ def test_queue_next_photo_keeps_hotkeys_and_one_screen(app):
 
 @needs_display
 def test_login_enter_continues(monkeypatch):
-    # вход при каждом запуске: Enter = «Продолжить» (раньше — только мышью)
+    # вход при каждом запуске: Enter = «Продолжить» (раньше — только мышью);
+    # с 1.3.0 — экраном в главном окне, а не отдельным окошком «Вход»
     import tkinter as tk
-    from src.gmr.operator.dialogs import LoginDialog
+    from src.gmr.operator.welcome import WelcomeScreen
     root = new_window(tk.Tk)
     root.withdraw()
+    scr = WelcomeScreen(root)
     seen = []
 
     def press_enter():
-        dlg = next(w for w in root.winfo_children() if isinstance(w, LoginDialog))
-        seen.append((bool(dlg.bind("<Return>")), str(dlg.focus_lastfor()).endswith("button")))
-        dlg._continue()
+        seen.append((bool(root.bind("<Return>")), root.winfo_toplevel() is root, len(root.winfo_children())))
+        scr._on_return()
     root.after(50, press_enter)
-    dlg = LoginDialog(root, program2.AppSettings(operator_name="Оператор", month_dir=""))
-    assert dlg.action == "continue" and seen == [(True, True)]
+    action = scr.ask(program2.AppSettings(operator_name="Оператор", month_dir="D:/GMR/Май_2026"))
+    assert action == "continue" and seen == [(True, True, 1)]      # одно окно, Enter привязан
+    assert not root.bind("<Return>")                                # после входа Enter — спискам
+    root.after(50, scr._quit)                                       # крестик окна на экране входа
+    assert scr.ask(program2.AppSettings(operator_name="Оператор", month_dir="")) == "quit"
     root.destroy()

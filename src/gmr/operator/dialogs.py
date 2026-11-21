@@ -25,6 +25,7 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Настройки")
         self.resizable(False, False)
+        self.transient(parent)           # поверх главного окна, а не под ним
         self.grab_set()
         self.result: Optional[AppSettings] = None
         self._new_month = new_month
@@ -247,40 +248,6 @@ class PresetDialog(tk.Toplevel):
         self.destroy()
 
 
-class LoginDialog(tk.Toplevel):
-    """Подтверждение входа при каждом запуске."""
-    def __init__(self, parent, settings: AppSettings):
-        super().__init__(parent)
-        self.title("Вход")
-        self.resizable(False, False)
-        self.grab_set()
-        self.action = None  # "continue" | "change"
-        self._build(settings)
-        self.protocol("WM_DELETE_WINDOW", lambda: None)
-        center_on(self, self.master)
-        self.wait_window()
-
-    def _build(self, s: AppSettings):
-        f = ttk.Frame(self, padding=24)
-        f.pack()
-        ttk.Label(f, text="Вы вошли как:", font=("Segoe UI", 10)).pack()
-        ttk.Label(f, text=s.operator_name, font=("Segoe UI", 14, "bold")).pack(pady=(4, 20))
-        go = ttk.Button(f, text="Продолжить   Enter", command=self._continue)
-        go.pack(fill=tk.X, pady=4)
-        ttk.Button(f, text="Сменить пользователя", command=self._change).pack(fill=tk.X)
-        self.bind("<Return>", lambda e: self._continue())     # при каждом запуске — без мыши
-        self.bind("<KP_Enter>", lambda e: self._continue())
-        go.focus_set()
-
-    def _continue(self):
-        self.action = "continue"
-        self.destroy()
-
-    def _change(self):
-        self.action = "change"
-        self.destroy()
-
-
 class TextDialog(tk.Toplevel):
     """Ввод строки: кнопки «ОК» / «Отмена» (у simpledialog.askstring — английские
     OK / Cancel). Enter и Esc дальше диалога не уходят: иначе их ловили
@@ -329,3 +296,61 @@ class TextDialog(tk.Toplevel):
 def ask_text(parent, title: str, prompt: str, initial: str = "") -> Optional[str]:
     """Строка от оператора; None — «Отмена»."""
     return TextDialog(parent, title, prompt, initial).result
+
+
+class ExportDialog(tk.Toplevel):
+    """«Выгрузить показания» (2026-11-22): выбор формата, потом — тут же
+    «Готово» с кнопками «Открыть файл» / «Открыть папку». export(формат) →
+    (путь к файлу, текст отчёта) или исключение (файл открыт в Excel и т. п.).
+    chosen — выбранный формат (запоминается в настройках окна)."""
+
+    def __init__(self, parent, formats: dict, current: str, export, open_path):
+        super().__init__(parent)
+        self.title("Выгрузить показания")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.configure(bg=BG)
+        self.chosen: Optional[str] = None
+        self._export, self._open_path = export, open_path
+        self._fmt = tk.StringVar(value=current if current in formats else next(iter(formats)))
+        self._body = ttk.Frame(self, padding=22)
+        self._body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(self._body, text="В каком виде выгрузить показания?", font=(FONT, 12, "bold")).pack(anchor="w")
+        ttk.Label(self._body, text="Файл появится в папке месяца: «показания» с выбранным расширением.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(2, 12))
+        for key, label in formats.items():
+            ttk.Radiobutton(self._body, text=label, value=key, variable=self._fmt).pack(anchor="w", pady=3)
+        self._buttons = ttk.Frame(self._body)
+        self._buttons.pack(fill=tk.X, pady=(18, 0))
+        action_button(self._buttons, "Отмена", self.destroy).pack(side=tk.RIGHT)
+        action_button(self._buttons, "Выгрузить", self._go, kind="accent").pack(side=tk.RIGHT, padx=(0, 8))
+        self.bind("<Return>", lambda e: self._go() or "break")
+        self.bind("<KP_Enter>", lambda e: self._go() or "break")
+        self.bind("<Escape>", lambda e: self.destroy() or "break")
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        center_on(self, parent)
+        self.focus_set()
+        self.wait_window()
+
+    def _go(self):
+        if self.chosen is not None:          # уже выгружено: Enter — закрыть
+            self.destroy()
+            return
+        fmt = self._fmt.get()
+        try:
+            path, report = self._export(fmt)
+        except Exception as e:               # файл открыт в Excel и т. п. — окно остаётся, можно повторить
+            messagebox.showwarning("Выгрузка", str(e), parent=self)
+            return
+        self.chosen = fmt
+        for w in self._body.winfo_children():
+            w.destroy()
+        ttk.Label(self._body, text="✓  Выгружено", font=(FONT, 12, "bold")).pack(anchor="w")
+        ttk.Label(self._body, text=report, justify="left", wraplength=560).pack(anchor="w", pady=(8, 16))
+        b = ttk.Frame(self._body)
+        b.pack(fill=tk.X)
+        action_button(b, "Закрыть", self.destroy).pack(side=tk.RIGHT)
+        action_button(b, "Открыть папку", lambda: self._open_path(path, folder=True)).pack(side=tk.RIGHT, padx=8)
+        action_button(b, "Открыть файл", lambda: self._open_path(path), kind="accent").pack(side=tk.RIGHT)
+        center_on(self, self.master)

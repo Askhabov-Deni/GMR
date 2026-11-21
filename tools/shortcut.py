@@ -1,5 +1,5 @@
 """
-tools/shortcut.py — ярлык «GMR Оператор» на рабочем столе (этап 4, решение
+tools/shortcut.py — ярлык «GMR» на рабочем столе (этап 4, решение
 владельца 2026-10-03: 4а; до 2026-11-21 ярлык назывался «Счётчики»).
 
   python gmr.py shortcut
@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-NAME = "GMR Оператор"
+NAME = "GMR"
 
 
 def _q(text) -> str:
@@ -28,9 +28,15 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+ICON = ROOT / "packaging" / "gmr.ico"          # значок программы (tools/make_icon.py)
+
+
 def powershell_script(name: str, pythonw: Path, script, workdir: Path) -> str:
-    """script None — ярлык прямо на exe (собранная программа, docs/BUILD.md)."""
+    """script None — ярлык прямо на exe (собранная программа, docs/BUILD.md:
+    значок — из exe). Без сборки — на pythonw.exe, значок — packaging/gmr.ico."""
     args = [] if script is None else [f"$s.Arguments = {_q(chr(34) + str(script) + chr(34))}"]
+    if script is not None and ICON.is_file():
+        args.append(f"$s.IconLocation = {_q(str(ICON) + ',0')}")
     return "\n".join([
         "$desk = [Environment]::GetFolderPath('Desktop')",
         f"$path = Join-Path $desk {_q(name + '.lnk')}",
@@ -46,7 +52,7 @@ def powershell_script(name: str, pythonw: Path, script, workdir: Path) -> str:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python gmr.py shortcut",
-                                description="Ярлык «GMR Оператор» на рабочем столе: окно оператора без "
+                                description="Ярлык «GMR» на рабочем столе: окно оператора без "
                                             "чёрного окна PowerShell (только Windows).")
     p.add_argument("--name", default=NAME, help=f"имя ярлыка (по умолчанию «{NAME}»)")
     args = p.parse_args(argv)

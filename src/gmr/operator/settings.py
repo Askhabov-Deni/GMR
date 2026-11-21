@@ -12,6 +12,7 @@ SETTINGS_FILE = _BASE / "settings.json"
 class AppSettings:
     operator_name: str = ""
     month_dir:     str = ""   # папка месяца: база, фото, результат
+    export_format: str = "xlsx"   # «Выгрузить»: в каком виде в прошлый раз (month.EXPORT_FORMATS)
     # «Папки для разметки» больше нет (2026-10-07): исправления оператора идут
     # в папку месяца (<месяц>/разметка); старый ключ в settings.json не читается.
 
@@ -24,13 +25,19 @@ def default_month_name(day=None) -> str:
     day = day or datetime.now()
     return f"{RU_MONTHS[day.month - 1]}_{day.year}"
 
+# до 1.3.0 программа называлась «GMR Оператор» и лежала в папке с этим именем:
+# новая версия, распакованная рядом (папка «GMR»), берёт имя и месяц оттуда
+OLD_SETTINGS = SETTINGS_FILE.parent.parent / "GMR Оператор" / "settings.json"
+
+
 def load_settings() -> AppSettings:
-    if SETTINGS_FILE.exists():
-        try:
-            d = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            return AppSettings(**{k: d.get(k, "") for k in AppSettings.__dataclass_fields__})
-        except Exception:
-            pass
+    for path in (SETTINGS_FILE, OLD_SETTINGS):
+        if path.exists():
+            try:
+                d = json.loads(path.read_text(encoding="utf-8"))
+                return AppSettings(**{k: d[k] for k in AppSettings.__dataclass_fields__ if k in d})
+            except Exception:
+                pass
     return AppSettings()
 
 def save_settings(s: AppSettings) -> None:

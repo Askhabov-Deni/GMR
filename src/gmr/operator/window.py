@@ -1,6 +1,7 @@
 """Главное окно: вход, месяц, меню, вкладки «Обработка» и «Проверка»."""
 import sqlite3
 import tkinter as tk
+from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
@@ -26,7 +27,7 @@ from .common import (
     _log_handlers,
     log,
 )
-from .dialogs import LoginDialog, PresetDialog, SettingsDialog
+from .dialogs import ExportDialog, PresetDialog, SettingsDialog
 from .theme import (
     APP_NAME,
     MANUAL_NAME,
@@ -36,10 +37,12 @@ from .theme import (
     ZEBRA,
     action_button,
     apply_theme,
+    set_window_icon,
 )
 from .edit_screen import EditScreen
 from .files import move_photo, now_iso, open_in_explorer, place_decision
 from .hints import SerialIndex, build_serial_index
+from .new_photos import NewPhotosBadge, NewPhotosWatcher
 from .photos import (
     controller_dir,
     controller_name,
@@ -47,7 +50,15 @@ from .photos import (
     list_verify_photos,
 )
 from .settings import AppSettings, default_month_name, load_settings, save_settings
+from .tables import SortableTable, arrow_images, number
+from .summary_screen import SummaryScreen
 from .verify_screen import VerifyScreen
+from .welcome import WelcomeScreen
+
+
+def ask_login(welcome: WelcomeScreen, settings: AppSettings) -> str:
+    """«Продолжить» / «Сменить пользователя» / закрыть окно (тесты подменяют)."""
+    return welcome.ask(settings)
 
 
 class MainWindow(tk.Tk):
@@ -61,6 +72,7 @@ class MainWindow(tk.Tk):
         except tk.TclError:              # не Windows
             pass
         apply_theme(self)
+        set_window_icon(self)
 
         self.settings  = load_settings()
         self.session:   Optional[OperatorSession] = None
@@ -102,19 +114,28 @@ class MainWindow(tk.Tk):
                              parent=self)
 
     def _do_login(self):
+        """Вход — экраном в этом же окне (welcome.py), не отдельным окошком."""
+        welcome = WelcomeScreen(self)
+        self.protocol("WM_DELETE_WINDOW", lambda: None)     # закрыть — «Отмена» в настройках
         if not self.settings.operator_name or not self.settings.month_dir:
+            self.update()                                   # первый запуск: окно, над ним — настройки
             if not self._open_settings():
                 self.destroy()
                 return
         else:
-            dlg = LoginDialog(self, self.settings)
-            if dlg.action == "change":
+            action = ask_login(welcome, self.settings)
+            if action == "quit":
+                self.destroy()
+                return
+            if action == "change":
                 self._open_settings()          # «Отмена» — работа с прежними настройками
 
+        welcome.status("Открываю месяц…")
         while not self._load_data():          # папка месяца не создана — выбрать другую
             if not self._open_settings():
                 self.destroy()
                 return
+        welcome.destroy()
         self._build_ui()
 
     def _open_settings(self) -> bool:
@@ -271,6 +292,7 @@ class MainWindow(tk.Tk):
         save_settings(self.settings)
         self._show_month()
         self.refresh_tabs()
+        self._watcher.check_now()              # новые фото — уже в другом месяце
 
     def new_month(self):
         """Меню «Месяц» → «Новый месяц…»: таблица компании и папка нового месяца."""
@@ -349,8 +371,14 @@ class MainWindow(tk.Tk):
         messagebox.showinfo("О программе", self.about_text(), parent=self)
 
     def show_summary(self):
-        """«Итог месяца»: то же, что `gmr.py month <папка>`."""
-        show_text(self, "Итог месяца", month_app.month_summary(str(self.session.folder.root)))
+        """«Итог месяца»: экран с полосами (summary_screen.py); тот же итог
+        текстом — итог_месяца.txt в папке месяца и `gmr.py month <папка>`."""
+        stats = month_app.month_stats(str(self.session.folder.root))
+        if stats is None:
+            show_text(self, "Итог месяца", month_app.month_summary(str(self.session.folder.root)))
+            return
+        month_app.save_summary(stats)
+        self._show_screen(lambda: SummaryScreen(self, stats, on_back=self._back_from_screen))
 
     def open_month_folder(self):
         open_in_explorer(self.session.folder.root)
@@ -390,13 +418,24 @@ class MainWindow(tk.Tk):
         top.pack(fill=tk.X)
         ttk.Label(top, text=APP_NAME, style="HeaderTitle.TLabel").pack(side=tk.LEFT)
         self._month_var = tk.StringVar()
-        ttk.Label(top, textvariable=self._month_var, style="HeaderInfo.TLabel").pack(side=tk.LEFT, padx=(18, 0))
-        ttk.Button(top, text="⇩  Выгрузить в Excel", style="Header.TButton",
+        # имя месяца — последним: в узком окне сжимается оно, а не кнопки и значок новых фото
+        self._month_label = ttk.Label(top, textvariable=self._month_var, style="HeaderInfo.TLabel")
+        ttk.Button(top, text="⇩  Выгрузить показания…", style="Header.TButton",
                    command=self.export).pack(side=tk.RIGHT)
         ttk.Button(top, text="Итог месяца", style="Header.TButton",
                    command=self.show_summary).pack(side=tk.RIGHT, padx=(0, 8))
         action_button(top, "▶  Обработать новые фото", self.process_new, kind="accent",
                       highlightbackground=HEADER).pack(side=tk.RIGHT, padx=(0, 12))
+        # сколько новых фото ждут обработки (new_photos.py): проверка в фоне раз в 10 с;
+        # значок появляется левее кнопки (before= — раньше имени месяца в порядке шапки)
+        self._month_label.pack(side=tk.LEFT, padx=(18, 0))
+        self._new_badge = NewPhotosBadge(top, HEADER, self.process_new).pack(side=tk.RIGHT, padx=(0, 10),
+                                                                           before=self._month_label)
+        self._processing = False
+        self._watcher = NewPhotosWatcher(
+            self, lambda: (self.session.folder.photos, self.log_rows) if self.session is not None else None,
+            self._new_badge.set_count, busy=lambda: self._processing)
+        self._watcher.start()
         self._show_month()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -443,11 +482,17 @@ class MainWindow(tk.Tk):
         if self.session is None:
             return
         self._close_screen()
-        dlg = ProcessDialog(self, process_command(_BASE, str(self.session.folder.root), reread),
-                            self.session.folder.stop_file, self._after_process, cwd=_BASE,
-                            title="Обработка фото с ошибками" if reread else "Обработка новых фото")
-        self._process_dialog = dlg
-        self.wait_window(dlg)
+        self._processing = True                # счётчик новых фото — не во время обработки
+        try:
+            dlg = ProcessDialog(self, process_command(_BASE, str(self.session.folder.root), reread),
+                                self.session.folder.stop_file, self._after_process, cwd=_BASE,
+                                title="Обработка фото с ошибками" if reread else "Обработка новых фото")
+            self._process_dialog = dlg
+            self.wait_window(dlg)
+        finally:
+            self._processing = False
+            if hasattr(self, "_watcher"):
+                self._watcher.check_now()
 
     def _after_process(self, code: int, lines: list[str]):
         self.refresh_tabs()
@@ -459,14 +504,32 @@ class MainWindow(tk.Tk):
             show_text(self, "Обработка не удалась", f"Код завершения: {code}\n\n{tail}")
 
     def export(self) -> bool:
-        """Кнопка «Выгрузить показания»: показания.xlsx и лог.csv."""
-        try:
-            rep = self.session.export()
-        except ExportLocked as e:
-            messagebox.showwarning("Выгрузка", str(e))
-            return False
-        messagebox.showinfo("Выгрузка", rep.text())
-        return True
+        """Кнопка «Выгрузить»: окно выбора формата (xlsx, xls, csv, ods), там же
+        «Открыть файл» / «Открыть папку». True — выгружено."""
+        dlg = ExportDialog(self, month_app.EXPORT_FORMATS, self.settings.export_format,
+                           lambda fmt: (lambda rep: (rep.path, rep.text()))(self.export_as(fmt)),
+                           self._open_export)
+        return dlg.chosen is not None
+
+    def export_as(self, fmt: str):
+        """Выгрузка в формате fmt (показания.xlsx и лог.csv — всегда); формат
+        запоминается — в следующий раз он выбран сразу. ExportLocked — файл открыт."""
+        rep = self.session.export(formats=(fmt,))
+        if fmt != self.settings.export_format:
+            self.settings = replace(self.settings, export_format=fmt)
+            save_settings(self.settings)
+        return rep
+
+    @staticmethod
+    def _open_export(path, folder: bool = False):
+        if folder:
+            import subprocess
+            try:                       # проводник с выделенным файлом
+                subprocess.Popen(["explorer", "/select,", str(path)])
+                return
+            except OSError:
+                path = Path(path).parent
+        open_in_explorer(path)
 
     def _on_close(self):
         """Закрытие окна: выгрузка, потом выход. Файл открыт в Excel —
@@ -486,6 +549,8 @@ class MainWindow(tk.Tk):
         self.destroy()
 
     def destroy(self):
+        if getattr(self, "_watcher", None) is not None:
+            self._watcher.stop()
         if getattr(self, "session", None) is not None:
             self.session.close()
             self.session = None
@@ -635,7 +700,7 @@ class MainWindow(tk.Tk):
         Список строится заново: проверенное фото из него выпадает, поэтому
         после «Верно»/«Сохранить» следующее стоит на том же номере.
         """
-        items = list_verify_photos(self.results_dir, self.log_rows)
+        items = self._verify_tab.ordered(list_verify_photos(self.results_dir, self.log_rows))
         if index < len(items):
             self.open_verify_screen(items[index], index, total=len(items))
         else:
@@ -646,7 +711,7 @@ class MainWindow(tk.Tk):
         self._show_lists()
 
     def open_next_or_back(self, current_path: str):
-        photos = list_question_photos(self.results_dir)
+        photos = self._proc_tab.ordered(list_question_photos(self.results_dir))
         if photos:
             reason, _, next_path = photos[0]
             self.open_edit_screen(next_path, reason)
@@ -656,13 +721,16 @@ class MainWindow(tk.Tk):
 
 # ─── Вкладка «Очередь» (фото, которые программа не прочитала сама) ──────────
 def _table_with_buttons(tab: ttk.Frame, columns: list, buttons: list) -> ttk.Treeview:
-    """Таблица со скроллом и колонка кнопок справа (первая — главная)."""
+    """Таблица со скроллом и колонка кнопок справа (первая — главная). Столбец
+    "#0" (первым в списке) — со значком: в нём стрелка расхода."""
     body = ttk.Frame(tab)
     body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
-    tree = ttk.Treeview(body, columns=[c for c, *_ in columns], show="headings", selectmode="browse")
+    with_icon = columns[0][0] == "#0"
+    tree = ttk.Treeview(body, columns=[c for c, *_ in columns if c != "#0"],
+                        show="tree headings" if with_icon else "headings", selectmode="browse")
     for col, title, width, stretch in columns:
         tree.heading(col, text=title, anchor="w")
-        tree.column(col, width=width, stretch=stretch, anchor="w")
+        tree.column(col, width=width, minwidth=60, stretch=stretch, anchor="w")
     tree.tag_configure("odd", background=ZEBRA)
     vsb = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=vsb.set)
@@ -700,6 +768,8 @@ class ProcessingTab(ttk.Frame):
             [("reason", "Причина", 260, False), ("controller", "Контролёр", 200, False),
              ("filename", "Фото", 360, True)],
             [("Открыть", self._open), ("Нечитаемо", self._unreadable), ("⟳  Обновить", self.refresh)])
+        self._sort = SortableTable(self._tree, [("reason", "Причина", "text"), ("controller", "Контролёр", "text"),
+                                                ("filename", "Фото", "text")], self.refresh)
         self._empty = ttk.Label(self._tree, text="Очередь пуста — все фото разобраны",
                                 background=SURFACE, foreground=MUTED, font=("Segoe UI", 12))
         self._tree.bind("<Double-Button-1>", lambda e: self._open())
@@ -707,11 +777,10 @@ class ProcessingTab(ttk.Frame):
 
     def refresh(self):
         self._tree.delete(*self._tree.get_children())
-        self._items = list_question_photos(self.app.results_dir)
-        for i, (reason, fname, path) in enumerate(self._items):
-            label = REASON_LABELS.get(reason, reason)
-            ctrl = controller_name(path, self.app.results_dir)
-            self._tree.insert("", tk.END, values=(label, ctrl, fname), tags=("odd",) if i % 2 else ())
+        self._items = self.ordered(list_question_photos(self.app.results_dir))
+        for i, item in enumerate(self._items):
+            self._tree.insert("", tk.END, values=tuple(self._cell(item, c) for c in ("reason", "controller", "filename")),
+                              tags=("odd",) if i % 2 else ())
 
         remaining = len(self._items)
         processed = sum(
@@ -728,6 +797,18 @@ class ProcessingTab(ttk.Frame):
             self._tree.focus(first)
         else:
             self._empty.place(relx=0.5, rely=0.4, anchor="center")
+
+    def _cell(self, item: tuple[str, str, str], column: str) -> str:
+        reason, fname, path = item
+        if column == "reason":
+            return REASON_LABELS.get(reason, reason)
+        if column == "controller":
+            return controller_name(path, self.app.results_dir)
+        return fname
+
+    def ordered(self, items: list) -> list:
+        """Фото очереди в порядке списка (щелчок по заголовку меняет порядок)."""
+        return self._sort.order(items, self._cell)
 
     def _selected_path(self) -> Optional[tuple[str, str]]:
         sel = self._tree.selection()
@@ -777,7 +858,18 @@ class ProcessingTab(ttk.Frame):
         self.refresh()
 
 # ─── Вкладка «Проверка» (показания, которые программа записала сама) ────────
-OUTCOME_WORDS = {"PLUS": "▲ больше прошлого", "MINUS": "▼ меньше прошлого"}
+OUTCOME_WORDS = {"PLUS": "больше прошлого", "MINUS": "меньше прошлого"}   # стрелка — значком
+
+
+def delta_text(row: dict) -> str:
+    """Разница с прошлым показанием со знаком: «+37», «-12» (не по модулю)."""
+    d = number(row.get("delta"))
+    if d is None:
+        reading, last = number(row.get("reading")), number(row.get("last_reading"))
+        if reading is None or last is None:
+            return ""
+        d = reading - last
+    return f"{d:+.0f}" if d else "0"
 
 
 class VerifyTab(ttk.Frame):
@@ -792,10 +884,15 @@ class VerifyTab(ttk.Frame):
         self._items: list[dict] = []
         self._tree = _table_with_buttons(
             self,
-            [("outcome", "Расход", 170, False), ("controller", "Контролёр", 190, False),
-             ("account_id", "Лицевой счёт", 150, False), ("reading", "Показание", 110, False),
-             ("processed_at", "Прочитано", 200, True)],
+            [("#0", "Расход", 175, False), ("controller", "Контролёр", 170, False),
+             ("account_id", "Лицевой счёт", 130, False), ("reading", "Показание", 105, False),
+             ("delta", "Разница", 95, False), ("processed_at", "Прочитано", 140, True)],
             [("Открыть", self._open), ("⟳  Обновить", self.refresh)])
+        self._arrows = arrow_images(self)
+        self._sort = SortableTable(
+            self._tree, [("#0", "Расход", "text"), ("controller", "Контролёр", "text"),
+                         ("account_id", "Лицевой счёт", "text"), ("reading", "Показание", "number"),
+                         ("delta", "Разница", "number"), ("processed_at", "Прочитано", "date")], self.refresh)
         self._empty = ttk.Label(self._tree, text="Проверять нечего",
                                 background=SURFACE, foreground=MUTED, font=("Segoe UI", 12))
         self._tree.bind("<Double-Button-1>", lambda e: self._open())
@@ -803,16 +900,13 @@ class VerifyTab(ttk.Frame):
 
     def refresh(self):
         self._tree.delete(*self._tree.get_children())
-        self._items = list_verify_photos(self.app.results_dir, self.app.log_rows)
+        self._items = self.ordered(list_verify_photos(self.app.results_dir, self.app.log_rows))
         for i, item in enumerate(self._items):
-            r = item["log_row"]
-            self._tree.insert("", tk.END, values=(
-                OUTCOME_WORDS.get(r.get("outcome", ""), r.get("outcome", "")),
-                controller_name(item["path"], self.app.results_dir),
-                r.get("account_id", ""),
-                r.get("reading", ""),
-                r.get("processed_at", "")[:16].replace("T", " "),
-            ), tags=("odd",) if i % 2 else ())
+            outcome = item["log_row"].get("outcome", "")
+            self._tree.insert("", tk.END, text="  " + self._cell(item, "#0"), image=self._arrows.get(outcome, ""),
+                              values=tuple(self._cell(item, c) for c in
+                                           ("controller", "account_id", "reading", "delta", "processed_at")),
+                              tags=("odd",) if i % 2 else ())
 
         total = len(self._items)
         self._counter_var.set(f"На проверку: {total}")
@@ -823,6 +917,23 @@ class VerifyTab(ttk.Frame):
             self._tree.focus(first)
         else:
             self._empty.place(relx=0.5, rely=0.4, anchor="center")
+
+    def _cell(self, item: dict, column: str) -> str:
+        r = item["log_row"]
+        if column == "#0":
+            return OUTCOME_WORDS.get(r.get("outcome", ""), r.get("outcome", ""))
+        if column == "controller":
+            return controller_name(item["path"], self.app.results_dir)
+        if column == "delta":
+            return delta_text(r)
+        if column == "processed_at":
+            return r.get("processed_at", "")[:16].replace("T", " ")
+        return r.get(column, "")
+
+    def ordered(self, items: list) -> list:
+        """Фото «Проверки» в порядке списка. Без щелчка по заголовку — вперемешку
+        (честная выборка для процента ошибок, photos.list_verify_photos)."""
+        return self._sort.order(items, self._cell)
 
     def _open(self):
         if self.app.screen_open():          # Enter дошёл до списка под открытым экраном

@@ -181,7 +181,7 @@ VERIFY_LOG = [
 def _window(monkeypatch, settings):
     monkeypatch.setattr(op_window, "load_settings", lambda: settings)
     monkeypatch.setattr(op_window, "save_settings", lambda s: None)
-    monkeypatch.setattr(op_window, "LoginDialog", lambda *a, **k: type("D", (), {"action": "continue"})())
+    monkeypatch.setattr(op_window, "ask_login", lambda *a, **k: "continue")
     answers = []
     monkeypatch.setattr(program2.messagebox, "askyesno", lambda *a, **k: answers.pop(0) if answers else True)
     for name in ("showinfo", "showwarning", "showerror"):
@@ -246,7 +246,7 @@ def test_skip_opens_next_and_last_returns_to_list(app):
 def test_verify_tab_lists_all_controllers(app):
     tab = app._verify_tab
     tab.refresh()
-    assert [tab._tree.item(i)["values"][1] for i in tab._tree.get_children()] == ["Аюб", "Аюб", "Сулиман С"]
+    assert [tab._tree.item(i)["values"][0] for i in tab._tree.get_children()] == ["Аюб", "Аюб", "Сулиман С"]
 
 
 @needs_display
@@ -697,3 +697,27 @@ def test_verify_screen_shows_how_many_left(app):
     assert app._current_screen.total == 2 and app._notebook.tab(app._verify_tab, "text") == "Проверка  2"
     app._current_screen._skip()                                  # «Пропустить» — не меньше
     assert app._current_screen.total == 2 and app._current_screen.index == 1
+
+
+@needs_display
+def test_verify_list_sorts_by_header_and_next_photo_follows(app):
+    # 1.3.0: щелчок по заголовку — сортировка; «Разница» — со знаком; стрелки
+    # расхода — значком; следующее фото после «Верно» — в порядке списка
+    tab = app._verify_tab
+    tab.refresh()
+    tree = tab._tree
+    deltas = lambda: [tree.item(i)["values"][3] for i in tree.get_children()]   # noqa: E731
+    tab._sort.click("delta")                                         # первый щелчок — от больших
+    assert [str(d) for d in deltas()] == sorted([str(d) for d in deltas()], key=float, reverse=True)
+    assert "-10" in [str(d) for d in deltas()]                       # не по модулю
+    assert tree.heading("delta")["text"] == "Разница ▼"
+    first = tree.get_children()[0]
+    assert tree.item(first)["image"] and "больше прошлого" in tree.item(first)["text"]
+    assert "меньше прошлого" in tree.item(tree.get_children()[-1])["text"]
+    tab._sort.click("delta")                                         # второй — наоборот
+    assert tree.heading("delta")["text"] == "Разница ▲"
+    order = [os.path.basename(it["path"]) for it in tab._items]
+    assert order[0] == "A4.jpg"                                      # -10 — первым
+    tab._open()
+    app._current_screen._verify_ok()
+    assert os.path.basename(app._current_screen.item["path"]) == order[1]   # следующее — по списку

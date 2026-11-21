@@ -30,7 +30,7 @@ _MODELS = "Загружаем модели"
 def process_command(project: Path, month_dir: str, reread: bool = False) -> list[str]:
     """Команда прогона. Под pythonw.exe (ярлык без консоли) вывод нужен
     процессу прогона, поэтому он запускается обычным python.exe. В сборке
-    (docs/BUILD.md) прогон — та же программа с параметрами: «GMR Оператор.exe
+    (docs/BUILD.md) прогон — та же программа с параметрами: «GMR.exe
     process <месяц>»."""
     from src.gmr.frozen import FROZEN
     if FROZEN:

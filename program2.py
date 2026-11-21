@@ -1,6 +1,6 @@
 """
-program2.py — прежнее имя окна оператора «GMR Оператор» (с 2026-11-21 запуск —
-gmr_operator.py или ярлык «GMR Оператор»: `python gmr.py shortcut`). Оставлен
+program2.py — прежнее имя окна оператора «GMR» (с 2026-11-21 запуск —
+gmr_operator.py или ярлык «GMR»: `python gmr.py shortcut`). Оставлен
 для старых ярлыков и тестов: `python program2.py` открывает то же окно.
 
 Код окна — src/gmr/operator/; здесь — точка входа и прежние имена
@@ -48,7 +48,6 @@ from src.gmr.operator.settings import (  # noqa: E402, F401
     SETTINGS_FILE,
 )
 from src.gmr.operator.dialogs import (  # noqa: E402, F401
-    LoginDialog,
     PresetDialog,
     SettingsDialog,
 )

@@ -189,5 +189,5 @@ class OperatorSession:
             self.db.update_log_row(row["_id"], {"final_filename": final_filename})
         row["final_filename"] = final_filename
 
-    def export(self) -> ExportReport:
-        return export_month(str(self.folder.root), self.cfg)
+    def export(self, formats: tuple = ("xlsx",)) -> ExportReport:
+        return export_month(str(self.folder.root), self.cfg, formats=formats)

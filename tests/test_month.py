@@ -262,6 +262,43 @@ def test_export_xlsx_same_columns_and_types(tmp_path):
     assert rows[0]["Разница"] == "=G2-F2" and rows[5]["Разница"] == "=G7-F7"          # формула, как в исходнике
 
 
+def test_export_formats_same_table(tmp_path):
+    # 1.3.0: «Выгрузить» — на выбор .xlsx, .xls, .csv, .ods; во всех — та же
+    # таблица, счета текстом (ведущие нули), «Разница» — числом или формулой
+    import xlrd
+    import zipfile
+    m = tmp_path / "m"
+    month.load_table(str(m), str(SAMPLE))
+    rep = month.export_month(str(m), formats=("xls", "csv", "ods"))
+    f = MonthFolder(m)
+    assert rep.paths == [str(m / "показания.xls"), str(m / "показания.csv"), str(m / "показания.ods")]
+    assert f.export_xlsx.is_file() and rep.path == str(m / "показания.xls")     # xlsx — всегда
+    assert "показания.ods" in rep.text() and not list(m.glob(".*tmp*"))
+
+    sh = xlrd.open_workbook(str(m / "показания.xls")).sheet_by_index(0)
+    assert sh.row_values(0) == HEAD and sh.nrows == 7
+    xls = {h: v for h, v in zip(HEAD, sh.row_values(2))}
+    assert xls["Лицевой счет"] == "1000000002" and xls["Текущие показания"] == 5100
+    assert sh.cell(1, HEAD.index("Номер счетчика")).value == "0012345"
+
+    with open(m / "показания.csv", encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.reader(fh, delimiter=";"))
+    assert rows[0] == HEAD and len(rows) == 7
+    two = dict(zip(HEAD, rows[2]))
+    assert two["Лицевой счет"] == "1000000002" and two["Номер счетчика"] == "123456."
+    last = int(two["Последние показания"])
+    assert two["Текущие показания"] == "5100" and two["Разница"] == str(5100 - last)   # значением
+    assert dict(zip(HEAD, rows[1]))["Разница"] == ""                                     # показания нет
+
+    with zipfile.ZipFile(m / "показания.ods") as z:
+        assert z.namelist()[0] == "mimetype" and z.read("mimetype") == b"application/vnd.oasis.opendocument.spreadsheet"
+        content = z.read("content.xml").decode("utf-8")
+    assert content.count("<table:table-row>") == 7 and ">0012345<" in content
+    assert 'office:value-type="float" office:value="5100"' in content
+    with pytest.raises(ValueError, match="формата"):
+        month.export_month(str(m), formats=("pdf",))
+
+
 def test_export_skips_removed_abonents_and_uses_db_reading(tmp_path):
     m = tmp_path / "m"
     month.load_table(str(m), str(SAMPLE))

@@ -26,9 +26,10 @@ DATA_EXTENSIONS = {
 }
 # Исключения: метрики обучения моделей (results.csv YOLO), файлы для тестов
 # с ВЫДУМАННЫМИ данными (tests/data/) и снимки экрана инструкции оператора на
-# выдуманных данных (docs/img/) лежат в git намеренно.
+# выдуманных данных (docs/img/) лежат в git намеренно; значок окна программы
+# (tools/make_icon.py) — рисунок, не фото.
 ALLOWED_PREFIXES = ("meter_detect/runs/", "meter_ocr/runs/", "serial_id_ocr/runs/", "tests/data/",
-                    "docs/img/")
+                    "docs/img/", "src/gmr/operator/gmr.png")
 # Файлы прогонов обучения, в которых перечислены кропы: имя кропа — лицевой
 # счёт и номер счётчика (docs/DATASETS.md), то есть персональные данные,
 # хотя расширение у них .txt.

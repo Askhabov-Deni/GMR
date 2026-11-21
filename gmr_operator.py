@@ -1,12 +1,12 @@
 """
-gmr_operator.py — «GMR Оператор»: одна программа для оператора. Разбор фото,
+gmr_operator.py — «GMR»: одна программа для оператора. Разбор фото,
 которые программа не прочитала сама, выборочная проверка её показаний и
 обработка новых фото — всё из этого окна.
 
-Запуск: ярлык «GMR Оператор» на рабочем столе (`python gmr.py shortcut`)
-или `python gmr_operator.py`. В собранной программе — «GMR Оператор.exe».
+Запуск: ярлык «GMR» на рабочем столе (`python gmr.py shortcut`)
+или `python gmr_operator.py`. В собранной программе — «GMR.exe».
 
-С параметрами — команды gmr.py без окна: `GMR Оператор.exe process <месяц>`.
+С параметрами — команды gmr.py без окна: `GMR.exe process <месяц>`.
 Так окно само запускает обработку фото (отдельным процессом: модели грузятся
 только на время обработки, а если обработка упадёт, окно останется открытым).
 Код окна — src/gmr/operator/; program2.py — прежнее имя того же окна.
@@ -27,6 +27,11 @@ def main() -> int:
     from src.gmr.console import safe_console
     from src.gmr.operator.window import MainWindow
     safe_console()
+    try:        # своя кнопка на панели задач со значком GMR, а не значок Python
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GMR")
+    except (AttributeError, OSError):    # не Windows
+        pass
     MainWindow().mainloop()
     return 0
 

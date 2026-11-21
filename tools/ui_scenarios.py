@@ -1,8 +1,8 @@
 """
-tools/ui_scenarios.py — окно «GMR Оператор» с клавиатуры, как работает оператор
+tools/ui_scenarios.py — окно «GMR» с клавиатуры, как работает оператор
 (перед выпуском версии, docs/BUILD.md).
 
-  python -m tools.ui_scenarios <КОПИЯ папки месяца> [--photos <папка с новыми фото>] [--exe <GMR Оператор.exe>]
+  python -m tools.ui_scenarios <КОПИЯ папки месяца> [--photos <папка с новыми фото>] [--exe <GMR.exe>]
 
 Месяц меняется (отметки, решения, обработка) — только копия! Окно настоящее
 (Tk), но невидимое и за краем экрана: Enter, Esc, Del, стрелки, цифры идут в
@@ -56,7 +56,7 @@ class Run:
 def setup(month: Path):
     op_window.load_settings = lambda: program2.AppSettings(operator_name=OPERATOR, month_dir=str(month))
     op_window.save_settings = lambda s: None
-    op_window.LoginDialog = lambda *a, **k: type("D", (), {"action": "continue"})()
+    op_window.ask_login = lambda *a, **k: "continue"
     mb = program2.messagebox
     for n in ("showinfo", "showwarning", "showerror"):
         setattr(mb, n, lambda title, msg="", *a, _n=n, **k: TOLD.append((_n, title, msg)))
@@ -334,10 +334,15 @@ def s_menu(w, run):
     print("Итог месяца, выгрузка")
     w.show_summary()
     pump(w)
-    check("«Итог месяца» открылся", [t for t in w.winfo_children() if t.winfo_class() == "Toplevel"])
-    close_toplevels(w)
+    scr = getattr(w, "_current_screen", None)
+    check("«Итог месяца» открылся экраном", type(scr).__name__ == "SummaryScreen", f"{type(scr).__name__}")
+    check("итог текстом — итог_месяца.txt", (run.month / "итог_месяца.txt").is_file())
+    press(w, "Escape")
+    check("Esc — к спискам", not w.screen_open())
     TOLD.clear()
-    check("«Выгрузить в Excel»", w.export() and (run.month / "показания.xlsx").is_file(), f"{TOLD[-1:]}")
+    for fmt in ("xlsx", "xls", "csv", "ods"):
+        rep = w.export_as(fmt)
+        check(f"«Выгрузить» в .{fmt}", Path(rep.path).is_file() and rep.path.endswith(f"показания.{fmt}"), rep.path)
 
 
 def _process(w, run, n, how):
@@ -422,7 +427,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python -m tools.ui_scenarios", description=__doc__.split("\n\n")[0])
     p.add_argument("month", help="КОПИЯ папки месяца (меняется)")
     p.add_argument("--photos", help="папка с новыми фото для «Обработать новые фото» (берутся 6)")
-    p.add_argument("--exe", help="собранная программа «GMR Оператор.exe» — обработка через неё")
+    p.add_argument("--exe", help="собранная программа «GMR.exe» — обработка через неё")
     p.add_argument("--only", help="только эти сценарии, через запятую (s_verify,…)")
     a = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)

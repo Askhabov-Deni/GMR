@@ -1,12 +1,18 @@
 """
-tools/doc_screenshots.py — снимки окна «GMR Оператор» для docs/OPERATOR.md на
+tools/doc_screenshots.py — снимки окна «GMR» для docs/OPERATOR.md на
 ВЫДУМАННЫХ данных: нарисованные счётчики, вымышленные номера и счета
 (docs/img/ — в git, tools/check.py их пропускает).
 
   python -m tools.doc_screenshots [<папка снимков, по умолчанию docs/img>]
 
-Окно на несколько секунд появляется на экране (снимок — с экрана). Месяц
-«Октябрь_2026» создаётся во временной папке и потом удаляется.
+С 1.3.0 окно стоит за краем экрана и снимается через Windows (PrintWindow):
+на рабочем столе ничего не появляется и фокус не уходит — можно снимать,
+пока на компьютере работают. Так не снять меню «Месяц» (всплывающее окно)
+и диалоги — настройки распознавания и полосу обработки (Windows не отдаёт
+их содержимое за краем экрана): operator_menu.png, operator_settings.png и
+operator_progress.png остаются прежними. Меню заново — с --menu (окно на
+несколько секунд появится на экране). Месяц «Октябрь_2026»
+создаётся во временной папке и потом удаляется.
 """
 import ctypes
 import shutil
@@ -22,6 +28,8 @@ except Exception:                                       # noqa: BLE001
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import ctypes.wintypes as wt  # noqa: E402
+
 from PIL import Image, ImageDraw, ImageFont, ImageGrab  # noqa: E402
 
 from tools import ui_scenarios as ui  # noqa: E402
@@ -88,21 +96,91 @@ def build(root: Path):
     return f
 
 
+OFF = "+-6000+-6000"                    # за краем экрана
+
+
+class _BIH(ctypes.Structure):
+    _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD),
+                ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+                ("biClrImportant", wt.DWORD)]
+
+
+def window_image(w) -> tuple[Image.Image, tuple[int, int]]:
+    """Окно целиком (с заголовком) через PrintWindow — и где его левый верхний угол."""
+    u, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+    hwnd = u.GetParent(w.winfo_id())
+    r = wt.RECT()
+    u.GetWindowRect(hwnd, ctypes.byref(r))
+    ww, hh = r.right - r.left, r.bottom - r.top
+    hdc = u.GetWindowDC(hwnd)
+    mem = gdi.CreateCompatibleDC(hdc)
+    bmp = gdi.CreateCompatibleBitmap(hdc, ww, hh)
+    gdi.SelectObject(mem, bmp)
+    u.PrintWindow(hwnd, mem, 2)                       # 2 — PW_RENDERFULLCONTENT
+    buf = ctypes.create_string_buffer(ww * hh * 4)
+    bih = _BIH(ctypes.sizeof(_BIH), ww, -hh, 1, 32, 0, 0, 0, 0, 0, 0)
+    gdi.GetDIBits(mem, bmp, 0, hh, buf, ctypes.byref(bih), 0)
+    gdi.DeleteObject(bmp)
+    gdi.DeleteDC(mem)
+    u.ReleaseDC(hwnd, hdc)
+    return Image.frombuffer("RGBA", (ww, hh), buf, "raw", "BGRA", 0, 1).convert("RGB"), (r.left, r.top)
+
+
+def settle(w, sec=1.5):
+    """Окно за краем экрана рисуется не сразу — дать ему дорисоваться."""
+    w.update_idletasks()
+    ui.pump(w, sec)
+
+
 def grab(w, path, menu=True, over=None):
-    w.lift()
-    w.attributes("-topmost", True)
-    if over is not None:                 # окно поверх главного (прогон, настройки)
-        over.lift()
-        over.attributes("-topmost", True)
+    """Окно без заголовка (со строкой меню — menu=True); over — диалог поверх него."""
+    settle(w)
+    img, (left, top) = window_image(w)
+    if over is not None:
+        settle(over, 0.5)
+        dimg, (dl, dt) = window_image(over)
+        img.paste(dimg, (dl - left, dt - top))
+    x0, y0 = w.winfo_rootx() - left, w.winfo_rooty() - top - (MENU_H if menu else 0)
+    img.crop((x0, y0, x0 + w.winfo_width(), w.winfo_rooty() - top + w.winfo_height())).save(path)
+
+
+def shot_menu_on_screen(w, out):
+    """Меню «Месяц» — только на экране: окно на несколько секунд показывается."""
+    w.geometry("1100x720+40+40")
     ui.pump(w, 0.8)
-    x, y = w.winfo_rootx(), w.winfo_rooty() - (MENU_H if menu else 0)
-    ImageGrab.grab(bbox=(x, y, x + w.winfo_width(), w.winfo_rooty() + w.winfo_height()),
-                   all_screens=True).save(path)
-    w.attributes("-topmost", False)
+    x, y = w.winfo_rootx(), w.winfo_rooty() - MENU_H
+
+    def shot():                   # меню на Windows держит свой цикл: снимок и Esc — по таймеру
+        ImageGrab.grab(bbox=(x, y, x + 1100, y + 330), all_screens=True).save(out / "operator_menu.png")
+        ctypes.windll.user32.keybd_event(0x1B, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(0x1B, 0, 2, 0)
+    w.after(900, shot)
+    w._month_menu.post(x + 4, w.winfo_rooty())
+    ui.pump(w, 0.5)
+    w.geometry("1100x720" + OFF)
+
+
+def shot_welcome(w, out):
+    """Экран входа — в отдельном окне того же размера (в главном он уже прошёл)."""
+    import tkinter as tk
+
+    import program2
+    from src.gmr.operator.theme import BG
+    from src.gmr.operator.welcome import WelcomeScreen
+    top = tk.Toplevel(w, bg=BG)
+    top.geometry("1100x620" + OFF)
+    scr = WelcomeScreen(top)
+    scr._take_focus = lambda: None           # не выводить окно вперёд: фокус — у того, кто работает
+    top.after(100, lambda: (grab(top, out / "operator_welcome.png", menu=False), scr._continue()))
+    scr.ask(program2.AppSettings("Оператор", "D:/GMR/Октябрь_2026"))
+    top.destroy()
 
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    with_menu = "--menu" in argv
+    argv = [a for a in argv if a != "--menu"]
     out = Path(argv[0]) if argv else ROOT / "docs" / "img"
     out.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="gmr_shots_"))
@@ -111,30 +189,16 @@ def main(argv=None) -> int:
         ui.OPERATOR = "Оператор"
         w = ui.setup(f.root)
         w.attributes("-alpha", 1.0)
-        w.geometry("1100x720+40+40")
-        ui.pump(w, 0.8)
+        w.geometry("1100x720" + OFF)
+        # два новых фото в папке контролёра — значок «● 2 новых фото» у кнопки обработки
+        meter(f.photos / "Контролёр 1" / "IMG-20261005-WA0001.jpg", "01530", "001000104")
+        meter(f.photos / "Контролёр 1" / "IMG-20261005-WA0002.jpg", "01211", "001000105")
+        w._watcher.check_now()
+        settle(w, 2.0)
         grab(w, out / "operator_main.png")
-
-        x, y = w.winfo_rootx(), w.winfo_rooty() - MENU_H
-
-        def shot_menu():               # меню на Windows держит свой цикл: снимок и Esc — по таймеру
-            ImageGrab.grab(bbox=(x, y, x + 1100, y + 330), all_screens=True).save(out / "operator_menu.png")
-            ctypes.windll.user32.keybd_event(0x1B, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(0x1B, 0, 2, 0)
-        w.after(900, shot_menu)
-        w._month_menu.post(x + 4, w.winfo_rooty())
-        ui.pump(w, 0.5)
-
-        from src.gmr.ui import run_dialog
-        script = tmp / "fake_run.py"
-        script.write_text(FAKE_RUN, encoding="utf-8")
-        dlg = run_dialog.ProcessDialog(w, [sys.executable, str(script)], tmp / "stop", lambda c, lines: None)
-        ui.pump(w, 5.0)
-        grab(w, out / "operator_progress.png", over=dlg)
-        ui.pump(w, 5.0)
-        if dlg.winfo_exists():
-            dlg.destroy()
-        ui.pump(w, 0.5)
+        shot_welcome(w, out)
+        if with_menu:
+            shot_menu_on_screen(w, out)
 
         import program2
         reason, _, path = program2.list_question_photos(w.results_dir)[0]
@@ -148,32 +212,17 @@ def main(argv=None) -> int:
         w._show_lists()
 
         w._notebook.select(w._verify_tab)
-        w._verify_tab.refresh()
+        w._verify_tab._sort.click("delta")             # отсортировано по «Разнице»
+        grab(w, out / "operator_verify_list.png")
         w._verify_tab._open()
         ui.pump(w, 1.0)
         grab(w, out / "operator_verify.png")
         w._show_lists()
 
-        def shot_settings():
-            d = next(t for t in w.winfo_children() if isinstance(t, program2.PresetDialog))
-            d._tabs.select(1)
-            ui.pump(w, 0.6)
-            d.lift()
-            d.attributes("-topmost", True)
-            ui.pump(w, 0.6)
-            ImageGrab.grab(bbox=(d.winfo_rootx(), d.winfo_rooty(), d.winfo_rootx() + d.winfo_width(),
-                                 d.winfo_rooty() + d.winfo_height()), all_screens=True).save(
-                out / "operator_settings.png")
-            d.destroy()
-        w.after(400, shot_settings)
-        from src.gmr.domain.preset import RecognitionPreset
-        w.ask_preset(w, RecognitionPreset.new_month(), "Настройки распознавания")
-
         w.show_summary()
-        ui.pump(w, 0.8)
-        top = [t for t in w.winfo_children() if t.winfo_class() == "Toplevel"][-1]
-        grab(top, out / "operator_summary.png", menu=False)
-        top.destroy()
+        grab(w, out / "operator_summary.png")
+        w._current_screen._back()
+
         w.destroy()
         time.sleep(0.2)
     finally:
