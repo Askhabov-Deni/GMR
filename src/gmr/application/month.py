@@ -33,6 +33,7 @@ from typing import Optional
 from src.gmr.domain.config import PipelineConfig
 from src.gmr.domain.models import QUESTION_REASONS
 from src.gmr.domain.preset import RecognitionPreset
+from src.gmr.application.quality import month_quality, quality_lines
 from src.gmr.storage.backup import backup_sqlite
 from src.gmr.storage.log_store import LOG_COLUMNS, load_log, log_path_for
 from src.gmr.storage.month import Abonent, MonthDB, MonthFolder, Reading, now_text
@@ -514,7 +515,8 @@ def month_summary(month_dir: str) -> str:
         everyone = db.abonents()
         readings = db.readings()
         columns = db.columns()
-        log_rows = len(db.log_rows())
+        all_rows = db.log_rows()
+        log_rows = len(all_rows)
         serial_fixes = {c["account"] for c in db.changes() if c["action"] == SERIAL_FIX_ACTION}
         meta = (db.meta("created_at"), db.meta("table"), db.meta("table_loaded_at"))
         no_table_readings = db.meta(META_TABLE_READINGS) == "ignored"
@@ -541,5 +543,6 @@ def month_summary(month_dir: str) -> str:
         f"  номера счётчиков исправлены оператором: {len(serial_fixes)}"
         + (" (для компании — db_serial_fix.csv)" if serial_fixes else ""),
         f"  строк в логе обработки: {log_rows}",
+        *quality_lines(month_quality(all_rows)),
     ]
     return "\n".join(lines)

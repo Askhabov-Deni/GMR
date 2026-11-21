@@ -136,7 +136,16 @@ def list_verify_photos(results_dir: str, log_rows: list[dict]) -> list[dict]:
                 row = index.find(p.name, folder, controller=name)
                 if row is not None and not row.get("verified_by"):
                     result.append({"path": str(p), "log_row": row, "folder": folder})
+    # Порядок — случайный, но постоянный (по отпечатку фото): сколько бы фото
+    # оператор ни проверил, это честная выборка из всех контролёров и дней —
+    # по ней считается процент ошибок (src/gmr/application/quality.py)
+    result.sort(key=lambda it: _shuffle_key(it["log_row"], it["path"]))
     return result
+
+
+def _shuffle_key(row: dict, path: str) -> str:
+    import hashlib
+    return hashlib.sha1((row.get("photo_hash") or Path(path).name).encode("utf-8")).hexdigest()
 
 
 def _to_float(v) -> Optional[float]:

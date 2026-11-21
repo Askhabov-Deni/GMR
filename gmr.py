@@ -13,6 +13,7 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py weights [--write]                                     файлы весов
   python gmr.py check                                                 проверка перед коммитом
   python gmr.py shortcut                                              ярлык «GMR Оператор» на рабочем столе
+  python gmr.py quality <месяц | папка с месяцами> [--csv файл]       качество распознавания по месяцам (ошибки по «Проверке»)
   python gmr.py build                                                 собрать программу для офиса (exe, docs/BUILD.md)
   python gmr.py --version                                             версия программы
   python gmr.py datasets [--list]                                     папки датасетов и их проверка
@@ -127,6 +128,11 @@ def _shortcut(argv):
     return shortcut.main(argv)
 
 
+def _quality(argv):
+    from tools import quality_report
+    return quality_report.main(argv)
+
+
 def _build(argv):
     from tools import build_exe
     return build_exe.main(argv)
@@ -166,6 +172,7 @@ COMMANDS = {
     "weights": (_weights, "какие файлы весов в работе (tools/weights_manifest.py)"),
     "check":   (_check,   "проверка перед коммитом: данные, код, тесты (tools/check.py)"),
     "shortcut": (_shortcut, "ярлык «GMR Оператор» на рабочем столе — окно оператора (tools/shortcut.py)"),
+    "quality":  (_quality,  "качество распознавания по месяцам: сам, оператору, проверено, ошибок % (tools/quality_report.py)"),
     "build":    (_build,    "собрать программу для офиса: exe, ВЕРСИЯ.txt, архив (tools/build_exe.py, docs/BUILD.md)"),
     "datasets": (_datasets, "датасеты: проверить, собрать из фото (--build), на проверку глазами (--review) "
                             "(tools/datasets.py)"),
