@@ -34,7 +34,7 @@ def test_default_preset_is_old_behaviour():
 def test_new_month_preset_has_everything_on():
     p = RecognitionPreset.new_month()
     assert p.account_marker and p.overlay_notes
-    assert p == RecognitionPreset(account_marker=True, overlay_notes=True)
+    assert p == RecognitionPreset(account_marker=True, overlay_notes=True, forgive_with="model")
 
 
 def test_preset_json_roundtrip_and_bad_values():

@@ -66,8 +66,11 @@ class RecognitionPreset:
     def new_month(cls) -> "RecognitionPreset":
         """Для нового месяца, когда взять настройки не у чего: надпись маркером и
         надписи поверх фото включены (решение владельца 2026-11-21). Месяц без
-        настроек в базе — по-прежнему RecognitionPreset() (всё как было)."""
-        return cls(account_marker=True, overlay_notes=True)
+        настроек в базе — по-прежнему RecognitionPreset() (всё как было).
+        Неуверенную последнюю цифру — ответом модели, а не «0» (решение
+        владельца 2026-11-22: на мае «0» был верен в 1 из 30 подстановок,
+        модель — в 16 из 18 проверяемых)."""
+        return cls(account_marker=True, overlay_notes=True, forgive_with="model")
 
     @classmethod
     def from_json(cls, text: Optional[str]) -> "RecognitionPreset":
