@@ -105,7 +105,21 @@ def main(argv=None) -> int:
     dist, work = out / "dist", out / "work"
     app = dist / APP
     print(f"Сборка {APP} {version} (коммит {commit}) → {app}")
-    shutil.rmtree(app, ignore_errors=True)
+    keep = None                      # settings.json того, кто запускал программу из этой папки
+    if app.exists():
+        # открытая программа держит свои файлы: удаление выбило бы её папку
+        # наполовину (2026-11-22) — сначала переименовать целиком, не вышло — стоп
+        old = app.with_name(app.name + ".old")
+        shutil.rmtree(old, ignore_errors=True)
+        try:
+            app.rename(old)
+        except OSError:
+            print(f"ОШИБКА: папка {app} занята — программа оттуда открыта? Закройте её и повторите. "
+                  "Ничего не удалено.")
+            return 1
+        if (old / "settings.json").is_file():
+            keep = (old / "settings.json").read_bytes()
+        shutil.rmtree(old, ignore_errors=True)
     env = dict(os.environ, NO_ALBUMENTATIONS_UPDATE="1")
     r = subprocess.run([sys.executable, "-m", "PyInstaller", str(ROOT / "packaging" / "gmr.spec"), "--noconfirm",
                         "--distpath", str(dist), "--workpath", str(work)], cwd=ROOT, env=env,
@@ -134,6 +148,8 @@ def main(argv=None) -> int:
         print("Архив…")
         zip_path = shutil.make_archive(str(zip_base), "zip", root_dir=dist, base_dir=APP)
         print(f"Архив: {zip_path} ({Path(zip_path).stat().st_size / 2**30:.1f} ГБ)")
+    if keep is not None:             # после архива: в архив чужие настройки не попадают
+        (app / "settings.json").write_bytes(keep)
     print(f"Дальше: git tag v{version} и git push origin v{version} (метка — какой коммит собран).")
     return 0
 

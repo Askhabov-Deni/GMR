@@ -51,3 +51,17 @@ def test_manual_html_is_one_file_with_pictures(tmp_path):
     assert page.count("<ol>") == 1 and page.count("<ul>") == 1 and "data:image/png;base64," in page
     assert "<td>&lt;2&gt;</td>" in page and "GMR Оператор 1.2.3" in page
     assert "img/a.png" not in page                                # картинка внутри файла, не ссылкой
+
+
+def test_build_does_not_touch_folder_of_running_program(monkeypatch, tmp_path, capsys):
+    # открытая программа держит файлы: сборка не должна удалять её папку наполовину
+    app = tmp_path / "dist" / build_exe.APP
+    (app / "_internal").mkdir(parents=True)
+    (app / "settings.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(build_exe, "dirty_code", lambda: [])
+    monkeypatch.setattr(build_exe, "git", lambda *a: "abc1234")
+    real_rename = type(app).rename
+    monkeypatch.setattr(type(app), "rename", lambda self, target: (_ for _ in ()).throw(PermissionError("занято"))
+                        if self == app else real_rename(self, target))
+    assert build_exe.main(["--out", str(tmp_path)]) == 1
+    assert "занята" in capsys.readouterr().out and (app / "settings.json").is_file()
