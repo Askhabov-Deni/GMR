@@ -648,3 +648,39 @@ def test_accept_blocked_when_serial_not_in_table(edit_app):
     scr._accept()                                       # поиск по счёту, подставлен номер A2
     scr._accept()
     assert readings(app.month) == {"A2": "1050"}
+
+
+# ─── Один экран фото (2026-11-21: Enter делил экран на два) ──────────────────
+
+def _packed_screens(app):
+    from src.gmr.operator.verify_screen import VerifyScreen
+    from src.gmr.operator.edit_screen import EditScreen
+    return [c for c in app.winfo_children() if isinstance(c, (VerifyScreen, EditScreen)) and c.winfo_manager()]
+
+
+@needs_display
+def test_list_under_open_screen_does_not_open_second(app):
+    # Enter на экране доходил и до списка под ним: открывался второй экран, а
+    # «Верно» срабатывало у него — прежний экран оставался висеть сверху
+    app._notebook.select(app._verify_tab)
+    app._verify_tab.refresh()
+    assert app._verify_tab._tree.selection()                 # первая строка выбрана, Enter откроет
+    app._verify_tab._open()
+    scr = app._current_screen
+    app._verify_tab._open()                                  # Enter, дошедший до списка
+    assert _packed_screens(app) == [scr]
+    scr._verify_ok()
+    assert len(_packed_screens(app)) == 1 and app._current_screen is not scr
+    app._current_screen._skip()
+    assert len(_packed_screens(app)) == 1
+
+
+@needs_display
+def test_screen_keeps_hotkeys_of_next_photo(app):
+    # закрывающийся экран снимал горячие клавиши (bind_all) уже у следующего
+    app.open_verify_screen(_items(app)[0], 0)
+    app._current_screen._verify_ok()
+    nxt = app._current_screen
+    assert app._keys_owner is nxt and app.bind_all("<Return>")
+    nxt._back()
+    assert not app.screen_open() and app._keys_owner is None and not app.bind_all("<Return>")

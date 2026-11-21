@@ -33,6 +33,7 @@ from src.gmr.domain.serial_match import lookup_variants, normalize_serial
 from src.gmr.ml.loader import default_device, load_models
 from src.gmr.storage import photo_fingerprint
 from src.gmr.storage.backup import KEEP, backup_sqlite, remove_old
+from src.gmr.version import __version__
 from src.gmr.storage.month import MonthDB, MonthFolder, Reading, Recognition, now_text
 
 from .output import make_log_row, save_annotated
@@ -157,7 +158,7 @@ def run_pipeline(config: PipelineConfig) -> None:
     handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
     log.addHandler(handler)
     try:
-        log.info(f"Журнал прогона: {journal}")
+        log.info(f"GMR {__version__}. Журнал прогона: {journal}")
         apply_month_preset(config, month, log)
         _backup_month(month, log)
         store = _MonthRun(config, log, month)

@@ -15,6 +15,7 @@ from src.gmr.domain.area_code import accounts_by_controller, controller_code
 from src.gmr.domain.preset import RecognitionPreset
 from src.gmr.storage import LOG_COLUMNS as _LOG_COLUMNS
 from src.gmr.storage import log_path_for
+from src.gmr.version import __version__
 from src.gmr.ui.run_dialog import ProcessDialog, process_command, show_text
 
 from .common import (
@@ -50,7 +51,7 @@ from .verify_screen import VerifyScreen
 class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(APP_NAME)
+        self.title(f"{APP_NAME} {__version__}")
         self.geometry("1280x800")
         self.minsize(1100, 680)          # меньше — кнопки шапки и разбора фото не помещаются
         try:
@@ -340,6 +341,7 @@ class MainWindow(tk.Tk):
         top = ttk.Frame(self, style="Header.TFrame", padding=(16, 10))
         top.pack(fill=tk.X)
         ttk.Label(top, text=APP_NAME, style="HeaderTitle.TLabel").pack(side=tk.LEFT)
+        ttk.Label(top, text=__version__, style="HeaderInfo.TLabel").pack(side=tk.LEFT, padx=(6, 0), pady=(3, 0))
         self._month_var = tk.StringVar()
         ttk.Label(top, textvariable=self._month_var, style="HeaderInfo.TLabel").pack(side=tk.LEFT, padx=(18, 0))
         ttk.Button(top, text="⇩  Выгрузить в Excel", style="Header.TButton",
@@ -360,12 +362,14 @@ class MainWindow(tk.Tk):
         self._notebook.add(self._proc_tab,   text="Очередь")
         self._notebook.add(self._verify_tab, text="Проверка")
         self._update_tab_titles()
+        # вкладка сменилась — клавиши её списку (иначе Enter уходил в скрытый список другой вкладки)
+        self._notebook.bind("<<NotebookTabChanged>>", lambda e: self.after_idle(self._focus_list))
 
     def _show_month(self):
         """В шапке — имя папки месяца и оператор (полный путь — «Месяц» →
         «Открыть папку месяца»): длинный путь вытеснял кнопки за край окна."""
         self._month_var.set(f"{self.session.folder.root.name}   ·   {self.settings.operator_name}")
-        self.title(f"{APP_NAME} — {self.session.folder.root.name}")
+        self.title(f"{APP_NAME} {__version__} — {self.session.folder.root.name}")
 
     def _update_tab_titles(self):
         if not hasattr(self, "_notebook"):
@@ -517,59 +521,82 @@ class MainWindow(tk.Tk):
             self._serial_index = build_serial_index(self.df, self.config)
         return getattr(self, "_serial_index", None)
 
-    def open_edit_screen(self, photo_path: str, reason: str):
+    # ─── Экран фото: всегда один ─────────────────────────────────────────────
+    # 2026-11-21: Enter в списке открывает фото, а фокус клавиатуры оставался в
+    # списке под экраном — Enter на экране срабатывал и в списке: открывался
+    # второй экран под первым («экран поделился на два»). Теперь прежний экран
+    # закрывается до того, как строится новый (его горячие клавиши общие —
+    # bind_all), фокус уходит на экран, а список при открытом экране не
+    # открывает фото.
+    def screen_open(self) -> bool:
+        scr = getattr(self, "_current_screen", None)
+        return scr is not None and bool(scr.winfo_exists())
+
+    def _drop_screen(self):
+        scr = getattr(self, "_current_screen", None)
+        if scr is None:
+            return
+        del self._current_screen
+        try:
+            scr._unbind_keys()
+            scr.pack_forget()
+            scr.destroy()
+        except tk.TclError:            # уже закрыт
+            pass
+
+    def _show_screen(self, factory):
+        self._drop_screen()
         self._notebook.pack_forget()
-        screen = EditScreen(self, photo_path, reason, on_back=self._back_from_screen)
+        screen = factory()
         screen.pack(fill=tk.BOTH, expand=True)
         self._current_screen = screen
+        screen.focus_set()             # клавиши — экрану, а не списку под ним
+        return screen
+
+    def _show_lists(self):
+        self._drop_screen()
+        self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        self.refresh_tabs()
+        self._focus_list()
+
+    def _focus_list(self):
+        """Клавиши — списку открытой вкладки: Enter открывает выбранное фото."""
+        if self.screen_open() or not self._notebook.select():
+            return
+        tree = getattr(self.nametowidget(self._notebook.select()), "_tree", None)
+        if tree is not None:
+            tree.focus_set()
+
+    def open_edit_screen(self, photo_path: str, reason: str):
+        return self._show_screen(lambda: EditScreen(self, photo_path, reason, on_back=self._back_from_screen))
 
     def open_verify_screen(self, item: dict, index: int = 0):
-        self._notebook.pack_forget()
-        screen = VerifyScreen(self, item, on_back=self._back_from_screen, index=index)
-        screen.pack(fill=tk.BOTH, expand=True)
-        self._current_screen = screen
+        return self._show_screen(lambda: VerifyScreen(self, item, on_back=self._back_from_screen, index=index))
 
     def open_verify_at(self, index: int):
         """
-        Следующее фото на вкладке «Проверка» — как во вкладке «Обработка».
+        Следующее фото на вкладке «Проверка» — как во вкладке «Очередь».
         Список строится заново: проверенное фото из него выпадает, поэтому
         после «Верно»/«Сохранить» следующее стоит на том же номере.
         """
         items = list_verify_photos(self.results_dir, self.log_rows)
-        if hasattr(self, "_current_screen"):
-            self._current_screen.pack_forget()
-            self._current_screen.destroy()
-            del self._current_screen
         if index < len(items):
             self.open_verify_screen(items[index], index)
         else:
-            self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
-            self.refresh_tabs()
-            messagebox.showinfo("Готово", "Все фото на проверке просмотрены.")
+            self._show_lists()
+            messagebox.showinfo("Готово", "Все фото на проверке просмотрены.", parent=self)
 
     def _back_from_screen(self):
-        if hasattr(self, "_current_screen"):
-            self._current_screen.pack_forget()
-            self._current_screen.destroy()
-        self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
-        self.refresh_tabs()
+        self._show_lists()
 
     def open_next_or_back(self, current_path: str):
         photos = list_question_photos(self.results_dir)
-
-        if hasattr(self, "_current_screen"):
-            self._current_screen.pack_forget()
-            self._current_screen.destroy()
-
         if photos:
-            reason, fname, next_path = photos[0]
-            screen = EditScreen(self, next_path, reason, on_back=self._back_from_screen)
-            screen.pack(fill=tk.BOTH, expand=True)
-            self._current_screen = screen
+            reason, _, next_path = photos[0]
+            self.open_edit_screen(next_path, reason)
         else:
-            self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
-            self.refresh_tabs()
-            messagebox.showinfo("Готово", "Все фото в очереди разобраны.")
+            self._show_lists()
+            messagebox.showinfo("Готово", "Все фото в очереди разобраны.", parent=self)
 
 # ─── Вкладка «Очередь» (фото, которые программа не прочитала сама) ──────────
 def _table_with_buttons(tab: ttk.Frame, columns: list, buttons: list) -> ttk.Treeview:
@@ -658,12 +685,16 @@ class ProcessingTab(ttk.Frame):
         return None
 
     def _open(self):
+        if self.app.screen_open():          # Enter дошёл до списка под открытым экраном
+            return
         sel = self._selected_path()
         if sel:
             reason, path = sel
             self.app.open_edit_screen(path, reason)
 
     def _unreadable(self):
+        if self.app.screen_open():
+            return
         sel = self._selected_path()
         if not sel:
             return
@@ -731,10 +762,15 @@ class VerifyTab(ttk.Frame):
         self._counter_var.set(f"На проверку: {total}")
         if total:
             self._empty.place_forget()
+            first = self._tree.get_children()[0]     # как в «Очереди»: Enter сразу открывает фото
+            self._tree.selection_set(first)
+            self._tree.focus(first)
         else:
             self._empty.place(relx=0.5, rely=0.4, anchor="center")
 
     def _open(self):
+        if self.app.screen_open():          # Enter дошёл до списка под открытым экраном
+            return
         sel = self._tree.selection()
         if not sel:
             messagebox.showinfo("Выберите фото", "Сначала выберите фото из списка.")

@@ -952,7 +952,7 @@ def test_update_table_from_menu(app, tmp_path, monkeypatch):
     assert list(app.df["Лицевой счет"]) == ["A1", "A2"] and shown == []
     _open_first(app)                                       # экран разбора закрывается
     app.update_table()
-    assert not app._current_screen.winfo_exists()
+    assert not app.screen_open()
     assert list(app.df["Лицевой счет"]) == ["A1", "A2", "A3"]
     assert shown[0][0] == "Таблица обновлена" and "Выгрузка" in shown[0][1]
     assert list(app.month.backups.glob("*/gmr.sqlite"))
@@ -1221,3 +1221,18 @@ def test_serial_of_other_area_is_marked(tmp_path, monkeypatch):
         assert scr._serial_match_var.get() == "✓ есть в таблице: л/с 1300000001"
     finally:
         app.destroy()
+
+
+@needs_display
+def test_queue_next_photo_keeps_hotkeys_and_one_screen(app):
+    # после «Нечитаемо» следующее фото открывалось без горячих клавиш (их снимал
+    # прежний экран), а Enter в списке под экраном открывал второй экран
+    app.answers.extend([True, True])
+    scr = _open_first(app)
+    app._proc_tab._open()                                    # Enter, дошедший до списка
+    assert app._current_screen is scr
+    scr._unreadable()
+    nxt = app._current_screen
+    assert nxt is not scr and app._keys_owner is nxt and app.bind_all("<Delete>")
+    from src.gmr.operator.edit_screen import EditScreen
+    assert [c for c in app.winfo_children() if isinstance(c, EditScreen) and c.winfo_manager()] == [nxt]

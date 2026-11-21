@@ -224,8 +224,15 @@ class EditScreen(ttk.Frame):
     def _bind_keys(self):
         for seq, cb in self._key_bindings():
             self.app.bind_all(seq, cb)
+        self.app._keys_owner = self
 
     def _unbind_keys(self):
+        # Клавиши общие для окна (bind_all): снимает их только экран, который
+        # их поставил, — иначе закрывающийся экран снимал клавиши следующего
+        # (2026-11-21: со второго фото очереди Enter, D, N, B, Del не работали)
+        if getattr(self.app, "_keys_owner", None) is not self:
+            return
+        self.app._keys_owner = None
         for seq, _ in self._key_bindings():
             try:
                 self.app.unbind_all(seq)

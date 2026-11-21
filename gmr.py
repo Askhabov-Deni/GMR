@@ -13,6 +13,8 @@ gmr.py — одна точка входа для всех команд прое�
   python gmr.py weights [--write]                                     файлы весов
   python gmr.py check                                                 проверка перед коммитом
   python gmr.py shortcut                                              ярлык «GMR Оператор» на рабочем столе
+  python gmr.py build                                                 собрать программу для офиса (exe, docs/BUILD.md)
+  python gmr.py --version                                             версия программы
   python gmr.py datasets [--list]                                     папки датасетов и их проверка
   python gmr.py datasets --build <фото> --table <таблица>             кропы для датасетов из фото и таблицы
   python gmr.py datasets --review serials|accounts|digits             кропы, где модель не согласна, — на проверку
@@ -123,6 +125,11 @@ def _shortcut(argv):
     return shortcut.main(argv)
 
 
+def _build(argv):
+    from tools import build_exe
+    return build_exe.main(argv)
+
+
 def _datasets(argv):
     from tools import datasets
     return datasets.main(argv)
@@ -157,6 +164,7 @@ COMMANDS = {
     "weights": (_weights, "какие файлы весов в работе (tools/weights_manifest.py)"),
     "check":   (_check,   "проверка перед коммитом: данные, код, тесты (tools/check.py)"),
     "shortcut": (_shortcut, "ярлык «GMR Оператор» на рабочем столе — окно оператора (tools/shortcut.py)"),
+    "build":    (_build,    "собрать программу для офиса: exe, ВЕРСИЯ.txt, архив (tools/build_exe.py, docs/BUILD.md)"),
     "datasets": (_datasets, "датасеты: проверить, собрать из фото (--build), на проверку глазами (--review) "
                             "(tools/datasets.py)"),
     "etalon":   (_etalon,   "эталон: трудные фото из месяца, обычные — из архива; проверить на нём модели (tools/etalon.py)"),
@@ -171,6 +179,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     from src.gmr.console import safe_console
     safe_console()      # ⚠️ и т.п. при выводе в файл на русской Windows — «?», а не падение
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in ("--version", "-V", "version"):
+        from src.gmr.version import __version__
+        print(f"GMR {__version__}")
+        return 0
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
         print(__doc__.strip())
         print("\nКоманды:")

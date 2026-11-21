@@ -38,13 +38,30 @@ def analysis(script):
                     excludes=excludes, noarchive=False)
 
 
+# Версия в свойствах exe (Windows: «Свойства» → «Подробно») — из src/gmr/version.py
+from PyInstaller.utils.win32.versioninfo import (  # noqa: E402
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo, VarStruct, VSVersionInfo)
+from src.gmr.version import __version__  # noqa: E402
+
+_v = tuple(int(x) for x in __version__.split(".")) + (0,)
+
+
+def version_info(description):
+    return VSVersionInfo(
+        ffi=FixedFileInfo(filevers=_v, prodvers=_v),
+        kids=[StringFileInfo([StringTable("041904B0", [
+            StringStruct("ProductName", "GMR Оператор"), StringStruct("FileDescription", description),
+            StringStruct("FileVersion", __version__), StringStruct("ProductVersion", __version__)])]),
+            VarFileInfo([VarStruct("Translation", [0x0419, 1200])])])
+
+
 win = analysis("gmr_operator.py")
 cli = analysis("gmr.py")
 
 win_exe = EXE(PYZ(win.pure), win.scripts, [], exclude_binaries=True, name="GMR Оператор",
-              console=False, upx=False)
+              console=False, upx=False, version=version_info("GMR Оператор — окно оператора"))
 cli_exe = EXE(PYZ(cli.pure), cli.scripts, [], exclude_binaries=True, name="gmr",
-              console=True, upx=False)
+              console=True, upx=False, version=version_info("GMR — обработка фото и команды"))
 
 coll = COLLECT(win_exe, win.binaries, win.datas, cli_exe, cli.binaries, cli.datas,
                upx=False, name="GMR Оператор")
