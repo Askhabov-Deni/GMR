@@ -92,7 +92,7 @@ class EditScreen(ttk.Frame):
 
         top = ttk.Frame(self)
         top.pack(fill=tk.X, padx=16, pady=(12, 8))
-        ttk.Button(top, text="←  К списку", command=self._back).pack(side=tk.LEFT)
+        ttk.Button(top, text="←  К списку   Esc", command=self._back).pack(side=tk.LEFT)
         tk.Label(top, text=REASON_LABELS.get(self.reason, self.reason), bg="#fdf0e1", fg=WARNING,
                  font=(FONT, 10, "bold"), padx=10, pady=3).pack(side=tk.LEFT, padx=(16, 10))
         ttk.Label(top, text=self._position_text(), style="Muted.TLabel").pack(side=tk.LEFT)
@@ -142,12 +142,12 @@ class EditScreen(ttk.Frame):
         lbl = tk.Label(parent, textvariable=var, bg=SURFACE, font=(FONT, 9), anchor="w",
                        justify="left", wraplength=320)
         var.trace_add("write", lambda *a: lbl.config(fg=SUCCESS if var.get().startswith("✓") else WARNING))
-        lbl.pack(anchor="w", fill=tk.X, pady=(2, 10))
+        lbl.pack(anchor="w", fill=tk.X, pady=(2, 6))
         return lbl
 
     def _build_fields(self, parent):
         self._status_var = tk.StringVar(value="")
-        ttk.Label(parent, textvariable=self._status_var, style="CardMuted.TLabel").pack(anchor="w", pady=(0, 12))
+        ttk.Label(parent, textvariable=self._status_var, style="CardMuted.TLabel").pack(anchor="w", pady=(0, 6))
 
         self._title(parent, "НОМЕР СЧЁТЧИКА")
         self._serial_var = tk.StringVar()
@@ -173,7 +173,7 @@ class EditScreen(ttk.Frame):
 
         self._title(parent, "ПОКАЗАНИЕ")
         self._reading_widget = ReadingWidget(parent, on_change=self._on_reading_change, style="Card.TFrame")
-        self._reading_widget.pack(anchor="w", pady=(2, 12))
+        self._reading_widget.pack(anchor="w", pady=(2, 8))
 
         row = ttk.Frame(parent, style="Card.TFrame")
         row.pack(fill=tk.X)
@@ -185,7 +185,7 @@ class EditScreen(ttk.Frame):
         self._delta_var = tk.StringVar(value="")
         self._delta_lbl = tk.Label(parent, textvariable=self._delta_var,
                                    font=(FONT, 15, "bold"), bg=SURFACE, anchor="w")
-        self._delta_lbl.pack(anchor="w", pady=(10, 0))
+        self._delta_lbl.pack(anchor="w", pady=(6, 0))
         self._outcome_var = tk.StringVar(value="")
         self._outcome_lbl = tk.Label(parent, textvariable=self._outcome_var, font=(FONT, 10),
                                      bg=SURFACE, fg=MUTED, anchor="w", justify="left", wraplength=320)
@@ -201,17 +201,16 @@ class EditScreen(ttk.Frame):
         bottom = ttk.Frame(self)
         bottom.pack(fill=tk.X, padx=16, pady=(8, 14))
 
-        self._accept_btn = action_button(bottom, "✓   Принять     Enter", self._accept, kind="primary",
+        self._accept_btn = action_button(bottom, "✓  Принять   Enter", self._accept, kind="primary",
                                          state=tk.DISABLED)
         self._accept_btn.pack(side=tk.LEFT, padx=(0, 12))
         for text, command, kind in (
-            ("Дубль     D", self._duplicate, "secondary"),
-            ("Нечитаемо     Del", self._unreadable, "danger"),
-            ("Нет в базе     N", self._not_in_db, "secondary"),
-            ("Номер в таблице с ошибкой     B", self._db_serial_fix, "secondary"),
+            ("Дубль   D", self._duplicate, "secondary"),
+            ("Нечитаемо   Del", self._unreadable, "danger"),
+            ("Нет в базе   N", self._not_in_db, "secondary"),
+            ("Номер в таблице с ошибкой   B", self._db_serial_fix, "secondary"),
         ):
             action_button(bottom, text, command, kind=kind).pack(side=tk.LEFT, padx=4)
-        action_button(bottom, "Пропустить     Esc", self._back).pack(side=tk.RIGHT)
 
     def _key_bindings(self) -> list:
         """Горячие клавиши; буквы — в обеих раскладках (D — и «в»)."""
@@ -628,9 +627,9 @@ class EditScreen(ttk.Frame):
         self._delta_value = delta
         self._delta_var.set(f"Расход {delta:+.0f}")
         if abs(delta) > self.app.config.delta_threshold:
-            color, text, code = WARNING, "⚠ Очень большая разница — проверьте показание", "SUSPICIOUS"
+            color, text, code = WARNING, "⚠ Очень большая разница — проверьте", "SUSPICIOUS"
         elif delta >= 0:
-            color, text, code = SUCCESS, "▲ больше прошлого — обычный расход", "PLUS"
+            color, text, code = SUCCESS, "▲ больше прошлого", "PLUS"
         else:
             color, text, code = CLR_RED, "▼ меньше прошлого", "MINUS"
         self._delta_lbl.config(fg=color)

@@ -37,6 +37,15 @@ def process_command(project: Path, month_dir: str, reread: bool = False) -> list
     return cmd + (["--reread"] if reread else [])
 
 
+def center_on(win: tk.Toplevel, parent) -> None:
+    """Окно — посередине над родительским (иначе Windows ставит его в угол экрана)."""
+    win.update_idletasks()
+    w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+    x = parent.winfo_rootx() + max(0, (parent.winfo_width() - w) // 2)
+    y = parent.winfo_rooty() + max(0, (parent.winfo_height() - h) // 3)
+    win.geometry(f"+{x}+{y}")
+
+
 def parse_progress(line: str) -> Optional[tuple]:
     """Строка вывода прогона → ("total", N) | ("photo", k, N, имя) |
     ("models",) | ("stopped",) | None."""
@@ -78,6 +87,7 @@ class ProcessDialog(tk.Toplevel):
         self.stop_btn = ttk.Button(f, text="⏹  Остановить", command=self.stop)
         self.stop_btn.pack(pady=(12, 0))
         self.protocol("WM_DELETE_WINDOW", self.stop)
+        center_on(self, parent)
         self.grab_set()
 
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
@@ -153,3 +163,4 @@ def show_text(parent, title: str, text: str) -> None:
     ttk.Button(win, text="Закрыть", command=win.destroy).pack(side=tk.BOTTOM, pady=8)
     sb.pack(side=tk.RIGHT, fill=tk.Y)
     box.pack(fill=tk.BOTH, expand=True, padx=(8, 0), pady=(8, 0))
+    center_on(win, parent)

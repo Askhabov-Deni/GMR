@@ -52,7 +52,11 @@ class MainWindow(tk.Tk):
         super().__init__()
         self.title(APP_NAME)
         self.geometry("1280x800")
-        self.minsize(960, 600)
+        self.minsize(1100, 680)          # меньше — кнопки шапки и разбора фото не помещаются
+        try:
+            self.state("zoomed")         # на весь экран: на ноутбуке 1366×768 окно 1280×800 не влезает
+        except tk.TclError:              # не Windows
+            pass
         apply_theme(self)
 
         self.settings  = load_settings()
