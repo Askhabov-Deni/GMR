@@ -177,7 +177,15 @@ def main(argv=None) -> int:
         w.destroy()
         time.sleep(0.2)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        import gc
+        for _ in range(5):              # файлы месяца держат объекты окна, пока их не соберёт gc
+            gc.collect()
+            shutil.rmtree(tmp, ignore_errors=True)
+            if not tmp.exists():
+                break
+            time.sleep(0.5)
+        if tmp.exists():
+            print(f"Не удалось удалить временную папку {tmp} — удалите вручную")
     print(f"Снимки: {out}")
     return 0
 
