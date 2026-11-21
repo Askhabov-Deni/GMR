@@ -228,10 +228,10 @@ class MainWindow(tk.Tk):
                             marker_model=bool(PipelineConfig().account_ocr_model)).result
 
     def _previous_preset(self) -> RecognitionPreset:
-        """Для нового месяца — как в открытом месяце, иначе — как было."""
+        """Для нового месяца — как в открытом месяце, иначе — всё подключено."""
         if self.session is not None:
-            return month_app.month_preset(str(self.session.folder.root)) or RecognitionPreset()
-        return RecognitionPreset()
+            return month_app.month_preset(str(self.session.folder.root)) or RecognitionPreset.new_month()
+        return RecognitionPreset.new_month()
 
     def _apply_preset(self):
         """Настройки месяца — в self.config (порог разницы, столбцы — как у прогона)."""

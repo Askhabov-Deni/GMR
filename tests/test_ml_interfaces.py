@@ -122,7 +122,7 @@ def test_load_models_keeps_construction_params(monkeypatch):
     monkeypatch.setattr(loader, "CNNInferer", fake("cnn"))
     monkeypatch.setattr(loader, "CRNNInferer", fake("crnn"))
 
-    cfg = PipelineConfig()
+    cfg = PipelineConfig(account_ocr_model="")          # без модели надписи
     models = loader.load_models(cfg, device="DEV", resolve_path=lambda p: "/abs/" + p)
 
     assert made == [

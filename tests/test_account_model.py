@@ -405,7 +405,9 @@ def test_loader_refuses_detector_without_account_class():
 
 # ─── inspect account ─────────────────────────────────────────────────────────
 
-def test_inspect_account_mode(tmp_path):
+def test_inspect_account_mode(tmp_path, monkeypatch):
+    import functools
+
     from tools import inspect_model
 
     class Meter:
@@ -433,7 +435,10 @@ def test_inspect_account_mode(tmp_path):
     rows = inspect_model.main(["account", str(photo), "--weights", "x.pt", "--table", str(table),
                                "--out", str(tmp_path / "o2")], factory)
     assert rows[0]["account"] == "1300000065" and rows[0]["ok"] is True
-    with pytest.raises(SystemExit):        # без весов — понятная ошибка, а не падение
+    # модель надписи не подключена и весов нет — понятная ошибка, а не падение
+    monkeypatch.setattr(inspect_model, "PipelineConfig", functools.partial(inspect_model.PipelineConfig,
+                                                                           account_ocr_model=""))
+    with pytest.raises(SystemExit):
         inspect_model.main(["account", str(photo), "--out", str(tmp_path / "o3")], factory)
 
 

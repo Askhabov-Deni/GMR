@@ -140,7 +140,9 @@ def test_review_command(tmp_path, monkeypatch, capsys):
     assert "Возвращено" in capsys.readouterr().out
 
 
-def test_load_reader_account_needs_weights():
+def test_load_reader_account_needs_weights(monkeypatch):
+    import functools
+    monkeypatch.setattr(rv, "PipelineConfig", functools.partial(rv.PipelineConfig, account_ocr_model=""))
     with pytest.raises(ValueError, match="модель надписи не подключена"):
         rv.load_reader("accounts")
 

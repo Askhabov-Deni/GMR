@@ -1148,6 +1148,7 @@ def test_preset_dialog(app):
 def test_ask_preset_marker_only_with_model(monkeypatch):
     seen = []
     monkeypatch.setattr(op_window, "PresetDialog", lambda *a, **k: seen.append(k) or SimpleNamespace(result="r"))
+    monkeypatch.setattr(op_window, "PipelineConfig", lambda: SimpleNamespace(account_ocr_model=""))
     assert program2.MainWindow.ask_preset(None, RecognitionPreset(), "t") == "r"
     monkeypatch.setattr(op_window, "PipelineConfig", lambda: SimpleNamespace(account_ocr_model="acc.pt"))
     program2.MainWindow.ask_preset(None, RecognitionPreset(), "t", ok_text="Дальше")

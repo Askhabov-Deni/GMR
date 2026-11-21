@@ -46,6 +46,13 @@ class RecognitionPreset:
     overlay_notes: bool = False       # надписи контролёров поверх фото (PipelineConfig.overlay_notes)
 
     @classmethod
+    def new_month(cls) -> "RecognitionPreset":
+        """Для нового месяца, когда взять настройки не у чего: надпись маркером и
+        надписи поверх фото включены (решение владельца 2026-11-21). Месяц без
+        настроек в базе — по-прежнему RecognitionPreset() (всё как было)."""
+        return cls(account_marker=True, overlay_notes=True)
+
+    @classmethod
     def from_json(cls, text: Optional[str]) -> "RecognitionPreset":
         """Из meta базы месяца; пусто или испорчено — по умолчанию."""
         default = cls()
