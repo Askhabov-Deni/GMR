@@ -1145,6 +1145,37 @@ def test_preset_dialog(app):
     assert program2.PresetDialog(app, RecognitionPreset()).result is None
 
 
+@needs_display
+def test_preset_dialog_tabs_confidence_and_standard(app):
+    # 2026-11-21: «Обычные» и «Расширенные», уверенность каждой модели, «Вернуть стандартные»
+    def run(action):
+        app.after(100, lambda: action(next(w for w in app.winfo_children() if isinstance(w, program2.PresetDialog))))
+
+    def change(dlg):
+        assert [dlg._tabs.tab(i, "text") for i in dlg._tabs.tabs()] == ["Обычные", "Расширенные"]
+        dlg._vars["serial_conf"].set("0,55")                      # запятая — тоже число
+        dlg._vars["account_conf"].set("0.95")
+        dlg._save()
+    run(change)
+    dlg = program2.PresetDialog(app, RecognitionPreset(), marker_model=True)
+    assert (dlg.result.serial_conf, dlg.result.account_conf, dlg.result.meter_conf) == (0.55, 0.95, 0.7)
+
+    def bad(dlg):
+        dlg._vars["digit_conf"].set("2")
+        dlg._save()                                               # не сохраняет: вне 0,05–0,99
+        assert dlg.winfo_exists() and dlg._tabs.index("current") == 1 and app.shown[-1][0] == "showwarning"
+        dlg.destroy()
+    run(bad)
+    assert program2.PresetDialog(app, RecognitionPreset()).result is None
+
+    def standard(dlg):
+        dlg._fill(RecognitionPreset.new_month())                  # «Вернуть стандартные настройки»
+        dlg._save()
+    run(standard)
+    old = RecognitionPreset(missing_digit="operator", serial_conf=0.4, overlay_notes=False)
+    assert program2.PresetDialog(app, old, marker_model=True).result == RecognitionPreset.new_month()
+
+
 def test_ask_preset_marker_only_with_model(monkeypatch):
     seen = []
     monkeypatch.setattr(op_window, "PresetDialog", lambda *a, **k: seen.append(k) or SimpleNamespace(result="r"))

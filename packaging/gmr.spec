@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Сборка программы для офиса (docs/BUILD.md):
 #   python -m PyInstaller packaging/gmr.spec --distpath <куда> --workpath <временная папка>
-# Результат — папка «GMR Оператор» с двумя exe и общей папкой _internal:
-#   «GMR Оператор.exe» — окно оператора (без чёрного окна);
-#   gmr.exe            — обработка фото и команды (окно запускает его само).
+# Результат — папка «GMR Оператор»: «GMR Оператор.exe» (одна программа: без
+# параметров — окно оператора, с параметрами — команды gmr.py; так окно само
+# запускает обработку фото) и _internal (Python, библиотеки, веса).
 # Веса моделей — те, что в PipelineConfig (src/gmr/domain/config.py), образцы
 # символов надписей — models/overlay/glyphs.npz.
 import sys
@@ -25,7 +25,7 @@ missing = [d for d, _ in datas[:len(weights)] if not Path(d).is_file()]
 if missing:
     raise SystemExit(f"Нет файлов весов: {missing}")
 
-hidden = collect_submodules("src") + ["reader"]
+hidden = collect_submodules("src") + ["reader", "gmr"]
 # torchvision 0.29: модуль операций — _C_stable.pyd (хук PyInstaller ищет старый _C)
 import torchvision  # noqa: E402
 _tv = Path(torchvision.__file__).parent
@@ -55,13 +55,8 @@ def version_info(description):
             VarFileInfo([VarStruct("Translation", [0x0419, 1200])])])
 
 
-win = analysis("gmr_operator.py")
-cli = analysis("gmr.py")
-
-win_exe = EXE(PYZ(win.pure), win.scripts, [], exclude_binaries=True, name="GMR Оператор",
-              console=False, upx=False, version=version_info("GMR Оператор — окно оператора"))
-cli_exe = EXE(PYZ(cli.pure), cli.scripts, [], exclude_binaries=True, name="gmr",
-              console=True, upx=False, version=version_info("GMR — обработка фото и команды"))
-
-coll = COLLECT(win_exe, win.binaries, win.datas, cli_exe, cli.binaries, cli.datas,
-               upx=False, name="GMR Оператор")
+# одна программа: окно и команды gmr.py (gmr_operator.py импортирует gmr только с параметрами)
+app = analysis("gmr_operator.py")
+exe = EXE(PYZ(app.pure), app.scripts, [], exclude_binaries=True, name="GMR Оператор",
+          console=False, upx=False, version=version_info("GMR Оператор — показания газовых счётчиков"))
+coll = COLLECT(exe, app.binaries, app.datas, upx=False, name="GMR Оператор")

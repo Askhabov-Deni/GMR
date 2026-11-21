@@ -178,7 +178,9 @@ def run_pipeline(config: PipelineConfig) -> None:
 
 _PRESET_FIELDS = ("missing_digit_mode", "ignore_last_digits", "forgiven_digit_mode",
                   "serial_crop_pad", "account_ocr_model", "drum_rule", "first_digit_from_last",
-                  "serial_by_table", "turn_if_nothing", "overlay_notes")
+                  "serial_by_table", "turn_if_nothing", "overlay_notes",
+                  "meter_conf_thresh", "digit_detect_conf_thresh", "digit_conf_thresh", "serial_conf_thresh",
+                  "account_conf_thresh")
 
 
 def apply_month_preset(config: PipelineConfig, month: MonthFolder, log: logging.Logger) -> None:

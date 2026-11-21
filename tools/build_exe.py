@@ -6,8 +6,9 @@ tools/build_exe.py — сборка программы для офиса одн�
 1. Код в git должен быть закоммичен: версия — это коммит (с --dirty — можно,
    но в ВЕРСИЯ.txt будет пометка).
 2. PyInstaller по packaging/gmr.spec → <out>\\dist\\GMR Оператор\\.
-3. ВЕРСИЯ.txt рядом с exe: версия, дата сборки, коммит, файлы весов (SHA-256).
-4. Проверка: gmr.exe --version печатает эту версию.
+3. Рядом с exe: ВЕРСИЯ.txt (версия, дата, коммит, файлы весов), ПРОЧТИ.txt
+   (как поставить) и «Инструкция оператора.html» (docs/OPERATOR.md).
+4. Проверка: «GMR Оператор.exe --version» печатает эту версию.
 5. Архив <out>\\GMR Оператор <версия>.zip — его и переносить в офис.
 """
 import argparse
@@ -20,8 +21,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 APP = "GMR Оператор"
+EXE = f"{APP}.exe"                          # одна программа: окно и обработка (packaging/gmr.spec)
+MANUAL = "Инструкция оператора.html"        # src/gmr/operator/theme.MANUAL_NAME
 # что попадает в сборку: незакоммиченные изменения здесь — сборка не совпадёт с коммитом
-CODE = ("src/", "models/", "tools/", "packaging/", "gmr.py", "reader.py", "program2.py", "gmr_operator.py")
+CODE = ("src/", "models/", "tools/", "packaging/", "gmr.py", "reader.py", "program2.py", "gmr_operator.py",
+        "docs/OPERATOR.md", "docs/img/")
 
 
 def git(*args) -> str:
@@ -47,8 +51,38 @@ def version_text(version: str, commit: str, dirty: list[str]) -> str:
              "",
              "Модели (файлы весов внутри _internal\\):"]
     lines += [f"  {r['role']}: {r['path']}  sha256 {r['sha256']}" for r in manifest()]
-    lines += ["", "gmr.exe --version — та же версия. Что нового — docs/CHANGELOG.md в проекте."]
+    lines += ["", "Что нового — docs/CHANGELOG.md в проекте."]
     return "\n".join(lines) + "\n"
+
+
+def readme_text(version: str) -> str:
+    """ПРОЧТИ.txt — первое, что видно в архиве: как поставить и где инструкция."""
+    rows = [(EXE, "программа: окно оператора, обработку фото запускает сама"),
+            (MANUAL, "инструкция оператора со снимками экрана"),
+            ("ВЕРСИЯ.txt", "версия программы и её модели"),
+            ("_internal", "служебная папка (Python, модели) — не трогать")]
+    return "\n".join([
+        f"{APP} {version} — показания газовых счётчиков по фото контролёров.",
+        "",
+        "УСТАНОВКА (один раз)",
+        f"  1. Распакуйте архив, например в D:\\ — получится папка «{APP}».",
+        "     Python и интернет не нужны.",
+        f"  2. Откройте «{EXE}» двойным щелчком.",
+        "  3. В окне: меню «Справка» → «Ярлык на рабочем столе».",
+        "     Дальше открывайте программу этим ярлыком.",
+        "",
+        "КАК РАБОТАТЬ",
+        f"  «{MANUAL}» в этой папке (откроется в браузере)",
+        "  или в окне программы: меню «Справка» → «Инструкция оператора».",
+        "",
+        "НОВАЯ ВЕРСИЯ",
+        "  Распакуйте новый архив поверх этой папки. Папки месяцев (фото, база,",
+        "  показания) лежат отдельно и не трогаются.",
+        "",
+        "ЧТО В ПАПКЕ",
+        *[f"  {name:<28}{what}" for name, what in rows],
+        "  settings.json и program2.log появятся после первого запуска: настройки и журнал окна.",
+    ]) + "\n"
 
 
 def main(argv=None) -> int:
@@ -77,19 +111,24 @@ def main(argv=None) -> int:
                         "--distpath", str(dist), "--workpath", str(work)], cwd=ROOT, env=env,
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     (out / "build.log").write_text(r.stdout + r.stderr, encoding="utf-8")
-    if r.returncode != 0 or not (app / "gmr.exe").is_file():
+    if r.returncode != 0 or not (app / EXE).is_file():
         print(f"ОШИБКА: PyInstaller не собрал программу, подробности — {out / 'build.log'}")
         print("\n".join((r.stdout + r.stderr).splitlines()[-15:]))
         return 1
 
     (app / "ВЕРСИЯ.txt").write_text(version_text(version, commit, dirty), encoding="utf-8")
-    check = subprocess.run([str(app / "gmr.exe"), "--version"], capture_output=True, text=True,
+    (app / "ПРОЧТИ.txt").write_text(readme_text(version), encoding="utf-8-sig")   # с BOM — Блокнот поймёт
+    from tools.manual_html import write_manual
+    write_manual(app / MANUAL, version)
+    # та же программа с параметрами — команда без окна (так окно запускает обработку фото)
+    check = subprocess.run([str(app / EXE), "--version"], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     if check.stdout.strip() != f"GMR {version}":
-        print(f"ОШИБКА: gmr.exe --version напечатал «{check.stdout.strip()}» вместо «GMR {version}»\n{check.stderr}")
+        print(f"ОШИБКА: «{EXE} --version» напечатал «{check.stdout.strip()}» вместо «GMR {version}»\n"
+              f"{check.stderr}")
         return 1
     size = sum(f.stat().st_size for f in app.rglob("*") if f.is_file()) / 2**30
-    print(f"Готово: {app} ({size:.1f} ГБ), gmr.exe --version: {check.stdout.strip()}")
+    print(f"Готово: {app} ({size:.1f} ГБ), «{EXE} --version»: {check.stdout.strip()}")
     if not args.no_zip:
         zip_base = out / f"{APP} {version}"
         print("Архив…")

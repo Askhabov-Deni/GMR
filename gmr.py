@@ -78,7 +78,9 @@ def _month(argv):
         if not args.table:
             print(month.month_summary(args.folder))
             return 0
-        print(month.load_table(args.folder, args.table, clear_readings=args.clear_readings).text())
+        from src.gmr.domain.preset import RecognitionPreset   # новый месяц — как из окна: всё подключено
+        print(month.load_table(args.folder, args.table, clear_readings=args.clear_readings,
+                               preset=RecognitionPreset.new_month()).text())
         print(month.export_month(args.folder).text())
     except (ValueError, OSError, month.ExportLocked) as e:
         print(f"ОШИБКА: {e}")

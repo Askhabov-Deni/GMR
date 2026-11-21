@@ -96,7 +96,7 @@ class EditScreen(ttk.Frame):
         tk.Label(top, text=REASON_LABELS.get(self.reason, self.reason), bg="#fdf0e1", fg=WARNING,
                  font=(FONT, 10, "bold"), padx=10, pady=3).pack(side=tk.LEFT, padx=(16, 10))
         ttk.Label(top, text=self._position_text(), style="Muted.TLabel").pack(side=tk.LEFT)
-        ttk.Label(top, text="колёсико — увеличить  ·  тащить мышью  ·  двойной щелчок — сброс",
+        ttk.Label(top, text="колёсико — масштаб  ·  2× щелчок — сброс",
                   style="Muted.TLabel", font=(FONT, 9)).pack(side=tk.RIGHT)
 
         center = ttk.Frame(self)

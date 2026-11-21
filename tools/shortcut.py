@@ -17,7 +17,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "GMR Оператор"
-WINDOW_EXE = "GMR Оператор.exe"        # окно в собранной программе (packaging/gmr.spec)
 
 
 def _q(text) -> str:
@@ -54,25 +53,30 @@ def main(argv=None) -> int:
     if not _is_windows():
         print("Ярлык на рабочем столе делается только на Windows.")
         return 1
+    ok, message = create_shortcut(args.name)
+    print(message if ok else f"ОШИБКА: {message}")
+    return 0 if ok else 1
+
+
+def create_shortcut(name: str = NAME) -> tuple[bool, str]:
+    """Ярлык на рабочем столе (и из меню окна «Справка»): (получилось, что сказать)."""
     from src.gmr.frozen import FROZEN, program_dir
-    if FROZEN:                                   # собранная программа: ярлык прямо на exe окна
-        return _create(powershell_script(args.name, program_dir() / WINDOW_EXE, None, program_dir()))
+    if FROZEN:                                   # собранная программа: ярлык прямо на её exe
+        return _create(powershell_script(name, Path(sys.executable), None, program_dir()))
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     if not pythonw.is_file():
-        print(f"ОШИБКА: не найден {pythonw}. Запустите команду из .venv проекта "
-              "(.\\.venv\\Scripts\\Activate.ps1).")
-        return 1
-    return _create(powershell_script(args.name, pythonw, ROOT / "gmr_operator.py", ROOT))
+        return False, (f"не найден {pythonw}. Запустите команду из .venv проекта "
+                       "(.\\.venv\\Scripts\\Activate.ps1).")
+    return _create(powershell_script(name, pythonw, ROOT / "gmr_operator.py", ROOT))
 
 
-def _create(script: str) -> int:
+def _create(script: str) -> tuple[bool, str]:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)       # без мелькания окна PowerShell
     out = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, creationflags=flags)
     if out.returncode != 0:
-        print(f"ОШИБКА: ярлык не создан.\n{out.stderr.strip()}")
-        return 1
-    print(f"Ярлык создан: {out.stdout.strip()}\nОткрывайте программу двойным щелчком по нему.")
-    return 0
+        return False, f"ярлык не создан.\n{out.stderr.strip()}"
+    return True, f"Ярлык создан: {out.stdout.strip()}\nОткрывайте программу двойным щелчком по нему."
 
 
 if __name__ == "__main__":

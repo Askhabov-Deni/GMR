@@ -27,7 +27,7 @@ def test_default_preset_is_old_behaviour():
             applied.serial_crop_pad) == ("placeholder", cfg.ignore_last_digits, "placeholder", 0.0)
     assert p.describe() == ("пропущенная цифра — подставить «5»; неуверенные последние 2 → «0»; "
                             "запас рамки серийника 0%; лицевой счёт по надписи — нет; надписи поверх фото — нет; "
-                            "дополнительно — нет")
+                            "уверенность моделей — стандартная; дополнительно — нет")
     assert not applied.overlay_notes
 
 
@@ -251,3 +251,26 @@ def test_month_folder_unchanged_by_preset_reads(tmp_path):
     month_app.month_preset(f.root)
     with MonthDB(f.db) as db:
         assert db.meta("recognition") == before is None
+
+
+# ─── Уверенность моделей (расширенные настройки, 2026-11-21) ────────────────
+
+def test_model_confidences_default_to_config_and_apply():
+    from src.gmr.domain.preset import CONF_FIELDS
+    cfg = PipelineConfig()
+    p = RecognitionPreset()
+    for key, field, _ in CONF_FIELDS:
+        assert getattr(p, key) == getattr(cfg, field)            # без изменений — как было
+    changed = RecognitionPreset(serial_conf=0.5, account_conf=0.95)
+    applied = changed.apply(cfg)
+    assert (applied.serial_conf_thresh, applied.account_conf_thresh, applied.meter_conf_thresh) == (0.5, 0.95, 0.7)
+    assert "уверенность моделей — номер счётчика 0.50, надпись маркером 0.95" in changed.describe()
+
+
+def test_model_confidences_json_roundtrip_and_bad_values():
+    p = RecognitionPreset(meter_conf=0.65, digit_conf=0.55)
+    assert RecognitionPreset.from_json(p.to_json()) == p
+    bad = RecognitionPreset.from_json('{"meter_conf": "0.5", "digit_conf": 1.5, "serial_conf": true, '
+                                      '"account_conf": 0.01}')
+    assert bad == RecognitionPreset()                            # не число / вне 0.05–0.99 — по умолчанию
+    assert RecognitionPreset.from_json('{"account_marker": true}').serial_conf == PipelineConfig().serial_conf_thresh

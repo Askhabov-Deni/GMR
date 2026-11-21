@@ -16,9 +16,11 @@ def test_cli_prints_version(capsys):
 
 
 def test_build_refuses_uncommitted_code(monkeypatch):
-    status = " M src/gmr/operator/window.py\n?? tools/new.py\n M docs/CHANGELOG.md\n?? account_ocr/runs/x/\n"
+    status = (" M src/gmr/operator/window.py\n?? tools/new.py\n M docs/CHANGELOG.md\n?? account_ocr/runs/x/\n"
+              " M docs/OPERATOR.md\n")
     monkeypatch.setattr(build_exe, "git", lambda *a: status if a[0] == "status" else "abc1234")
-    assert build_exe.dirty_code() == [" M src/gmr/operator/window.py", "?? tools/new.py"]   # документы и прогоны — не код
+    # код и инструкция (она в сборке) — да; CHANGELOG и прогоны обучения — нет
+    assert build_exe.dirty_code() == [" M src/gmr/operator/window.py", "?? tools/new.py", " M docs/OPERATOR.md"]
     assert build_exe.main(["--out", "нет"]) == 1
 
 
@@ -29,3 +31,23 @@ def test_version_file_names_version_commit_and_weights(monkeypatch):
     assert text.startswith("GMR Оператор 1.2.3\n") and "Коммит: abc1234\n" in text
     assert "цифры: a/best.pt  sha256 0123456789abcdef" in text
     assert "незакоммиченные" in build_exe.version_text("1.2.3", "abc1234", ["x"])
+
+
+def test_readme_says_how_to_install_and_where_manual_is():
+    text = build_exe.readme_text("1.2.3")
+    assert text.startswith("GMR Оператор 1.2.3")
+    assert "GMR Оператор.exe" in text and "Инструкция оператора.html" in text and "Ярлык на рабочем столе" in text
+    assert "gmr.exe" not in text                                  # одна программа
+
+
+def test_manual_html_is_one_file_with_pictures(tmp_path):
+    from tools import manual_html
+    (tmp_path / "img").mkdir()
+    (tmp_path / "img" / "a.png").write_bytes(b"\x89PNG fake")
+    md = ("# Заголовок\n\nАбзац с **жирным** и `кодом`.\n\n1. Шаг\n   - пункт\n2. Второй\n\n"
+          "![Снимок](img/a.png)\n\n| A | B |\n|---|---|\n| 1 | <2> |\n")
+    page = manual_html.to_html(md, tmp_path, version="1.2.3")
+    assert "<h1>Заголовок</h1>" in page and "<b>жирным</b>" in page and "<code>кодом</code>" in page
+    assert page.count("<ol>") == 1 and page.count("<ul>") == 1 and "data:image/png;base64," in page
+    assert "<td>&lt;2&gt;</td>" in page and "GMR Оператор 1.2.3" in page
+    assert "img/a.png" not in page                                # картинка внутри файла, не ссылкой

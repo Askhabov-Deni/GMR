@@ -4,6 +4,8 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 from src.gmr.domain.preset import (
+    CONF_FIELDS,
+    CONF_RANGE,
     FORGIVE_MODES,
     MISSING_MODES,
     SERIAL_PADS,
@@ -83,7 +85,19 @@ class SettingsDialog(tk.Toplevel):
 class PresetDialog(tk.Toplevel):
     """Настройки распознавания месяца (2026-10-11, решение 2а): при создании
     месяца — заполнены как в прошлом, потом — «Месяц» → «Настройки
-    распознавания…». result — RecognitionPreset или None («Отмена»)."""
+    распознавания…». Две вкладки (2026-11-21): «Обычные» — понятные любому
+    оператору, «Расширенные» — для владельца программы (цифры, модели и их
+    уверенность, номер счётчика). result — RecognitionPreset или None («Отмена»)."""
+
+    MODELS = (   # (название, ключ уверенности, ключ «включена» или None — включена всегда)
+        ("Детектор счётчика и номера", "meter_conf", None),
+        ("Детектор цифр", "digit_detect_conf", None),
+        ("Цифра барабана", "digit_conf", None),
+        ("Номер счётчика", "serial_conf", None),
+        ("Надпись маркером (лицевой счёт)", "account_conf", "account_marker"),
+        ("Надписи поверх фото (не модель — разбор текста)", None, "overlay_notes"),
+    )
+
     def __init__(self, parent, preset: RecognitionPreset, title: str = "Настройки распознавания",
                  ok_text: str = "Сохранить", marker_model: bool = False):
         super().__init__(parent)
@@ -94,55 +108,134 @@ class PresetDialog(tk.Toplevel):
         self.result: Optional[RecognitionPreset] = None
         self._marker_model = marker_model
         self._vars = {
-            "missing_digit": tk.StringVar(value=preset.missing_digit),
-            "forgive_last": tk.IntVar(value=preset.forgive_last),
-            "forgive_with": tk.StringVar(value=preset.forgive_with),
-            "serial_pad": tk.DoubleVar(value=preset.serial_pad),
-            "account_marker": tk.BooleanVar(value=preset.account_marker and marker_model),
-            "drum_rule": tk.BooleanVar(value=preset.drum_rule),
-            "first_from_last": tk.BooleanVar(value=preset.first_from_last),
-            "serial_by_table": tk.BooleanVar(value=preset.serial_by_table),
-            "turn_photo": tk.BooleanVar(value=preset.turn_photo),
-            "overlay_notes": tk.BooleanVar(value=preset.overlay_notes),
+            "missing_digit": tk.StringVar(), "forgive_last": tk.IntVar(), "forgive_with": tk.StringVar(),
+            "serial_pad": tk.DoubleVar(), "account_marker": tk.BooleanVar(), "drum_rule": tk.BooleanVar(),
+            "first_from_last": tk.BooleanVar(), "serial_by_table": tk.BooleanVar(),
+            "turn_photo": tk.BooleanVar(), "overlay_notes": tk.BooleanVar(),
+            **{key: tk.StringVar() for key, _, _ in CONF_FIELDS},
         }
-        f = ttk.Frame(self, padding=16)
-        f.pack(fill=tk.BOTH, expand=True)
+        self._fill(preset)
 
-        def group(text, key, options):
-            ttk.Label(f, text=text, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
-            for value, label in options:
-                ttk.Radiobutton(f, text=label, value=value, variable=self._vars[key]).pack(anchor="w", padx=12)
+        outer = ttk.Frame(self, padding=14)
+        outer.pack(fill=tk.BOTH, expand=True)
+        self._tabs = ttk.Notebook(outer)
+        self._tabs.pack(fill=tk.BOTH, expand=True)
+        simple, advanced = ttk.Frame(self._tabs, padding=14), ttk.Frame(self._tabs, padding=14)
+        self._tabs.add(simple, text="Обычные")
+        self._tabs.add(advanced, text="Расширенные")
+        self._build_simple(simple)
+        self._build_advanced(advanced)
 
-        group("Детектор не нашёл одну цифру:", "missing_digit", MISSING_MODES.items())
-        group("Неуверенные последние цифры:", "forgive_last",
-              [(0, "не прощать — к оператору"), (1, "прощать последнюю"), (2, "прощать две последние")])
-        group("Прощённую цифру заменять:", "forgive_with", FORGIVE_MODES.items())
-        group("Запас вокруг рамки серийника:", "serial_pad", [(p, f"{int(p * 100)}%") for p in SERIAL_PADS])
-        ttk.Label(f, text="Лицевой счёт:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
-        ttk.Checkbutton(f, text="искать по надписи маркером" + ("" if marker_model else
-                                                                " (модель надписи ещё не подключена)"),
-                        variable=self._vars["account_marker"],
-                        state=tk.NORMAL if marker_model else tk.DISABLED).pack(anchor="w", padx=12)
-        ttk.Checkbutton(f, text="искать по надписи поверх фото (счёт — если табличка не прочиталась; "
-                                "показание надписи главнее барабана)",
-                        variable=self._vars["overlay_notes"]).pack(anchor="w", padx=12)
-        ttk.Label(f, text="Дополнительно:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
-        for key, label in (("drum_rule", "правило барабана: цифра между двумя — меньшая"),
-                           ("first_from_last", "старшая цифра по прошлому показанию"),
-                           ("serial_by_table", "серийник по таблице (ближайший номер таблицы)"),
-                           ("turn_photo", "на фото ничего не найдено — повернуть (90°, 180°, 270°)")):
-            ttk.Checkbutton(f, text=label, variable=self._vars[key]).pack(anchor="w", padx=12)
-        ttk.Label(f, text="Как было до настроек: «5», две последние — «0», запас 0%, без надписи.\n"
-                          "Действует со следующей обработки.", foreground="#666").pack(anchor="w", pady=(12, 0))
-        btns = ttk.Frame(f)
-        btns.pack(pady=(12, 0))
+        ttk.Label(outer, text="Действует со следующей обработки фото.", foreground="#666").pack(
+            anchor="w", pady=(10, 0))
+        btns = ttk.Frame(outer)
+        btns.pack(pady=(10, 0))
         ttk.Button(btns, text=ok_text, command=self._save).pack(side=tk.LEFT, padx=6)
         ttk.Button(btns, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=6)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         center_on(self, self.master)
         self.wait_window()
 
+    def _fill(self, p: RecognitionPreset):
+        v = self._vars
+        for key in ("missing_digit", "forgive_last", "forgive_with", "serial_pad", "drum_rule",
+                    "first_from_last", "serial_by_table", "turn_photo", "overlay_notes"):
+            v[key].set(getattr(p, key))
+        v["account_marker"].set(p.account_marker and self._marker_model)
+        for key, _, _ in CONF_FIELDS:
+            v[key].set(f"{getattr(p, key):.2f}")
+
+    @staticmethod
+    def _title(parent, text, pady=(12, 4)):
+        ttk.Label(parent, text=text, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=pady)
+
+    def _build_simple(self, f):
+        ttk.Label(f, text="Обычно здесь ничего менять не нужно.", foreground="#666").pack(anchor="w")
+        self._title(f, "Что программа читает сама, кроме показания и номера счётчика:")
+        ttk.Checkbutton(f, text="лицевой счёт, написанный маркером на счётчике" + (
+            "" if self._marker_model else "  (модель надписи не подключена)"),
+            variable=self._vars["account_marker"],
+            state=tk.NORMAL if self._marker_model else tk.DISABLED).pack(anchor="w", padx=12, pady=2)
+        ttk.Checkbutton(f, text="надписи контролёра поверх фото («лс 12345», «пок 6789»)",
+                        variable=self._vars["overlay_notes"]).pack(anchor="w", padx=12, pady=2)
+        ttk.Checkbutton(f, text="повернуть фото, если на нём ничего не найдено",
+                        variable=self._vars["turn_photo"]).pack(anchor="w", padx=12, pady=2)
+        ttk.Button(f, text="Вернуть стандартные настройки",
+                   command=lambda: self._fill(RecognitionPreset.new_month())).pack(anchor="w", pady=(18, 0))
+        ttk.Label(f, text="Остальное — во вкладке «Расширенные» (для владельца программы).",
+                  foreground="#666").pack(anchor="w", pady=(10, 0))
+
+    def _build_advanced(self, f):
+        tk.Label(f, text="Для владельца программы: эти настройки меняют, как программа читает показания.\n"
+                         "Не уверены — не меняйте («Обычные» → «Вернуть стандартные настройки»).",
+                 fg="#b45309", justify="left", font=("Segoe UI", 9)).pack(anchor="w")
+
+        def radios(parent, text, key, options):
+            self._title(parent, text, pady=(8, 2))
+            row = ttk.Frame(parent)
+            row.pack(anchor="w", padx=12)
+            for value, label in options:
+                ttk.Radiobutton(row, text=label, value=value, variable=self._vars[key]).pack(
+                    side=tk.LEFT, padx=(0, 12))
+
+        radios(f, "Детектор не нашёл одну цифру — на её место:", "missing_digit", MISSING_MODES.items())
+        radios(f, "Неуверенные последние цифры показания:", "forgive_last",
+               [(0, "не прощать — оператору"), (1, "прощать последнюю"), (2, "прощать две последние")])
+        radios(f, "Прощённую цифру заменять:", "forgive_with", FORGIVE_MODES.items())
+
+        self._title(f, "Модели: включена и уверенность (0,05–0,99)", pady=(14, 2))
+        grid = ttk.Frame(f)
+        grid.pack(anchor="w", padx=12)
+        for col, head in enumerate(("", "включена", "уверенность")):
+            ttk.Label(grid, text=head, foreground="#666").grid(row=0, column=col, sticky="w", padx=(0, 14))
+        self._conf_boxes = {}
+        for r, (name, conf_key, on_key) in enumerate(self.MODELS, start=1):
+            ttk.Label(grid, text=name).grid(row=r, column=0, sticky="w", padx=(0, 14), pady=1)
+            if on_key is None:                    # без неё программа не читает — включена всегда
+                cb = ttk.Checkbutton(grid)
+                cb.state(["selected", "disabled"])
+            else:
+                enabled = on_key != "account_marker" or self._marker_model
+                cb = ttk.Checkbutton(grid, variable=self._vars[on_key],
+                                     state=tk.NORMAL if enabled else tk.DISABLED)
+            cb.grid(row=r, column=1, sticky="w")
+            if conf_key is not None:
+                box = ttk.Spinbox(grid, from_=CONF_RANGE[0], to=CONF_RANGE[1], increment=0.05, width=6,
+                                  textvariable=self._vars[conf_key], format="%.2f")
+                box.grid(row=r, column=2, sticky="w")
+                self._conf_boxes[conf_key] = box
+        ttk.Label(f, text="Первые четыре не выключаются: без них программа не читает показание.\n"
+                          "Уверенность ниже — программа сама принимает больше фото, но и ошибается чаще.",
+                  foreground="#666", justify="left").pack(anchor="w", pady=(4, 0))
+
+        radios(f, "Запас вокруг рамки номера счётчика:", "serial_pad",
+               [(p, f"{int(p * 100)}%") for p in SERIAL_PADS])
+        self._title(f, "Опыты (обычно выключены):", pady=(10, 2))
+        for key, label in (("serial_by_table", "номер счётчика по таблице (ближайший номер таблицы)"),
+                           ("drum_rule", "правило барабана: цифра между двумя — меньшая"),
+                           ("first_from_last", "старшая цифра по прошлому показанию")):
+            ttk.Checkbutton(f, text=label, variable=self._vars[key]).pack(anchor="w", padx=12)
+
+    def _conf_values(self) -> Optional[dict]:
+        out = {}
+        for key, _, name in CONF_FIELDS:
+            text = self._vars[key].get().strip().replace(",", ".")
+            try:
+                value = float(text)
+            except ValueError:
+                value = -1.0
+            if not CONF_RANGE[0] <= value <= CONF_RANGE[1]:
+                self._tabs.select(1)
+                messagebox.showwarning("Уверенность модели", f"«{name}»: нужно число от {CONF_RANGE[0]:.2f} "
+                                       f"до {CONF_RANGE[1]:.2f}, сейчас «{text}».", parent=self)
+                return None
+            out[key] = round(value, 2)
+        return out
+
     def _save(self):
+        conf = self._conf_values()
+        if conf is None:
+            return
         v = self._vars
         self.result = RecognitionPreset(
             missing_digit=v["missing_digit"].get(), forgive_last=int(v["forgive_last"].get()),
@@ -150,7 +243,7 @@ class PresetDialog(tk.Toplevel):
             account_marker=bool(v["account_marker"].get()) and self._marker_model,
             drum_rule=bool(v["drum_rule"].get()), first_from_last=bool(v["first_from_last"].get()),
             serial_by_table=bool(v["serial_by_table"].get()), turn_photo=bool(v["turn_photo"].get()),
-            overlay_notes=bool(v["overlay_notes"].get()))
+            overlay_notes=bool(v["overlay_notes"].get()), **conf)
         self.destroy()
 
 

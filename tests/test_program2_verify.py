@@ -684,3 +684,16 @@ def test_screen_keeps_hotkeys_of_next_photo(app):
     assert app._keys_owner is nxt and app.bind_all("<Return>")
     nxt._back()
     assert not app.screen_open() and app._keys_owner is None and not app.bind_all("<Return>")
+
+
+@needs_display
+def test_verify_screen_shows_how_many_left(app):
+    # сколько фото на проверке — на экране и во вкладке, после «Верно» — на одно меньше
+    app._verify_tab.refresh()
+    app._verify_tab._open()
+    scr = app._current_screen
+    assert scr.total == 3 and app._notebook.tab(app._verify_tab, "text") == "Проверка  3"
+    scr._verify_ok()
+    assert app._current_screen.total == 2 and app._notebook.tab(app._verify_tab, "text") == "Проверка  2"
+    app._current_screen._skip()                                  # «Пропустить» — не меньше
+    assert app._current_screen.total == 2 and app._current_screen.index == 1

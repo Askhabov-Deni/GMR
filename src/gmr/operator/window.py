@@ -15,6 +15,7 @@ from src.gmr.domain.area_code import accounts_by_controller, controller_code
 from src.gmr.domain.preset import RecognitionPreset
 from src.gmr.storage import LOG_COLUMNS as _LOG_COLUMNS
 from src.gmr.storage import log_path_for
+from src.gmr.frozen import program_dir
 from src.gmr.version import __version__
 from src.gmr.ui.run_dialog import ProcessDialog, process_command, show_text
 
@@ -28,6 +29,7 @@ from .common import (
 from .dialogs import LoginDialog, PresetDialog, SettingsDialog
 from .theme import (
     APP_NAME,
+    MANUAL_NAME,
     HEADER,
     MUTED,
     SURFACE,
@@ -307,6 +309,45 @@ class MainWindow(tk.Tk):
                 return
         self._switch_month(folder)
 
+    # ─── «Справка» (2026-11-21): инструкция, ярлык, версия — без командной строки ──
+    def manual_path(self) -> Optional[Path]:
+        """Инструкция оператора: в собранной программе — рядом с exe (`python gmr.py
+        build`), без сборки — из docs/OPERATOR.md во временную папку."""
+        path = program_dir() / MANUAL_NAME
+        if path.is_file():
+            return path
+        try:
+            import tempfile
+
+            from tools.manual_html import write_manual
+            return write_manual(Path(tempfile.gettempdir()) / MANUAL_NAME, __version__)
+        except (ImportError, OSError) as e:
+            log.warning(f"Инструкция не собрана: {e}")
+            return None
+
+    def open_manual(self):
+        path = self.manual_path()
+        if path is None:
+            messagebox.showwarning("Инструкция", f"Файла «{MANUAL_NAME}» нет в папке программы.", parent=self)
+            return
+        open_in_explorer(path)
+
+    def make_shortcut(self):
+        from tools.shortcut import create_shortcut
+        ok, message = create_shortcut()
+        (messagebox.showinfo if ok else messagebox.showerror)("Ярлык на рабочем столе", message, parent=self)
+
+    def about_text(self) -> str:
+        cfg = PipelineConfig()
+        models = [("цифры", cfg.digit_ocr_model), ("номер счётчика", cfg.serial_ocr_model),
+                  ("надпись маркером", cfg.account_ocr_model or "не подключена")]
+        lines = [f"{APP_NAME} {__version__}", "", f"Папка программы: {program_dir()}", "", "Модели:"]
+        lines += [f"  {name}: {Path(path).parent.name if '/' in path else path}" for name, path in models]
+        return "\n".join(lines)
+
+    def show_about(self):
+        messagebox.showinfo("О программе", self.about_text(), parent=self)
+
     def show_summary(self):
         """«Итог месяца»: то же, что `gmr.py month <папка>`."""
         show_text(self, "Итог месяца", month_app.month_summary(str(self.session.folder.root)))
@@ -334,14 +375,20 @@ class MainWindow(tk.Tk):
         m.add_command(label="Прочитать заново фото с ошибками…", command=self.reread_errors)
         m.add_command(label="Настройки распознавания…", command=self.edit_preset)
         menubar.add_cascade(label="Месяц", menu=m)
+        h = tk.Menu(menubar, tearoff=False)
+        h.add_command(label="Инструкция оператора", command=self.open_manual)
+        h.add_command(label="Ярлык на рабочем столе", command=self.make_shortcut)
+        h.add_separator()
+        h.add_command(label="О программе", command=self.show_about)
+        menubar.add_cascade(label="Справка", menu=h)
         self.configure(menu=menubar)        # self.config — это PipelineConfig, поэтому configure
         self._month_menu = m
+        self._help_menu = h
 
         # Шапка: программа, месяц, оператор; справа — главные действия месяца
         top = ttk.Frame(self, style="Header.TFrame", padding=(16, 10))
         top.pack(fill=tk.X)
         ttk.Label(top, text=APP_NAME, style="HeaderTitle.TLabel").pack(side=tk.LEFT)
-        ttk.Label(top, text=__version__, style="HeaderInfo.TLabel").pack(side=tk.LEFT, padx=(6, 0), pady=(3, 0))
         self._month_var = tk.StringVar()
         ttk.Label(top, textvariable=self._month_var, style="HeaderInfo.TLabel").pack(side=tk.LEFT, padx=(18, 0))
         ttk.Button(top, text="⇩  Выгрузить в Excel", style="Header.TButton",
@@ -570,8 +617,17 @@ class MainWindow(tk.Tk):
     def open_edit_screen(self, photo_path: str, reason: str):
         return self._show_screen(lambda: EditScreen(self, photo_path, reason, on_back=self._back_from_screen))
 
-    def open_verify_screen(self, item: dict, index: int = 0):
-        return self._show_screen(lambda: VerifyScreen(self, item, on_back=self._back_from_screen, index=index))
+    def open_verify_screen(self, item: dict, index: int = 0, total: Optional[int] = None):
+        if total is None:
+            total = len(list_verify_photos(self.results_dir, self.log_rows))
+        self._set_verify_title(total)
+        return self._show_screen(lambda: VerifyScreen(self, item, on_back=self._back_from_screen, index=index,
+                                                      total=total))
+
+    def _set_verify_title(self, total: int):
+        """Вкладка «Проверка N» — сразу, а не только по возвращении к списку."""
+        if hasattr(self, "_notebook"):
+            self._notebook.tab(self._verify_tab, text=f"Проверка  {total}" if total else "Проверка")
 
     def open_verify_at(self, index: int):
         """
@@ -581,7 +637,7 @@ class MainWindow(tk.Tk):
         """
         items = list_verify_photos(self.results_dir, self.log_rows)
         if index < len(items):
-            self.open_verify_screen(items[index], index)
+            self.open_verify_screen(items[index], index, total=len(items))
         else:
             self._show_lists()
             messagebox.showinfo("Готово", "Все фото на проверке просмотрены.", parent=self)
@@ -777,4 +833,4 @@ class VerifyTab(ttk.Frame):
             return
         idx = self._tree.index(sel[0])
         if idx < len(self._items):
-            self.app.open_verify_screen(self._items[idx], idx)
+            self.app.open_verify_screen(self._items[idx], idx, total=len(self._items))

@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 
 APP_NAME = "GMR Оператор"
+MANUAL_NAME = "Инструкция оператора.html"     # рядом с exe (python gmr.py build, tools/manual_html.py)
 FONT = "Segoe UI"
 
 BG = "#eef1f5"            # фон окна

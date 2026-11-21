@@ -24,9 +24,27 @@ def test_frozen_paths(monkeypatch, tmp_path):
     assert frozen.resolve("") == ""                                      # модели нет
 
 
-def test_frozen_window_runs_gmr_exe(monkeypatch, tmp_path):
+def test_frozen_window_runs_itself_for_processing(monkeypatch, tmp_path):
+    # одна программа: обработку окно запускает тем же exe с параметрами
     exe = tmp_path / "GMR Оператор" / "GMR Оператор.exe"
     monkeypatch.setattr(frozen, "FROZEN", True)
     monkeypatch.setattr(sys, "executable", str(exe))
     assert run_dialog.process_command(tmp_path, "D:/GMR/Май", reread=True) == [
-        str(exe.with_name("gmr.exe")), "process", "D:/GMR/Май", "--reread"]
+        str(exe), "process", "D:/GMR/Май", "--reread"]
+
+
+def test_attach_std_streams_keeps_existing(monkeypatch):
+    import io
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    frozen.attach_std_streams()
+    assert sys.stdout is out and sys.stderr is err          # с консолью — ничего не трогаем
+
+
+def test_entry_with_arguments_runs_command(monkeypatch, capsys):
+    import gmr_operator
+    from src.gmr.version import __version__
+    monkeypatch.setattr(sys, "argv", ["GMR Оператор.exe", "--version"])
+    assert gmr_operator.main() == 0
+    assert capsys.readouterr().out.strip() == f"GMR {__version__}"

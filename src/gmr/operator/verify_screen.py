@@ -30,11 +30,12 @@ if TYPE_CHECKING:                      # только для подсказки 
 
 class VerifyScreen(ttk.Frame):
     """Проверка фото из plus/ minus/ которые обработал reader.py автоматически."""
-    def __init__(self, parent: "MainWindow", item: dict, on_back, index: int = 0):
+    def __init__(self, parent: "MainWindow", item: dict, on_back, index: int = 0, total: Optional[int] = None):
         super().__init__(parent)
         self.app      = parent
         self.item     = item
         self.index    = index        # номер фото в списке «Проверки» — для перехода к следующему
+        self.total    = total        # сколько фото сейчас на проверке (после «Верно» — на одно меньше)
         self._on_back = on_back
         self._tk_img: Optional[ImageTk.PhotoImage] = None
         self._edit_mode = False
@@ -56,9 +57,13 @@ class VerifyScreen(ttk.Frame):
         ttk.Button(top, text="←  К списку", command=self._back).pack(side=tk.LEFT)
         tk.Label(top, text="Проверка", bg="#e3edfd", fg="#1858bd", font=(FONT, 10, "bold"),
                  padx=10, pady=3).pack(side=tk.LEFT, padx=(16, 10))
-        ttk.Label(top, text=f"Фото {self.index + 1}   ·   {Path(self.item['path']).name}",
+        if self.total is not None:           # сколько осталось (просьба владельца 2026-11-21)
+            tk.Label(top, text=f"На проверке: {self.total}", bg="#e6f4ea", fg="#1e7b34",
+                     font=(FONT, 10, "bold"), padx=10, pady=3).pack(side=tk.LEFT, padx=(0, 10))
+        where = f"Фото {self.index + 1} из {self.total}" if self.total else f"Фото {self.index + 1}"
+        ttk.Label(top, text=f"{where}   ·   {Path(self.item['path']).name}",
                   style="Muted.TLabel").pack(side=tk.LEFT)
-        ttk.Label(top, text="колёсико — увеличить  ·  тащить мышью  ·  двойной щелчок — сброс",
+        ttk.Label(top, text="колёсико — масштаб  ·  2× щелчок — сброс",
                   style="Muted.TLabel", font=(FONT, 9)).pack(side=tk.RIGHT)
 
         center = ttk.Frame(self)
@@ -105,8 +110,9 @@ class VerifyScreen(ttk.Frame):
         except (ValueError, TypeError):
             color, delta_label = MUTED, "—"
         row("РАСХОД", delta_label, color=color)
-        ttk.Label(parent, text=f"{OUTCOME_WORDS.get(r.get('outcome', ''), r.get('outcome', ''))}   ·   "
-                               f"прочитано {r.get('processed_at', '')[:16].replace('T', ' ')}",
+        ttk.Label(parent, text=OUTCOME_WORDS.get(r.get("outcome", ""), r.get("outcome", "")),
+                  style="CardMuted.TLabel").pack(anchor="w")
+        ttk.Label(parent, text=f"прочитано {r.get('processed_at', '')[:16].replace('T', ' ')}",
                   style="CardMuted.TLabel").pack(anchor="w")
 
         self._edit_frame = ttk.LabelFrame(parent, text="ИСПРАВЛЕНИЕ", padding=10)
