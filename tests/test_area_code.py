@@ -38,7 +38,7 @@ def test_accounts_by_controller_counts_only_table_accounts():
     table = {"1300000001", "1300000002"}
     rows = [
         {"source_folder": "Аюб", "account_id": "1300000001"},
-        {"source_folder": "Аюб", "account_id": "06671231"},        # номер «Нет в базе» — не счёт таблицы
+        {"source_folder": "Аюб", "account_id": "0123456"},        # номер «Нет в базе» — не счёт таблицы
         {"source_folder": "Фатима Я", "account_id": "1300000002"},
         {"source_folder": "", "account_id": "1300000002"},          # pre_existing — без папки
         {"source_folder": "Аюб", "account_id": ""},
