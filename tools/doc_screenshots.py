@@ -237,6 +237,22 @@ def shot_process(w, out, tmp):
         op_window.process_command = real
 
 
+def shot_drops(w, out, tmp):
+    """Поля «перетащите сюда»: таблица нового месяца и «Добавить фото» с папкой."""
+    folder = tmp / "с телефона" / "Контролёр 1"
+    meter(folder / "IMG-20261006-WA0001.jpg", "01410", "001000106")
+    meter(folder / "IMG-20261006-WA0002.jpg", "00870", "001000107")
+    w.after(700, lambda: (grab(w, out / "operator_new_month.png"), w._drop_target.cancel()))
+    w._ask_table()
+
+    def photos():
+        w._drop_target.dropped([str(folder)])
+        w.after(700, lambda: (grab(w, out / "operator_add_photos.png"), w._drop_target.cancel()))
+    w.after(500, photos)
+    from src.gmr.operator import window as op_window
+    op_window.pick_photos(w, ["Контролёр 1", "Контролёр 2"])
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     with_menu = "--menu" in argv
@@ -261,6 +277,7 @@ def main(argv=None) -> int:
         if with_menu:
             shot_menu_on_screen(w, out)
         shot_process(w, out, tmp)
+        shot_drops(w, out, tmp)
 
         import program2
         reason, _, path = program2.list_question_photos(w.results_dir)[0]

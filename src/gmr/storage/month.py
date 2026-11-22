@@ -14,6 +14,9 @@ src/gmr/storage/month.py — папка месяца и её база (этап 
       таблицы/               копии загруженных таблиц компании и отчёты загрузки
       gmr_backups/           копии базы перед изменениями
 
+С 1.5.0 всё, кроме фото/ и выгрузок показания.*, — скрытое (hide_service,
+storage/hidden.py): контролёр видит в папке месяца только своё.
+
 База — SQLite (стандартная библиотека). Таблицы:
   meta       — служебное: столбцы таблицы компании, когда создан месяц;
   abonents   — абоненты из таблицы компании (все её столбцы — в data, JSON);
@@ -32,9 +35,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
 
+from .hidden import hide
 from .log_store import LOG_COLUMNS, SqliteLogStore
 
 SCHEMA_VERSION = "1"
+
+# Служебное в папке месяца — скрыто в проводнике (1.5.0, просьба владельца
+# 2026-11-22). Видно — фото/ и показания.xlsx (.xls, .csv, .ods),
+# db_serial_fix.csv (номера с ошибкой — список для компании).
+SERVICE_ITEMS = ("gmr.sqlite", "результат", "таблицы", "gmr_backups", "разметка", "лог.csv",
+                 "итог_месяца.txt", "без_показаний.csv", "проверка_все_показания.csv")
 
 
 @dataclass(frozen=True)
@@ -67,6 +77,13 @@ class MonthFolder:
 
     def exists(self) -> bool:
         return self.db.is_file()
+
+    def hide_service(self) -> None:
+        """Служебное — скрытое (что есть; не Windows — ничего)."""
+        for name in SERVICE_ITEMS:
+            p = self.root / name
+            if p.exists():
+                hide(p)
 
 
 @dataclass

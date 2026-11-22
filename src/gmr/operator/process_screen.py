@@ -22,6 +22,7 @@ from typing import Callable, Optional
 from src.gmr.ui.run_dialog import ProcessRunner, report_numbers
 
 from .theme import (
+    ACCENT,
     BORDER,
     DANGER,
     FONT,
@@ -34,6 +35,13 @@ from .theme import (
     px,
     set_enabled,
 )
+
+
+def clock_text(sec: float) -> str:
+    """Сколько идёт: «0:42», «12:05», «1:02:33»."""
+    sec = int(sec)
+    h, m, x = sec // 3600, sec % 3600 // 60, sec % 60
+    return f"{h}:{m:02d}:{x:02d}" if h else f"{m}:{x:02d}"
 
 
 def minutes_text(sec: float) -> str:
@@ -60,13 +68,35 @@ class ProcessScreen(ttk.Frame):
         self.lines = self._runner.lines
 
     # ── экран ──
+    STEPS = ("Запуск", "Модели", "Чтение фото", "Итог")
+
     def _build(self, title: str):
+        """Ход обработки так, чтобы было видно, что работа идёт (просьба
+        владельца 2026-11-22): шаги, проценты, полоса, сколько идёт и
+        сколько примерно осталось, мигающая точка — раз в секунду."""
         self._card = tk.Frame(self, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER,
                               padx=px(36), pady=px(28))
         self._card.place(relx=0.5, rely=0.42, anchor="center", width=px(680))
-        self._title = tk.Label(self._card, text=title, font=(FONT, 15, "bold"), fg=TEXT, bg=SURFACE)
-        self._title.pack(anchor="w")
-        self._count = tk.StringVar(value="Запуск…")
+        head = tk.Frame(self._card, bg=SURFACE)
+        head.pack(fill=tk.X)
+        self._title = tk.Label(head, text=title, font=(FONT, 15, "bold"), fg=TEXT, bg=SURFACE)
+        self._title.pack(side=tk.LEFT)
+        self._percent = tk.Label(head, text="", font=(FONT, 22, "bold"), fg=ACCENT, bg=SURFACE)
+        self._percent.pack(side=tk.RIGHT)
+
+        steps = tk.Frame(self._card, bg=SURFACE)
+        steps.pack(fill=tk.X, pady=(px(12), 0))
+        self._step_labels = []
+        for i, name in enumerate(self.STEPS):
+            if i:
+                tk.Label(steps, text="—", font=(FONT, 9), fg=BORDER, bg=SURFACE).pack(side=tk.LEFT, padx=px(6))
+            lab = tk.Label(steps, text=f"{i + 1}  {name}", font=(FONT, 9), fg=MUTED, bg=SURFACE)
+            lab.pack(side=tk.LEFT)
+            self._step_labels.append(lab)
+        self._step = -1
+        self._set_step(0)
+
+        self._count = tk.StringVar(master=self, value="Запуск…")
         tk.Label(self._card, textvariable=self._count, font=(FONT, 11), fg=TEXT, bg=SURFACE).pack(
             anchor="w", pady=(px(14), px(8)))
         self.bar = ttk.Progressbar(self._card, mode="indeterminate")
@@ -74,36 +104,74 @@ class ProcessScreen(ttk.Frame):
         self.bar.start(15)
         row = tk.Frame(self._card, bg=SURFACE)
         row.pack(fill=tk.X, pady=(px(8), 0))
-        self._status = tk.StringVar()
-        self._eta = tk.StringVar()
+        self._dot = tk.Label(row, text="●", font=(FONT, 9), fg=ACCENT, bg=SURFACE)
+        self._dot.pack(side=tk.LEFT, padx=(0, px(6)))
+        self._status = tk.StringVar(master=self)
+        self._eta = tk.StringVar(master=self)
         tk.Label(row, textvariable=self._status, font=(FONT, 9), fg=MUTED, bg=SURFACE, anchor="w").pack(
             side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(row, textvariable=self._eta, font=(FONT, 9), fg=MUTED, bg=SURFACE).pack(side=tk.RIGHT)
+        tk.Label(row, textvariable=self._eta, font=(FONT, 9, "bold"), fg=TEXT, bg=SURFACE).pack(side=tk.RIGHT)
+        self._time = tk.StringVar(master=self)
+        tk.Label(self._card, textvariable=self._time, font=(FONT, 9), fg=MUTED, bg=SURFACE, anchor="w").pack(
+            fill=tk.X, pady=(px(4), 0))
         tk.Label(self._card, text="Пока идёт обработка, разбирать фото нельзя. Можно остановить — программа "
                  "дочитает текущее фото, остальные прочитает в следующий раз.", font=(FONT, 9), fg=MUTED,
                  bg=SURFACE, justify="left", wraplength=px(600)).pack(anchor="w", pady=(px(18), px(12)))
         self.stop_btn = action_button(self._card, "Остановить", self.stop, kind="danger")
         self.stop_btn.pack(anchor="w")
+        self._started = time.monotonic()
+        self._k = self._n = 0
+        self._tick()
+
+    def _set_step(self, i: int):
+        if i == self._step:
+            return
+        self._step = i
+        for j, lab in enumerate(self._step_labels):
+            lab.configure(fg=ACCENT if j == i else (SUCCESS if j < i else MUTED),
+                          font=(FONT, 9, "bold") if j == i else (FONT, 9),
+                          text=("✓ " if j < i else f"{j + 1}  ") + self.STEPS[j])
+
+    def _tick(self):
+        """Раз в секунду: сколько идёт, мигает точка, прогноз — даже если
+        фото читается долго (первое — с загрузкой моделей)."""
+        if self.done.get() or not self.winfo_exists():
+            return
+        sec = time.monotonic() - self._started
+        self._dot.configure(fg=ACCENT if int(sec) % 2 == 0 else SURFACE)
+        text = f"Идёт {clock_text(sec)}"
+        if self._t0 is not None and self._k > self._first:
+            per = (time.monotonic() - self._t0) / (self._k - self._first)
+            left = per * (self._n - self._k)
+            end = time.localtime(time.time() + left)
+            text += f"   ·   ≈ {per:.1f} с на фото   ·   закончится примерно в {end.tm_hour:02d}:{end.tm_min:02d}"
+        self._time.set(text.replace(".", ","))
+        self.after(1000, self._tick)
 
     def _progress(self, p: tuple):
         if p[0] == "total":
-            self.bar.stop()
-            self.bar.configure(mode="determinate", maximum=max(p[1], 1), value=0)
+            self._set_step(1)
+            self._n = p[1]
             self._count.set(f"Новых фото: {p[1]}" if p[1] else "Новых фото нет")
+            self._status.set("Загружаем модели — в начале это занимает до минуты…" if p[1] else "")
         elif p[0] == "photo":
             k, n = p[1], p[2]
+            self._set_step(2)
             if self._t0 is None:
                 self._t0, self._first = time.monotonic(), k
+            self._k, self._n = k, n
             self.bar.stop()
             self.bar.configure(mode="determinate", maximum=max(n, 1), value=k)
+            self._percent.configure(text=f"{round(100 * k / max(n, 1))}%")
             self._count.set(f"Обработано {k} из {n} новых фото")
             self._status.set(p[3])
             done = k - self._first
-            if done >= 3:
+            if done >= 1:
                 left = (time.monotonic() - self._t0) / done * (n - k)
-                self._eta.set(f"осталось {minutes_text(left)}")
+                self._eta.set(f"осталось {minutes_text(left)}" + (" (уточняется)" if done < 3 else ""))
         elif p[0] == "models":
-            self._status.set("Загружаем модели…")
+            self._set_step(1)
+            self._status.set("Загружаем модели — в начале это занимает до минуты…")
         elif p[0] == "stopped":
             self._status.set("Остановлено")
 
@@ -121,6 +189,7 @@ class ProcessScreen(ttk.Frame):
     # ── итог ──
     def _finished(self, code: int, lines: list[str]):
         self.bar.stop()
+        self._set_step(3)
         try:
             self._on_done(code, lines)
         finally:

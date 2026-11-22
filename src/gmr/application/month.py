@@ -35,6 +35,7 @@ from src.gmr.domain.models import QUESTION_REASONS
 from src.gmr.domain.preset import RecognitionPreset
 from src.gmr.application.quality import month_quality, quality_lines
 from src.gmr.storage.backup import backup_sqlite
+from src.gmr.storage.hidden import hide, unhide
 from src.gmr.storage.log_store import LOG_COLUMNS, load_log, log_path_for
 from src.gmr.storage.month import Abonent, MonthDB, MonthFolder, Reading, now_text
 from src.gmr.storage.register import clean_serial, read_register
@@ -333,6 +334,7 @@ def load_table(month_dir: str, table_path: str, config: Optional[PipelineConfig]
         d.mkdir(exist_ok=True)
     stamp_file = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     shutil.copy2(table_path, folder.tables / f"{stamp_file}_{Path(table_path).name}")
+    folder.hide_service()
     report = folder.tables / f"{stamp_file}_отчёт_загрузки.txt"
     rep.report_file = str(report)
     report.write_text(rep.text(limit=None) + "\n", encoding="utf-8")       # все списки целиком
@@ -456,6 +458,7 @@ def export_month(month_dir: str, config: Optional[PipelineConfig] = None,
         w.writeheader()
         w.writerows(log_rows)
     _replace(tmp, folder.export_log)
+    folder.hide_service()                  # лог.csv заменён — снова скрыть
 
     return ExportReport(chosen[0], len(abonents), with_reading, str(folder.export_log), len(log_rows),
                         paths=chosen)
@@ -626,6 +629,7 @@ def _write_without_reading(path: Path, columns: list[str], abonents: list) -> Op
     """Список абонентов без показания (все столбцы таблицы компании; «;» — для
     Excel). Возвращает текст ошибки, если файл не записался (открыт в Excel)."""
     try:
+        unhide(path)                       # скрытый файл не перезаписать (storage/hidden.py)
         with open(path, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f, delimiter=";")
             w.writerow(columns)
@@ -633,6 +637,8 @@ def _write_without_reading(path: Path, columns: list[str], abonents: list) -> Op
                 w.writerow([a.data.get(c, "") for c in columns])
     except OSError as e:
         return f"не записан ({e}) — если открыт в Excel, закройте"
+    finally:
+        hide(path)
     return None
 
 
@@ -734,8 +740,12 @@ def month_summary(month_dir: str) -> str:
 def save_summary(st: MonthStats) -> str:
     """Текст итога — и в итог_месяца.txt в папке месяца."""
     text = summary_text(st)
+    path = st.root / SUMMARY_FILE
     try:
-        (st.root / SUMMARY_FILE).write_text(f"Итог месяца на {now_text()}\n\n{text}\n", encoding="utf-8-sig")
+        unhide(path)                   # скрытый файл не перезаписать (storage/hidden.py)
+        path.write_text(f"Итог месяца на {now_text()}\n\n{text}\n", encoding="utf-8-sig")
     except OSError:                    # открыт в другой программе — итог всё равно показан
         pass
+    finally:
+        hide(path)
     return text

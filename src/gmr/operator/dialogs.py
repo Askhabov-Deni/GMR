@@ -8,9 +8,9 @@ from typing import Optional
 from src.gmr.domain.preset import (
     CONF_FIELDS,
     CONF_RANGE,
+    DELTA_RANGE,
     FORGIVE_MODES,
     MISSING_MODES,
-    SERIAL_PADS,
     RecognitionPreset,
 )
 
@@ -46,10 +46,11 @@ class PresetDialog(tk.Toplevel):
         self._marker_model = marker_model
         self._vars = {
             "missing_digit": tk.StringVar(), "forgive_last": tk.IntVar(), "forgive_with": tk.StringVar(),
-            "serial_pad": tk.DoubleVar(), "account_marker": tk.BooleanVar(), "drum_rule": tk.BooleanVar(),
+            "account_marker": tk.BooleanVar(),
             "first_from_last": tk.BooleanVar(), "serial_by_table": tk.BooleanVar(),
             "turn_photo": tk.BooleanVar(), "overlay_notes": tk.BooleanVar(),
             **{key: tk.StringVar() for key, _, _ in CONF_FIELDS},
+            "suspicious_delta": tk.StringVar(),
         }
         self._fill(preset)
 
@@ -75,12 +76,13 @@ class PresetDialog(tk.Toplevel):
 
     def _fill(self, p: RecognitionPreset):
         v = self._vars
-        for key in ("missing_digit", "forgive_last", "forgive_with", "serial_pad", "drum_rule",
+        for key in ("missing_digit", "forgive_last", "forgive_with",
                     "first_from_last", "serial_by_table", "turn_photo", "overlay_notes"):
             v[key].set(getattr(p, key))
         v["account_marker"].set(p.account_marker and self._marker_model)
         for key, _, _ in CONF_FIELDS:
             v[key].set(f"{getattr(p, key):.2f}")
+        v["suspicious_delta"].set(str(p.suspicious_delta))
 
     @staticmethod
     def _title(parent, text, pady=(px(12), px(4))):
@@ -97,6 +99,14 @@ class PresetDialog(tk.Toplevel):
                         variable=self._vars["overlay_notes"]).pack(anchor="w", padx=px(12), pady=px(2))
         ttk.Checkbutton(f, text="повернуть фото, если на нём ничего не найдено",
                         variable=self._vars["turn_photo"]).pack(anchor="w", padx=px(12), pady=px(2))
+        self._title(f, "Подозрительное показание (уходит на разбор оператору):")
+        row = ttk.Frame(f)
+        row.pack(anchor="w", padx=px(12))
+        ttk.Label(row, text="разница с прошлым показанием больше").pack(side=tk.LEFT)
+        self._delta_box = ttk.Spinbox(row, from_=DELTA_RANGE[0], to=DELTA_RANGE[1], increment=1000, width=9,
+                                      textvariable=self._vars["suspicious_delta"])
+        self._delta_box.pack(side=tk.LEFT, padx=px(6))
+        ttk.Label(row, text="м³ (в плюс или в минус)").pack(side=tk.LEFT)
         ttk.Button(f, text="Вернуть стандартные настройки",
                    command=lambda: self._fill(RecognitionPreset.new_month())).pack(anchor="w", pady=(px(18), 0))
         ttk.Label(f, text="Остальное — во вкладке «Расширенные» (для владельца программы).",
@@ -145,11 +155,8 @@ class PresetDialog(tk.Toplevel):
                           "Уверенность ниже — программа сама принимает больше фото, но и ошибается чаще.",
                   foreground="#666", justify="left").pack(anchor="w", pady=(px(4), 0))
 
-        radios(f, "Запас вокруг рамки номера счётчика:", "serial_pad",
-               [(p, f"{int(p * 100)}%") for p in SERIAL_PADS])
         self._title(f, "Опыты (обычно выключены):", pady=(px(10), px(2)))
         for key, label in (("serial_by_table", "номер счётчика по таблице (ближайший номер таблицы)"),
-                           ("drum_rule", "правило барабана: цифра между двумя — меньшая"),
                            ("first_from_last", "старшая цифра по прошлому показанию")):
             ttk.Checkbutton(f, text=label, variable=self._vars[key]).pack(anchor="w", padx=px(12))
 
@@ -169,18 +176,31 @@ class PresetDialog(tk.Toplevel):
             out[key] = round(value, 2)
         return out
 
+    def _delta_value(self) -> Optional[int]:
+        text = self._vars["suspicious_delta"].get().strip().replace(" ", "").replace("\u00a0", "")
+        value = int(text) if text.isdigit() else -1
+        if not DELTA_RANGE[0] <= value <= DELTA_RANGE[1]:
+            self._tabs.select(0)
+            messagebox.showwarning("Подозрительное показание", f"Нужно целое число от {DELTA_RANGE[0]} до "
+                                   f"{DELTA_RANGE[1]:,}, сейчас «{text}».".replace(",", " "), parent=self)
+            return None
+        return value
+
     def _save(self):
         conf = self._conf_values()
         if conf is None:
             return
+        delta = self._delta_value()
+        if delta is None:
+            return
         v = self._vars
         self.result = RecognitionPreset(
             missing_digit=v["missing_digit"].get(), forgive_last=int(v["forgive_last"].get()),
-            forgive_with=v["forgive_with"].get(), serial_pad=float(v["serial_pad"].get()),
+            forgive_with=v["forgive_with"].get(),
             account_marker=bool(v["account_marker"].get()) and self._marker_model,
-            drum_rule=bool(v["drum_rule"].get()), first_from_last=bool(v["first_from_last"].get()),
+            first_from_last=bool(v["first_from_last"].get()),
             serial_by_table=bool(v["serial_by_table"].get()), turn_photo=bool(v["turn_photo"].get()),
-            overlay_notes=bool(v["overlay_notes"].get()), **conf)
+            overlay_notes=bool(v["overlay_notes"].get()), suspicious_delta=delta, **conf)
         self.destroy()
 
 

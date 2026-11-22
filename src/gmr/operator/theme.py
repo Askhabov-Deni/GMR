@@ -55,7 +55,7 @@ BUTTON_KINDS = {
 
 # Буква горячей клавиши → та же клавиша в русской раскладке (D — «в», …):
 # без этого D/N/B/E при русской раскладке не срабатывали
-_CYRILLIC = {"d": "ve", "n": "te", "b": "i", "e": "u", "i": "sha"}
+_CYRILLIC = {"d": "ve", "n": "te", "b": "i", "e": "u", "i": "sha", "o": "shcha"}
 
 
 def key_sequences(letter: str) -> list[str]:

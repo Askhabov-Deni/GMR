@@ -26,33 +26,57 @@ def test_default_preset_is_old_behaviour():
     assert (applied.missing_digit_mode, applied.ignore_last_digits, applied.forgiven_digit_mode,
             applied.serial_crop_pad) == ("placeholder", cfg.ignore_last_digits, "placeholder", 0.0)
     assert p.describe() == ("пропущенная цифра — подставить «5»; неуверенные последние 2 → «0»; "
-                            "запас рамки серийника 0%; лицевой счёт по надписи — нет; надписи поверх фото — нет; "
-                            "уверенность моделей — стандартная; дополнительно — нет")
+                            "лицевой счёт по надписи — нет; надписи поверх фото — нет; "
+                            "уверенность моделей — стандартная; подозрительно — разница больше 10 000; "
+                            "дополнительно — нет")
+    assert applied.delta_threshold == cfg.delta_threshold == 10_000
     assert not applied.overlay_notes
 
 
 def test_new_month_preset_has_everything_on():
     p = RecognitionPreset.new_month()
     assert p.account_marker and p.overlay_notes
-    assert p == RecognitionPreset(account_marker=True, overlay_notes=True, forgive_with="model")
+    assert p == RecognitionPreset(account_marker=True, overlay_notes=True, forgive_with="model",
+                                  first_from_last=True)
+
+
+def test_next_month_keeps_previous_but_applies_owner_decisions():
+    # май создан до решений: «0» вместо неуверенных цифр, старшая цифра — без прошлого показания
+    may = RecognitionPreset(missing_digit="operator", forgive_last=1, serial_by_table=True, suspicious_delta=5000)
+    june = may.next_month()
+    assert june.forgive_with == "model" and june.first_from_last
+    assert (june.missing_digit, june.forgive_last, june.serial_by_table, june.suspicious_delta) == (
+        "operator", 1, True, 5000)
+    assert may.forgive_with == "placeholder" and not may.first_from_last      # май не меняется
 
 
 def test_preset_json_roundtrip_and_bad_values():
-    p = RecognitionPreset("model", 1, "model", 0.05, True)
+    p = RecognitionPreset("model", 1, "model", True, suspicious_delta=2500)
     assert RecognitionPreset.from_json(p.to_json()) == p
+    assert p.apply(PipelineConfig()).delta_threshold == 2500
     bad = '{"missing_digit": "guess", "forgive_last": 7, "forgive_with": 1, "serial_pad": 0.3, ' \
           '"account_marker": "yes", "new_key": 1}'
     assert RecognitionPreset.from_json(bad) == RecognitionPreset()
     assert RecognitionPreset.from_json("не json") == RecognitionPreset()
     assert RecognitionPreset.from_json("[1, 2]") == RecognitionPreset()
     assert RecognitionPreset.from_json(None) == RecognitionPreset()
+    for bad_delta in ('"5000"', "50", "true", "5000.5", "99999999"):
+        assert RecognitionPreset.from_json('{"suspicious_delta": %s}' % bad_delta).suspicious_delta == 10_000
+
+
+def test_removed_experiments_never_switch_on():
+    # запас рамки и правило барабана убраны из настроек (на эталоне хуже) — старые ключи не читаются
+    old = RecognitionPreset.from_json('{"serial_pad": 0.05, "drum_rule": true, "forgive_last": 1}')
+    assert old == RecognitionPreset(forgive_last=1)
+    cfg = old.apply(PipelineConfig(serial_crop_pad=0.1, drum_rule=True))
+    assert (cfg.serial_crop_pad, cfg.drum_rule) == (0.0, False)
 
 
 def test_preset_apply_and_describe():
     cfg = PipelineConfig(account_ocr_model="acc.pt")
-    on = RecognitionPreset("operator", 0, "model", 0.1, True).apply(cfg)
+    on = RecognitionPreset("operator", 0, "model", True).apply(cfg)
     assert (on.missing_digit_mode, on.ignore_last_digits, on.forgiven_digit_mode, on.serial_crop_pad,
-            on.account_ocr_model) == ("operator", 0, "model", 0.1, "acc.pt")
+            on.account_ocr_model) == ("operator", 0, "model", 0.0, "acc.pt")   # запас рамки — всегда 0
     assert RecognitionPreset(account_marker=False).apply(cfg).account_ocr_model == ""   # надпись выключена
     assert "последние цифры не прощаются" in RecognitionPreset(forgive_last=0).describe()
     assert "неуверенные последние 1 → ответом модели" in RecognitionPreset(
@@ -199,10 +223,10 @@ def test_run_applies_month_preset(tmp_path):
     log = logging.getLogger("test-preset")
     pipeline_run.apply_month_preset(cfg, f, log)                    # без настроек — как есть
     assert (cfg.ignore_last_digits, cfg.missing_digit_mode) == (2, "placeholder")
-    month_app.set_month_preset(f.root, RecognitionPreset("operator", 0, "model", 0.05))
+    month_app.set_month_preset(f.root, RecognitionPreset("operator", 0, "model"))
     pipeline_run.apply_month_preset(cfg, f, log)
     assert (cfg.missing_digit_mode, cfg.ignore_last_digits, cfg.forgiven_digit_mode, cfg.serial_crop_pad) == (
-        "operator", 0, "model", 0.05)
+        "operator", 0, "model", 0.0)
 
 
 def test_run_journal_names_preset(tmp_path):
@@ -220,7 +244,7 @@ def test_etalon_check_with_month_preset_and_flags(tmp_path, monkeypatch, capsys)
     from tests.test_etalon import _etalon_with, _rec
     et = _etalon_with(tmp_path, [("a", "111111", "1234", "DIGITS_ERROR")])
     f = make_month(tmp_path, [("100000", "A1", "1", "")], name="Ноябрь")
-    month_app.set_month_preset(f.root, RecognitionPreset(missing_digit="model", serial_pad=0.1))
+    month_app.set_month_preset(f.root, RecognitionPreset(missing_digit="model", forgive_last=1))
     seen = []
     from src.gmr.ml import loader
     monkeypatch.setattr(loader, "load_models", lambda cfg: seen.append(cfg))
@@ -230,7 +254,7 @@ def test_etalon_check_with_month_preset_and_flags(tmp_path, monkeypatch, capsys)
                      "--forgive-last", "0", "--forgive-with", "model"]) == 0
     cfg = seen[0]
     assert (cfg.missing_digit_mode, cfg.serial_crop_pad, cfg.ignore_last_digits, cfg.forgiven_digit_mode) == (
-        "model", 0.1, 0, "model")
+        "model", 0.0, 0, "model")
     out = capsys.readouterr().out
     assert "настройки месяца Ноябрь: пропущенная цифра — прочитать моделью" in out
     assert "ignore_last_digits = 0" in out

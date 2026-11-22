@@ -42,6 +42,7 @@ class OperatorSession:
                             f"python gmr.py month \"{self.folder.root}\" --table <таблица компании>")
         self.cfg = config or PipelineConfig()
         self.db = MonthDB(self.folder.db)
+        self.folder.hide_service()        # месяцы до 1.5.0 — служебное скрыть при открытии
 
     def close(self) -> None:
         self.db.close()

@@ -422,21 +422,30 @@ def s_months(w, run):
     new = run.month.parent / (run.month.name + "_новый")
     shutil.rmtree(new, ignore_errors=True)
     fd = op_window.filedialog
-    fd.askopenfilename = lambda **k: str(table)
     fd.asksaveasfilename = lambda **k: str(new)
+    panels = []
+
+    def drop_table():          # таблицу «перетащили» в поле нового месяца (как из проводника — _on_drop)
+        def go():
+            panels.append(type(w._drop_target).__name__)
+            w._on_drop([str(table)])
+        w.after(300, go)
     offered = []
     real_ask = program2.MainWindow.ask_preset
     program2.MainWindow.ask_preset = staticmethod(
         lambda parent, preset, title, ok_text="Сохранить": offered.append(preset) or preset)
     try:
+        drop_table()
         w.new_month()
         pump(w, 0.3)
         close_toplevels(w)
+        check("новый месяц: поле «перетащите таблицу», таблица перетащена", panels == ["TableDropPanel"], panels)
         check("новый месяц создан и открыт", w.session.folder.root == new and (new / "gmr.sqlite").is_file())
         check("в новом месяце очередь пуста", queue_len(w) == 0)
         fd.askdirectory = lambda **k: str(run.month)
         w.choose_month()
         check("«Открыть другой месяц» — обратно", w.session.folder.root == run.month)
+        drop_table()
         w.update_table()
         pump(w, 0.3)
         close_toplevels(w)
@@ -451,20 +460,75 @@ def s_months(w, run):
         shutil.rmtree(new, ignore_errors=True)
 
 
+def s_ui_15(w, run):
+    print("1.5.0: двойной щелчок по заголовку, «Добавить фото» перетаскиванием (объединение папок)")
+    to_tab(w, w._verify_tab)
+    tree = w._verify_tab._tree
+    pump(w, 0.2)
+    def double(x, y, t0):        # два щелчка подряд — двойной (<Double-…> одним событием Tk не имитирует)
+        for dt in (0, 80):
+            tree.event_generate("<ButtonPress-1>", x=x, y=y, time=t0 + dt)
+            tree.event_generate("<ButtonRelease-1>", x=x, y=y, time=t0 + dt + 20)
+        pump(w, 0.4)
+    double(40, 8, 1_000_000)                                      # заголовок «Расход»
+    check("двойной щелчок по заголовку — фото не открылось", not w.screen_open())
+    rows = tree.get_children()
+    if rows:
+        box = tree.bbox(rows[0])
+        double(40, box[1] + box[3] // 2, 2_000_000)               # по строке — открывается, как раньше
+        check("двойной щелчок по строке — фото открылось", w.screen_open())
+        press(w, "Escape")
+    to_tab(w, w._proc_tab)
+    photos = run.take_photos(2)
+    if len(photos) < 2:
+        check("«Добавить фото»: есть 2 фото (--photos)", False)
+        return
+    controller = sorted(d.name for d in (run.month / "фото").iterdir() if d.is_dir())[0]
+    src = run.month.parent / "_ui_drop" / controller.upper()       # имя другим регистром — та же папка
+    shutil.rmtree(src.parent, ignore_errors=True)
+    src.mkdir(parents=True)
+    for x in photos:
+        shutil.copy2(x, src / x.name)
+    seen = []
+
+    def confirm():
+        t = w._drop_target
+        seen.append((type(t).__name__, getattr(t, "_name_var", None) and t._name_var.get()))
+        press(w, "Return")
+    w.after(400, confirm)
+    try:
+        w._on_drop([str(src)])                                      # папку бросили на окно со списками
+        pump(w, 0.3)
+        dst = run.month / "фото" / controller
+        check("папка на окне — поле «Добавить фото», контролёр узнан",
+              seen == [("PhotoDropPanel", controller)], seen)
+        check("Enter — фото добавлены к папке контролёра", all((dst / x.name).is_file() for x in photos))
+        check("сообщение внизу окна — сколько добавлено", "Добавлено фото: 2" in (w.toast.text or ""), w.toast.text)
+        w.after(400, lambda: press(w, "Return"))
+        w._on_drop([str(src)])                                      # второй раз — те же фото
+        pump(w, 0.3)
+        check("те же фото второй раз — не копируются", "Новых фото нет" in (w.toast.text or ""), w.toast.text)
+        w.after(300, lambda: press(w, "Escape"))
+        w.add_photos()
+        check("Esc — «Отмена», поле закрыто", w._drop_target is None and not w.screen_open())
+    finally:
+        shutil.rmtree(src.parent, ignore_errors=True)
+
+
 SCENARIOS = (s_verify, s_verify_edit, s_keys_14, s_queue, s_queue_accept, s_queue_b, s_list_keys_inert, s_settings,
-             s_help, s_menu, s_process, s_process_exe, s_months)
+             s_help, s_menu, s_process, s_process_exe, s_ui_15, s_months)
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python -m tools.ui_scenarios", description=__doc__.split("\n\n")[0])
     p.add_argument("month", help="КОПИЯ папки месяца (меняется)")
-    p.add_argument("--photos", help="папка с новыми фото для «Обработать новые фото» (берутся 6)")
+    p.add_argument("--photos", help="папка с новыми фото: «Обработать новые фото», «Добавить фото» (берутся 8)")
     p.add_argument("--exe", help="собранная программа «GMR.exe» — обработка через неё")
     p.add_argument("--only", help="только эти сценарии, через запятую (s_verify,…)")
     a = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)
     photos = sorted(f for f in Path(a.photos).iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png")) if a.photos else []
-    run = Run(Path(a.month), photos[-6:], Path(a.exe) if a.exe else None)
+    run = Run(Path(a.month), photos[-8:], Path(a.exe) if a.exe else None)
     w = setup(run.month)
     for s in SCENARIOS:
         if a.only and s.__name__ not in a.only.split(","):

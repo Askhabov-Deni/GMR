@@ -150,12 +150,12 @@ def test_measure_folder(tmp_path, capsys):
 def test_month_folder_uses_its_photos_preset_and_csv(tmp_path):
     from src.gmr.application import month as month_app
     f = make_month(tmp_path, [("100000", "A1", "1", "")])
-    month_app.set_month_preset(f.root, RecognitionPreset(serial_pad=0.05, forgive_last=0))
+    month_app.set_month_preset(f.root, RecognitionPreset(missing_digit="model", forgive_last=0))
     (f.photos / "Аюб").mkdir(parents=True)
     _photo(f.photos / "Аюб" / "a.png", 1)
     folder, csv_path, cfg = angles._source(f.root)
     assert (folder, csv_path) == (f.photos, f.root / "наклон.csv")
-    assert (cfg.serial_crop_pad, cfg.ignore_last_digits) == (0.05, 0)
+    assert (cfg.missing_digit_mode, cfg.ignore_last_digits) == ("model", 0)
     text = angles.run(f.root, models=_models())
     assert "Замер наклона: 1 фото" in text and set(_csv(f.root / "наклон.csv")) == {"Аюб/a.png"}
 

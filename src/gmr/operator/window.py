@@ -8,6 +8,7 @@ from typing import Optional
 
 import pandas as pd
 
+from src.gmr.application import add_photos as photos_app
 from src.gmr.application import month as month_app
 from src.gmr.application.month import ExportLocked, NotAMonth
 from src.gmr.application.operator import OperatorSession
@@ -28,6 +29,8 @@ from .common import (
     log,
 )
 from .dialogs import ExportDialog, KeysDialog, PresetDialog
+from .drop_panel import TABLE_EXTS, PhotoDropPanel, TableDropPanel
+from .dropfiles import enable_drop
 from .theme import (
     action_button,
     APP_NAME,
@@ -72,6 +75,29 @@ def ask_setup(welcome: WelcomeScreen, settings: AppSettings, new_month, error=No
     return welcome.ask_setup(settings, new_month, error, can_cancel)
 
 
+def pick_table(window, title: str, subtitle: str) -> Optional[str]:
+    """Таблица компании: перетащить в окно или выбрать (тесты подменяют)."""
+    return TableDropPanel(window, title, subtitle).wait()
+
+
+def pick_photos(window, existing: list, paths: Optional[list] = None):
+    """«Добавить фото»: группы фото по контролёрам или None (тесты подменяют)."""
+    return PhotoDropPanel(window, existing, paths).wait()
+
+
+def open_on_row(tree, event, open_fn):
+    """Двойной щелчок открывает фото, только если пришёлся на строку: по
+    заголовку (сортировка), пустому месту или полосе прокрутки — ничего
+    (раньше открывалось выделенное или первое фото списка)."""
+    row = tree.identify_row(event.y)
+    if not row or tree.identify_region(event.x, event.y) not in ("cell", "tree"):
+        return "break"
+    tree.selection_set(row)
+    tree.focus(row)
+    open_fn()
+    return "break"
+
+
 class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -84,6 +110,10 @@ class MainWindow(tk.Tk):
             pass
         apply_theme(self)
         set_window_icon(self)
+        # файлы и папки из проводника — в любое место окна (1.5.0): таблица
+        # нового месяца, папка с фото (_on_drop)
+        self._drop_target = None
+        self.after_idle(lambda: enable_drop(self, self._on_drop))
 
         self.settings  = load_settings()
         self.session:   Optional[OperatorSession] = None
@@ -195,10 +225,14 @@ class MainWindow(tk.Tk):
         return str(self.session.folder.results)
 
     # ─── Месяц: создать, обновить таблицу, итог (этап 4) ───────────────────────
-    def _ask_table(self, parent=None) -> Optional[str]:
-        return filedialog.askopenfilename(
-            parent=parent or self, title="Таблица компании",
-            filetypes=[("Таблицы", "*.xls *.xlsx *.csv"), ("Все файлы", "*.*")]) or None
+    def _ask_table(self, parent=None, update: bool = False) -> Optional[str]:
+        if update:
+            return pick_table(self, "Обновить таблицу компании",
+                              "Новая таблица компании для этого месяца. Показания, которые уже записаны, "
+                              "останутся. Оригинал таблицы не меняется.")
+        return pick_table(self, "Новый месяц — таблица компании",
+                          "Таблица компании на месяц: номера счётчиков, лицевые счета, прошлые показания. "
+                          "Программа сделает себе копию — оригинал не меняется.")
 
     def ask_new_month(self, parent=None, who: Optional[str] = None) -> Optional[str]:
         """Новый месяц без PowerShell (2026-10-07): таблица компании, потом —
@@ -267,9 +301,12 @@ class MainWindow(tk.Tk):
                             marker_model=bool(PipelineConfig().account_ocr_model)).result
 
     def _previous_preset(self) -> RecognitionPreset:
-        """Для нового месяца — как в открытом месяце, иначе — всё подключено."""
+        """Для нового месяца — как в открытом месяце (с решениями владельца для
+        новых месяцев), иначе — всё подключено."""
         if self.session is not None:
-            return month_app.month_preset(str(self.session.folder.root)) or RecognitionPreset.new_month()
+            prev = month_app.month_preset(str(self.session.folder.root))
+            if prev is not None:
+                return prev.next_month()
         return RecognitionPreset.new_month()
 
     def _apply_preset(self):
@@ -313,7 +350,7 @@ class MainWindow(tk.Tk):
 
     def update_table(self):
         """Меню «Месяц» → «Обновить таблицу…»: компания прислала новую таблицу."""
-        table = self._ask_table()
+        table = self._ask_table(update=True)
         if not table or not messagebox.askyesno(
                 "Обновить таблицу", f"Загрузить таблицу\n{table}\nв месяц {self.session.folder.root}?\n\n"
                 "Сверка — по лицевому счёту; показания из базы сохраняются.", parent=self):
@@ -407,6 +444,7 @@ class MainWindow(tk.Tk):
     def _build_ui(self):
         menubar = tk.Menu(self)
         m = tk.Menu(menubar, tearoff=False)
+        m.add_command(label="Добавить фото…", accelerator="Ctrl+O", command=self.add_photos)
         m.add_command(label="Обработать новые фото", command=self.process_new)
         m.add_command(label="Итог месяца", accelerator="Ctrl+I", command=self.show_summary)
         m.add_command(label="Выгрузить показания…", accelerator="Ctrl+E", command=self.export)
@@ -445,7 +483,9 @@ class MainWindow(tk.Tk):
         self._process_btn = action_button(top, "▶  Обработать новые фото", self.process_new, kind="accent",
                                           highlightbackground=HEADER)
         self._process_btn.pack(side=tk.RIGHT, padx=(0, px(12)))
-        self._header_buttons = (export_btn, summary_btn)
+        add_btn = ttk.Button(top, text="＋  Добавить фото…", style="Header.TButton", command=self.add_photos)
+        add_btn.pack(side=tk.RIGHT, padx=(0, px(8)))
+        self._header_buttons = (export_btn, summary_btn, add_btn)
         # сколько новых фото ждут обработки (new_photos.py): проверка в фоне раз в 10 с;
         # значок появляется левее кнопки (before= — раньше имени месяца в порядке шапки)
         self._month_label.pack(side=tk.LEFT, padx=(px(18), 0))
@@ -476,6 +516,7 @@ class MainWindow(tk.Tk):
 
     # ─── Клавиши окна (1.4.0): работают в списках и в «Итоге месяца» ─────────
     WINDOW_KEYS = (("F1", "инструкция оператора"), ("F5", "обновить списки"),
+                   ("Ctrl+O", "добавить фото (или перетащить папку в окно)"),
                    ("Ctrl+I", "итог месяца"), ("Ctrl+E", "выгрузить показания"),
                    ("Ctrl+Tab", "другая вкладка: «Очередь» / «Проверка»"))
 
@@ -494,6 +535,48 @@ class MainWindow(tk.Tk):
             self.bind_all(seq, guard(self.show_summary))
         for seq in ctrl_sequences("e"):
             self.bind_all(seq, guard(self.export))
+        for seq in ctrl_sequences("o"):
+            self.bind_all(seq, guard(self.add_photos, lists_only=True))
+
+    # ─── Перетаскивание и «Добавить фото» (1.5.0) ─────────────────────────────
+    def _on_drop(self, paths: list):
+        """Файлы из проводника упали в окно: открыто поле «перетащите сюда» —
+        в него; иначе папка или фото на списках — «Добавить фото» с ними."""
+        target = self._drop_target
+        if target is not None and target.winfo_exists():
+            target.dropped(paths)
+            return
+        toast = getattr(self, "toast", None)
+        if toast is None:                        # экран входа — перетаскивать некуда
+            return
+        if self._processing or self.screen_open():
+            toast.show("Сначала вернитесь к спискам — тогда можно перетащить фото", "info")
+            return
+        if all(Path(x).suffix.lower() in TABLE_EXTS for x in paths):
+            toast.show("Таблицу — через меню «Месяц»: «Новый месяц…» или «Обновить таблицу…»", "info", ms=5000)
+            return
+        self.add_photos(paths)
+
+    def add_photos(self, paths: Optional[list] = None) -> Optional[photos_app.AddReport]:
+        """Кнопка «Добавить фото…» / Ctrl+O / папка, перетащенная в окно."""
+        if self._processing or self.session is None:
+            return None
+        photos_dir = self.session.folder.photos
+        groups = pick_photos(self, photos_app.controllers(photos_dir), paths)
+        if not groups:
+            return None
+        try:
+            rep = photos_app.add_photos(photos_dir, groups)
+        except (OSError, ValueError) as e:
+            messagebox.showerror("Добавить фото", f"Фото добавлены не все: {e}", parent=self)
+            return None
+        log.info(f"Добавить фото: {rep.text()}")
+        self._watcher.check_now()
+        if rep.total:
+            self.toast.show(rep.text() + ". Чтобы прочитать — «Обработать новые фото».", "success", ms=7000)
+        else:
+            self.toast.show("Новых фото нет — все эти фото уже есть в месяце", "info", ms=5000)
+        return rep
 
     def refresh_all(self):
         """F5 и «Обновить»: списки заново и новые фото — сразу."""
@@ -587,6 +670,7 @@ class MainWindow(tk.Tk):
         self.toast.show("Останавливаем обработку — окно закроется после текущего фото", "info", ms=8000)
 
     def _after_process(self, code: int, lines: list[str]):
+        self.session.folder.hide_service()       # обработка могла создать «результат» заново
         self.refresh_tabs()
         path = self.session.folder.results / "report.txt"
         report = path.read_text(encoding="utf-8") if code == 0 and path.is_file() else ""
@@ -868,7 +952,7 @@ class ProcessingTab(ttk.Frame):
                                                 ("filename", "Фото", "text")], self.refresh)
         self._empty = ttk.Label(self._tree, text="Очередь пуста — все фото разобраны",
                                 background=SURFACE, foreground=MUTED, font=("Segoe UI", 12))
-        self._tree.bind("<Double-Button-1>", lambda e: self._open())
+        self._tree.bind("<Double-Button-1>", lambda e: open_on_row(self._tree, e, self._open))
         self._tree.bind("<Return>", lambda e: self._open())
         self._tree.bind("<Delete>", lambda e: self._unreadable())    # как на экране разбора
 
@@ -993,7 +1077,7 @@ class VerifyTab(ttk.Frame):
                          ("delta", "Разница", "number"), ("processed_at", "Прочитано", "date")], self.refresh)
         self._empty = ttk.Label(self._tree, text="Проверять нечего",
                                 background=SURFACE, foreground=MUTED, font=("Segoe UI", 12))
-        self._tree.bind("<Double-Button-1>", lambda e: self._open())
+        self._tree.bind("<Double-Button-1>", lambda e: open_on_row(self._tree, e, self._open))
         self._tree.bind("<Return>", lambda e: self._open())
 
     def refresh(self):

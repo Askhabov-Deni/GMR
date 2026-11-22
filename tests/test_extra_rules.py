@@ -304,23 +304,22 @@ def test_crnn_log_probs_shape():
 # ─── Пресет и эталон ─────────────────────────────────────────────────────────
 
 def test_preset_switches():
-    p = RecognitionPreset(drum_rule=True, first_from_last=True, serial_by_table=True)
+    p = RecognitionPreset(first_from_last=True, serial_by_table=True)
     assert RecognitionPreset.from_json(p.to_json()) == p
     cfg = p.apply(PipelineConfig())
-    assert (cfg.drum_rule, cfg.first_digit_from_last, cfg.serial_by_table) == (True, True, True)
-    assert p.describe().endswith("дополнительно — правило барабана, старшая цифра по прошлому показанию, "
-                                 "серийник по таблице")
-    assert RecognitionPreset.from_json('{"drum_rule": 1, "serial_by_table": "yes"}') == RecognitionPreset()
+    assert (cfg.drum_rule, cfg.first_digit_from_last, cfg.serial_by_table) == (False, True, True)
+    assert p.describe().endswith("дополнительно — старшая цифра по прошлому показанию, серийник по таблице")
+    assert RecognitionPreset.from_json('{"first_from_last": 1, "serial_by_table": "yes"}') == RecognitionPreset()
     cfg = RecognitionPreset().apply(PipelineConfig(drum_rule=True))
     assert not cfg.drum_rule                                  # пресет решает за месяц
 
 
 def test_run_applies_new_switches(tmp_path, monkeypatch):
     f = make_month(tmp_path, [("100000", "A1", "1", "")])
-    month_app.set_month_preset(f.root, RecognitionPreset(drum_rule=True, first_from_last=True))
+    month_app.set_month_preset(f.root, RecognitionPreset(first_from_last=True))
     cfg = reader.PipelineConfig(month_dir=str(f.root))
     pipeline_run.apply_month_preset(cfg, f, logging.getLogger("t"))
-    assert (cfg.drum_rule, cfg.first_digit_from_last, cfg.serial_by_table) == (True, True, False)
+    assert (cfg.drum_rule, cfg.first_digit_from_last, cfg.serial_by_table) == (False, True, False)
 
 
 def test_etalon_add_keeps_last_reading_and_fills_old_rows(tmp_path):

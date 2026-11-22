@@ -1192,16 +1192,15 @@ def test_preset_dialog(app):
         dlg = next(w for w in app.winfo_children() if isinstance(w, program2.PresetDialog))
         dlg._vars["missing_digit"].set("operator")
         dlg._vars["forgive_last"].set(1)
-        dlg._vars["serial_pad"].set(0.05)
         dlg._vars["account_marker"].set(True)               # модели нет — галочка не сработает
-        dlg._vars["drum_rule"].set(True)
+        dlg._vars["suspicious_delta"].set("5 000")
         dlg._vars["serial_by_table"].set(True)
         dlg._vars["turn_photo"].set(True)
         dlg._vars["overlay_notes"].set(True)
         dlg._save()
     app.after(100, fill)
     dlg = program2.PresetDialog(app, RecognitionPreset(forgive_with="model"))
-    assert dlg.result == RecognitionPreset("operator", 1, "model", 0.05, False, drum_rule=True,
+    assert dlg.result == RecognitionPreset("operator", 1, "model", False, suspicious_delta=5000,
                                            serial_by_table=True, turn_photo=True, overlay_notes=True)
     app.after(100, lambda: next(w for w in app.winfo_children()
                                 if isinstance(w, program2.PresetDialog))._save())
@@ -1264,7 +1263,8 @@ def test_new_month_gets_preset_of_open_month(app, tmp_path, monkeypatch):
     table = _table_csv(tmp_path / "компания" / "Декабрь.csv", [("7777777", "B1", "10", "")])
     _dialogs(monkeypatch, files=[table], saves=[tmp_path / "Декабрь_2026"])
     app.new_month()
-    assert offered == [(RecognitionPreset(forgive_last=0), "Дальше")]   # как в прошлом месяце
+    assert offered == [(RecognitionPreset(forgive_last=0, forgive_with="model", first_from_last=True),
+                        "Дальше")]          # как в прошлом месяце + решения владельца для новых месяцев
     assert month_app.month_preset(tmp_path / "Декабрь_2026") == RecognitionPreset(missing_digit="model")
     assert app.config.missing_digit_mode == "model"           # окно читает фото с настройками месяца
 
