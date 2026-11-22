@@ -164,8 +164,11 @@ class NewPhotosBadge:
 
     def __init__(self, parent, bg: str, on_click: Callable[[], None]):
         import tkinter as tk
-        self._tk = tk
-        self.canvas = tk.Canvas(parent, height=30, width=10, bg=bg, highlightthickness=0, bd=0, cursor="hand2")
+
+        from .theme import px
+        self._px = px
+        self.canvas = tk.Canvas(parent, height=px(30), width=10, bg=bg, highlightthickness=0, bd=0,
+                                cursor="hand2")
         self.canvas.bind("<Button-1>", lambda e: on_click())
         self.count = 0
         self._pack: Optional[dict] = None
@@ -187,16 +190,17 @@ class NewPhotosBadge:
             self.canvas.after(1200, lambda: self.count == n and self._draw(self.COLOR))
 
     def _draw(self, color: str) -> None:
-        c = self.canvas
+        c, px = self.canvas, self._px
         c.delete("all")
-        t = c.create_text(0, 15, anchor="w", text="●  " + new_photos_text(self.count), fill=self.TEXT,
+        mid = px(15)
+        t = c.create_text(0, mid, anchor="w", text="●  " + new_photos_text(self.count), fill=self.TEXT,
                           font=("Segoe UI", 10, "bold"))
         x0, y0, x1, y1 = c.bbox(t)
-        w = x1 - x0 + 28
+        w = x1 - x0 + px(28)
         c.configure(width=w)
-        c.coords(t, 14, 15)
-        h = 26
+        c.coords(t, px(14), mid)
+        top, h = px(2), px(26)
         r = h / 2
-        pill = c.create_polygon([r, 2, w - r, 2, w, 2, w, 2 + r, w, 2 + h, w - r, 2 + h, r, 2 + h, 0, 2 + h, 0, 2 + r,
-                                 0, 2], smooth=True, fill=color, outline="")
+        pill = c.create_polygon([r, top, w - r, top, w, top, w, top + r, w, top + h, w - r, top + h, r, top + h,
+                                 0, top + h, 0, top + r, 0, top], smooth=True, fill=color, outline="")
         c.tag_lower(pill, t)

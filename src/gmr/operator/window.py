@@ -18,7 +18,7 @@ from src.gmr.storage import LOG_COLUMNS as _LOG_COLUMNS
 from src.gmr.storage import log_path_for
 from src.gmr.frozen import program_dir
 from src.gmr.version import __version__
-from src.gmr.ui.run_dialog import ProcessDialog, process_command, show_text
+from src.gmr.ui.run_dialog import process_command, show_text
 
 from .common import (
     _BASE,
@@ -27,17 +27,21 @@ from .common import (
     _log_handlers,
     log,
 )
-from .dialogs import ExportDialog, PresetDialog, SettingsDialog
+from .dialogs import ExportDialog, KeysDialog, PresetDialog
 from .theme import (
-    APP_NAME,
-    MANUAL_NAME,
-    HEADER,
-    MUTED,
-    SURFACE,
-    ZEBRA,
     action_button,
+    APP_NAME,
     apply_theme,
+    ctrl_sequences,
+    HEADER,
+    MANUAL_NAME,
+    MUTED,
+    px,
+    set_enabled,
     set_window_icon,
+    SURFACE,
+    Toast,
+    ZEBRA,
 )
 from .edit_screen import EditScreen
 from .files import move_photo, now_iso, open_in_explorer, place_decision
@@ -51,6 +55,7 @@ from .photos import (
 )
 from .settings import AppSettings, default_month_name, load_settings, save_settings
 from .tables import SortableTable, arrow_images, number
+from .process_screen import ProcessScreen
 from .summary_screen import SummaryScreen
 from .verify_screen import VerifyScreen
 from .welcome import WelcomeScreen
@@ -61,12 +66,18 @@ def ask_login(welcome: WelcomeScreen, settings: AppSettings) -> str:
     return welcome.ask(settings)
 
 
+def ask_setup(welcome: WelcomeScreen, settings: AppSettings, new_month, error=None,
+              can_cancel: bool = False) -> Optional[AppSettings]:
+    """Имя и папка месяца на экране входа (тесты подменяют)."""
+    return welcome.ask_setup(settings, new_month, error, can_cancel)
+
+
 class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} {__version__}")
-        self.geometry("1280x800")
-        self.minsize(1100, 680)          # меньше — кнопки шапки и разбора фото не помещаются
+        self.geometry(f"{px(1280)}x{px(800)}")
+        self.minsize(px(1100), px(680))  # меньше — кнопки шапки и разбора фото не помещаются
         try:
             self.state("zoomed")         # на весь экран: на ноутбуке 1366×768 окно 1280×800 не влезает
         except tk.TclError:              # не Windows
@@ -114,37 +125,37 @@ class MainWindow(tk.Tk):
                              parent=self)
 
     def _do_login(self):
-        """Вход — экраном в этом же окне (welcome.py), не отдельным окошком."""
+        """Вход — экраном в этом же окне (welcome.py): и вход, и первая
+        настройка, и «Сменить пользователя или месяц» — без окон поверх."""
         welcome = WelcomeScreen(self)
-        self.protocol("WM_DELETE_WINDOW", lambda: None)     # закрыть — «Отмена» в настройках
-        if not self.settings.operator_name or not self.settings.month_dir:
-            self.update()                                   # первый запуск: окно, над ним — настройки
-            if not self._open_settings():
-                self.destroy()
-                return
-        else:
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        complete = bool(self.settings.operator_name and self.settings.month_dir)
+        setup, error = not complete, None
+        if complete:
             action = ask_login(welcome, self.settings)
             if action == "quit":
                 self.destroy()
                 return
-            if action == "change":
-                self._open_settings()          # «Отмена» — работа с прежними настройками
-
-        welcome.status("Открываю месяц…")
-        while not self._load_data():          # папка месяца не создана — выбрать другую
-            if not self._open_settings():
-                self.destroy()
-                return
+            setup = action == "change"
+        while True:
+            if setup:
+                new = ask_setup(welcome, self.settings, self.ask_new_month, error, can_cancel=complete)
+                if new is not None:
+                    self.settings = new
+                    save_settings(self.settings)
+                elif welcome.quit or not complete:          # закрыли окно / первый запуск без настроек
+                    self.destroy()
+                    return
+                # «Отмена» — работа с прежними настройками
+            welcome.status("Открываю месяц…")
+            if self._load_data():
+                break
+            welcome.status(None)
+            setup, complete = True, False     # папка — не месяц: выбрать другую (отмены нет — месяца нет)
+            error = (f"В папке «{self.settings.month_dir}» месяц не создан. Выберите папку месяца или "
+                     "создайте новый месяц из таблицы компании.")
         welcome.destroy()
         self._build_ui()
-
-    def _open_settings(self) -> bool:
-        dlg = SettingsDialog(self, self.settings, new_month=self.ask_new_month)
-        if dlg.result:
-            self.settings = dlg.result
-            save_settings(self.settings)
-            return True
-        return False
 
     def _load_data(self) -> bool:
         """Открывает базу папки месяца (и делает её копию). False — папка не месяц."""
@@ -157,7 +168,7 @@ class MainWindow(tk.Tk):
             # этап 4: месяц можно создать прямо отсюда, без PowerShell
             if not (self.settings.month_dir and messagebox.askyesno(
                     "Папка месяца",
-                    f"{e}\n\nСоздать в этой папке новый месяц из таблицы компании?")):
+                    f"{e}\n\nСоздать в этой папке новый месяц из таблицы компании?", parent=self)):
                 return False
             if not self.create_month(self.settings.month_dir):
                 return False
@@ -357,7 +368,10 @@ class MainWindow(tk.Tk):
     def make_shortcut(self):
         from tools.shortcut import create_shortcut
         ok, message = create_shortcut()
-        (messagebox.showinfo if ok else messagebox.showerror)("Ярлык на рабочем столе", message, parent=self)
+        if ok:
+            self.toast.show("Ярлык «GMR» — на рабочем столе. Дальше открывайте программу им.")
+        else:
+            messagebox.showerror("Ярлык на рабочем столе", message, parent=self)
 
     def about_text(self) -> str:
         cfg = PipelineConfig()
@@ -393,7 +407,9 @@ class MainWindow(tk.Tk):
     def _build_ui(self):
         menubar = tk.Menu(self)
         m = tk.Menu(menubar, tearoff=False)
-        m.add_command(label="Итог месяца", command=self.show_summary)
+        m.add_command(label="Обработать новые фото", command=self.process_new)
+        m.add_command(label="Итог месяца", accelerator="Ctrl+I", command=self.show_summary)
+        m.add_command(label="Выгрузить показания…", accelerator="Ctrl+E", command=self.export)
         m.add_command(label="Открыть папку месяца", command=self.open_month_folder)
         m.add_separator()
         m.add_command(label="Новый месяц…", command=self.new_month)
@@ -404,32 +420,36 @@ class MainWindow(tk.Tk):
         m.add_command(label="Настройки распознавания…", command=self.edit_preset)
         menubar.add_cascade(label="Месяц", menu=m)
         h = tk.Menu(menubar, tearoff=False)
-        h.add_command(label="Инструкция оператора", command=self.open_manual)
+        h.add_command(label="Инструкция оператора", accelerator="F1", command=self.open_manual)
+        h.add_command(label="Горячие клавиши", command=self.show_keys)
         h.add_command(label="Ярлык на рабочем столе", command=self.make_shortcut)
         h.add_separator()
         h.add_command(label="О программе", command=self.show_about)
         menubar.add_cascade(label="Справка", menu=h)
         self.configure(menu=menubar)        # self.config — это PipelineConfig, поэтому configure
+        self._menubar = menubar
         self._month_menu = m
         self._help_menu = h
 
         # Шапка: программа, месяц, оператор; справа — главные действия месяца
-        top = ttk.Frame(self, style="Header.TFrame", padding=(16, 10))
+        top = ttk.Frame(self, style="Header.TFrame", padding=(px(16), px(10)))
         top.pack(fill=tk.X)
         ttk.Label(top, text=APP_NAME, style="HeaderTitle.TLabel").pack(side=tk.LEFT)
         self._month_var = tk.StringVar()
         # имя месяца — последним: в узком окне сжимается оно, а не кнопки и значок новых фото
         self._month_label = ttk.Label(top, textvariable=self._month_var, style="HeaderInfo.TLabel")
-        ttk.Button(top, text="⇩  Выгрузить показания…", style="Header.TButton",
-                   command=self.export).pack(side=tk.RIGHT)
-        ttk.Button(top, text="Итог месяца", style="Header.TButton",
-                   command=self.show_summary).pack(side=tk.RIGHT, padx=(0, 8))
-        action_button(top, "▶  Обработать новые фото", self.process_new, kind="accent",
-                      highlightbackground=HEADER).pack(side=tk.RIGHT, padx=(0, 12))
+        export_btn = ttk.Button(top, text="⇩  Выгрузить показания…", style="Header.TButton", command=self.export)
+        export_btn.pack(side=tk.RIGHT)
+        summary_btn = ttk.Button(top, text="Итог месяца", style="Header.TButton", command=self.show_summary)
+        summary_btn.pack(side=tk.RIGHT, padx=(0, px(8)))
+        self._process_btn = action_button(top, "▶  Обработать новые фото", self.process_new, kind="accent",
+                                          highlightbackground=HEADER)
+        self._process_btn.pack(side=tk.RIGHT, padx=(0, px(12)))
+        self._header_buttons = (export_btn, summary_btn)
         # сколько новых фото ждут обработки (new_photos.py): проверка в фоне раз в 10 с;
         # значок появляется левее кнопки (before= — раньше имени месяца в порядке шапки)
-        self._month_label.pack(side=tk.LEFT, padx=(18, 0))
-        self._new_badge = NewPhotosBadge(top, HEADER, self.process_new).pack(side=tk.RIGHT, padx=(0, 10),
+        self._month_label.pack(side=tk.LEFT, padx=(px(18), 0))
+        self._new_badge = NewPhotosBadge(top, HEADER, self.process_new).pack(side=tk.RIGHT, padx=(0, px(10)),
                                                                            before=self._month_label)
         self._processing = False
         self._watcher = NewPhotosWatcher(
@@ -440,7 +460,7 @@ class MainWindow(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._notebook = ttk.Notebook(self)
-        self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        self._notebook.pack(fill=tk.BOTH, expand=True, padx=px(12), pady=px(12))
 
         self._proc_tab = ProcessingTab(self._notebook, self)
         self._verify_tab = VerifyTab(self._notebook, self)
@@ -450,6 +470,62 @@ class MainWindow(tk.Tk):
         self._update_tab_titles()
         # вкладка сменилась — клавиши её списку (иначе Enter уходил в скрытый список другой вкладки)
         self._notebook.bind("<<NotebookTabChanged>>", lambda e: self.after_idle(self._focus_list))
+        self._notebook.enable_traversal()                  # Ctrl+Tab / Ctrl+Shift+Tab — между вкладками
+        self.toast = Toast(self)
+        self._bind_window_keys()
+
+    # ─── Клавиши окна (1.4.0): работают в списках и в «Итоге месяца» ─────────
+    WINDOW_KEYS = (("F1", "инструкция оператора"), ("F5", "обновить списки"),
+                   ("Ctrl+I", "итог месяца"), ("Ctrl+E", "выгрузить показания"),
+                   ("Ctrl+Tab", "другая вкладка: «Очередь» / «Проверка»"))
+
+    def _bind_window_keys(self):
+        def guard(fn, lists_only=False):
+            def handler(e):
+                scr = getattr(self, "_current_screen", None)
+                if self._processing or (self.screen_open() and (lists_only or not isinstance(scr, SummaryScreen))):
+                    return None                    # идёт обработка или открыто фото — не уводить с экрана
+                fn()
+                return "break"
+            return handler
+        self.bind_all("<F1>", lambda e: self.open_manual())
+        self.bind_all("<F5>", guard(self.refresh_all, lists_only=True))
+        for seq in ctrl_sequences("i"):
+            self.bind_all(seq, guard(self.show_summary))
+        for seq in ctrl_sequences("e"):
+            self.bind_all(seq, guard(self.export))
+
+    def refresh_all(self):
+        """F5 и «Обновить»: списки заново и новые фото — сразу."""
+        self.refresh_tabs()
+        self._watcher.check_now()
+        self.toast.show("Списки обновлены", "info", ms=1500)
+
+    def show_keys(self):
+        """Справка → «Горячие клавиши»."""
+        KeysDialog(self, [
+            ("Везде", self.WINDOW_KEYS),
+            ("Списки", (("Enter или 2× щелчок", "открыть фото"), ("Del", "«Нечитаемо» (в «Очереди»)"),
+                        ("щелчок по заголовку", "сортировка, второй — наоборот"))),
+            ("Разбор фото", (("Enter", "Принять"), ("D", "Дубль"), ("Del", "Нечитаемо"), ("N", "Нет в базе"),
+                             ("B", "Номер в таблице с ошибкой"), ("Esc", "к списку (из поля ввода — выйти из поля)"))),
+            ("Проверка фото", (("Enter", "Верно (при исправлении — Сохранить)"), ("E", "Исправить"),
+                               ("→ / ←", "следующее / предыдущее фото"), ("Esc", "к списку (при исправлении — отменить)"))),
+            ("Фото", (("колёсико", "масштаб к месту под мышью"), ("+ / −", "крупнее / мельче"),
+                      ("0 или 2× щелчок", "фото целиком"), ("перетащить мышью", "сдвинуть"))),
+        ])
+
+    def _set_busy(self, busy: bool):
+        """Идёт обработка: шапка и меню выключены (разбирать фото нельзя — решение 2а)."""
+        state = tk.DISABLED if busy else tk.NORMAL
+        for b in self._header_buttons:
+            b.state(["disabled"] if busy else ["!disabled"])
+        set_enabled(self._process_btn, not busy)
+        for i in range(self._menubar.index("end") + 1):
+            try:
+                self._menubar.entryconfigure(i, state=state)
+            except tk.TclError:
+                pass
 
     def _show_month(self):
         """В шапке — имя папки месяца и оператор (полный путь — «Месяц» →
@@ -477,31 +553,50 @@ class MainWindow(tk.Tk):
             scr._back()
 
     def process_new(self, reread: bool = False):
-        """«Обработать новые» (этап 4): прогон новых фото месяца с полосой
-        прогресса; пока он идёт, разбирать фото нельзя (решение 2а)."""
-        if self.session is None:
+        """«Обработать новые» (этап 4): прогон новых фото месяца. С 1.4.0 ход
+        и итог — экраном в окне (process_screen.py), не окнами поверх; пока
+        идёт, разбирать фото нельзя (решение 2а). Возвращается, когда
+        обработка закончилась (итог остаётся на экране)."""
+        if self.session is None or self._processing:
             return
         self._close_screen()
         self._processing = True                # счётчик новых фото — не во время обработки
+        self._close_after = False
+        self._set_busy(True)
         try:
-            dlg = ProcessDialog(self, process_command(_BASE, str(self.session.folder.root), reread),
-                                self.session.folder.stop_file, self._after_process, cwd=_BASE,
-                                title="Обработка фото с ошибками" if reread else "Обработка новых фото")
-            self._process_dialog = dlg
-            self.wait_window(dlg)
+            cmd = process_command(_BASE, str(self.session.folder.root), reread)
+            title = "Обработка фото с ошибками" if reread else "Обработка новых фото"
+            scr = self._show_screen(lambda: ProcessScreen(self, cmd, self.session.folder.stop_file, title, _BASE,
+                                                          self._after_process))
+            self._process_screen = scr
+            self.protocol("WM_DELETE_WINDOW", self._close_while_processing)
+            self.wait_variable(scr.done)
         finally:
             self._processing = False
+            self._set_busy(False)
+            self.protocol("WM_DELETE_WINDOW", self._on_close)
             if hasattr(self, "_watcher"):
                 self._watcher.check_now()
+        if self._close_after:
+            self._on_close()
+
+    def _close_while_processing(self):
+        """Крестик окна во время обработки: остановить, закрыть — после текущего фото."""
+        self._close_after = True
+        self._process_screen.stop()
+        self.toast.show("Останавливаем обработку — окно закроется после текущего фото", "info", ms=8000)
 
     def _after_process(self, code: int, lines: list[str]):
         self.refresh_tabs()
-        report = self.session.folder.results / "report.txt"
-        if code == 0 and report.is_file():
-            show_text(self, "Итог обработки", report.read_text(encoding="utf-8"))
-        else:
-            tail = "\n".join(lines[-25:]) or "(нет вывода)"
-            show_text(self, "Обработка не удалась", f"Код завершения: {code}\n\n{tail}")
+        path = self.session.folder.results / "report.txt"
+        report = path.read_text(encoding="utf-8") if code == 0 and path.is_file() else ""
+        self._process_screen.show_result(code, report, lines, len(self._proc_tab._items),
+                                         open_queue=self._open_queue_tab, back=self._show_lists)
+
+    def _open_queue_tab(self):
+        self._show_lists()
+        self._notebook.select(self._proc_tab)
+        self.after_idle(self._focus_list)
 
     def export(self) -> bool:
         """Кнопка «Выгрузить»: окно выбора формата (xlsx, xls, csv, ods), там же
@@ -667,7 +762,7 @@ class MainWindow(tk.Tk):
 
     def _show_lists(self):
         self._drop_screen()
-        self._notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        self._notebook.pack(fill=tk.BOTH, expand=True, padx=px(12), pady=px(12))
         self.refresh_tabs()
         self._focus_list()
 
@@ -705,7 +800,7 @@ class MainWindow(tk.Tk):
             self.open_verify_screen(items[index], index, total=len(items))
         else:
             self._show_lists()
-            messagebox.showinfo("Готово", "Все фото на проверке просмотрены.", parent=self)
+            self.toast.show("Все фото на проверке просмотрены")
 
     def _back_from_screen(self):
         self._show_lists()
@@ -717,36 +812,36 @@ class MainWindow(tk.Tk):
             self.open_edit_screen(next_path, reason)
         else:
             self._show_lists()
-            messagebox.showinfo("Готово", "Все фото в очереди разобраны.", parent=self)
+            self.toast.show("Все фото в очереди разобраны")
 
 # ─── Вкладка «Очередь» (фото, которые программа не прочитала сама) ──────────
 def _table_with_buttons(tab: ttk.Frame, columns: list, buttons: list) -> ttk.Treeview:
     """Таблица со скроллом и колонка кнопок справа (первая — главная). Столбец
     "#0" (первым в списке) — со значком: в нём стрелка расхода."""
     body = ttk.Frame(tab)
-    body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
+    body.pack(fill=tk.BOTH, expand=True, padx=px(16), pady=(0, px(16)))
     with_icon = columns[0][0] == "#0"
     tree = ttk.Treeview(body, columns=[c for c, *_ in columns if c != "#0"],
                         show="tree headings" if with_icon else "headings", selectmode="browse")
     for col, title, width, stretch in columns:
         tree.heading(col, text=title, anchor="w")
-        tree.column(col, width=width, minwidth=60, stretch=stretch, anchor="w")
+        tree.column(col, width=px(width), minwidth=px(60), stretch=stretch, anchor="w")
     tree.tag_configure("odd", background=ZEBRA)
     vsb = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=vsb.set)
     tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     vsb.pack(side=tk.LEFT, fill=tk.Y)
     side = ttk.Frame(body)
-    side.pack(side=tk.LEFT, fill=tk.Y, padx=(16, 0))
+    side.pack(side=tk.LEFT, fill=tk.Y, padx=(px(16), 0))
     for i, (text, command) in enumerate(buttons):
         action_button(side, text, command, kind="accent" if i == 0 else "secondary",
-                      width=16).pack(fill=tk.X, pady=(0, 8))
+                      width=16).pack(fill=tk.X, pady=(0, px(8)))
     return tree
 
 
 def _tab_header(tab: ttk.Frame, hint: str) -> tk.StringVar:
     head = ttk.Frame(tab)
-    head.pack(fill=tk.X, padx=16, pady=(14, 10))
+    head.pack(fill=tk.X, padx=px(16), pady=(px(14), px(10)))
     var = tk.StringVar()
     ttk.Label(head, textvariable=var, style="Title.TLabel").pack(side=tk.LEFT)
     ttk.Label(head, text=hint, style="Muted.TLabel").pack(side=tk.RIGHT)
@@ -761,7 +856,8 @@ class ProcessingTab(ttk.Frame):
         self.refresh()
 
     def _build(self):
-        self._counter_var = _tab_header(self, "Двойной щелчок или Enter — открыть фото")
+        self._counter_var = _tab_header(self, "Enter или 2× щелчок — открыть фото   ·   Del — нечитаемо   ·   "
+                                              "щелчок по заголовку — сортировка")
         self._items: list[tuple[str, str, str]] = []
         self._tree = _table_with_buttons(
             self,
@@ -774,6 +870,7 @@ class ProcessingTab(ttk.Frame):
                                 background=SURFACE, foreground=MUTED, font=("Segoe UI", 12))
         self._tree.bind("<Double-Button-1>", lambda e: self._open())
         self._tree.bind("<Return>", lambda e: self._open())
+        self._tree.bind("<Delete>", lambda e: self._unreadable())    # как на экране разбора
 
     def refresh(self):
         self._tree.delete(*self._tree.get_children())
@@ -813,7 +910,7 @@ class ProcessingTab(ttk.Frame):
     def _selected_path(self) -> Optional[tuple[str, str]]:
         sel = self._tree.selection()
         if not sel:
-            messagebox.showinfo("Выберите фото", "Сначала выберите фото из списка.")
+            self.app.toast.show("Сначала выберите фото в списке", "info", ms=2500)
             return None
         idx = self._tree.index(sel[0])
         if idx < len(self._items):
@@ -880,7 +977,8 @@ class VerifyTab(ttk.Frame):
         self.refresh()
 
     def _build(self):
-        self._counter_var = _tab_header(self, "Показания, которые программа записала сама: «Верно» или «Исправить»")
+        self._counter_var = _tab_header(self, "Показания, которые программа записала сама   ·   Enter — открыть   ·   "
+                                              "щелчок по заголовку — сортировка")
         self._items: list[dict] = []
         self._tree = _table_with_buttons(
             self,
@@ -940,7 +1038,7 @@ class VerifyTab(ttk.Frame):
             return
         sel = self._tree.selection()
         if not sel:
-            messagebox.showinfo("Выберите фото", "Сначала выберите фото из списка.")
+            self.app.toast.show("Сначала выберите фото в списке", "info", ms=2500)
             return
         idx = self._tree.index(sel[0])
         if idx < len(self._items):

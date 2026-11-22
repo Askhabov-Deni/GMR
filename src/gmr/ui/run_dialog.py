@@ -1,7 +1,8 @@
 """
 src/gmr/ui/run_dialog.py — «Обработать новые» из окна оператора (этап 4,
 решения владельца 2026-10-03: 2а — полоса прогресса и «Остановить», разбирать
-фото во время обработки нельзя; 3а — только кнопкой).
+фото во время обработки нельзя; 3а — только кнопкой). Экран хода и итога —
+src/gmr/operator/process_screen.py (с 1.4.0 — в главном окне, не окном поверх).
 
 Прогон — отдельный процесс `python gmr.py process <месяц>`: окно не
 импортирует reader.py (граница с Фазы 6), сбой моделей не роняет окно,
@@ -20,6 +21,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 from typing import Callable, Optional
+
+from src.gmr.operator.theme import px
 
 _TOTAL = re.compile(r"Новых фото к чтению: (\d+)")
 _PHOTO = re.compile(r"Фото (\d+) из (\d+): (.+)$")       # конец строки уже отрезан
@@ -66,43 +69,28 @@ def parse_progress(line: str) -> Optional[tuple]:
     return None
 
 
-class ProcessDialog(tk.Toplevel):
-    """Окно прогона: полоса, что сейчас читается, «Остановить». Пока оно
-    открыто, главное окно недоступно (grab). Закрывается само, когда прогон
-    закончился; on_done(код выхода, все строки вывода)."""
+class ProcessRunner:
+    """Прогон отдельным процессом и его ход — без окна (1.4.0: ход показывает
+    экран в главном окне, src/gmr/operator/process_screen.py; раньше — окно
+    поверх). Вывод читается в потоке, разбирается в потоке окна:
+    on_progress(parse_progress(строка)) на каждую понятную строку,
+    on_done(код выхода, все строки) — когда прогон закончился."""
 
-    def __init__(self, parent, cmd: list[str], stop_file: Path,
-                 on_done: Callable[[int, list[str]], None], title: str = "Обработка новых фото",
+    def __init__(self, widget: tk.Misc, cmd: list[str], stop_file: Path,
+                 on_progress: Callable[[tuple], None], on_done: Callable[[int, list[str]], None],
                  cwd: Optional[Path] = None):
-        super().__init__(parent)
-        self.title(title)
-        self.resizable(False, False)
-        self.transient(parent)
-        self._stop_file, self._on_done = Path(stop_file), on_done
+        self.widget, self._stop_file = widget, Path(stop_file)
+        self._on_progress, self._on_done = on_progress, on_done
         self.lines: list[str] = []
+        self.stopping = False
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
-        self._status = tk.StringVar(value="Запуск…")
-        self._count = tk.StringVar(value="")
-        f = ttk.Frame(self, padding=16)
-        f.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(f, textvariable=self._count, font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        self.bar = ttk.Progressbar(f, length=420, mode="indeterminate")
-        self.bar.pack(fill=tk.X, pady=8)
-        self.bar.start(15)
-        ttk.Label(f, textvariable=self._status, width=60).pack(anchor="w")
-        self.stop_btn = ttk.Button(f, text="⏹  Остановить", command=self.stop)
-        self.stop_btn.pack(pady=(12, 0))
-        self.protocol("WM_DELETE_WINDOW", self.stop)
-        center_on(self, parent)
-        self.grab_set()
-
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)     # без чёрного окна на Windows
         self.proc = subprocess.Popen(cmd, cwd=str(cwd) if cwd else None, env=env,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, creationflags=flags)
         threading.Thread(target=self._read, daemon=True).start()
-        self.after(100, self._poll)
+        widget.after(100, self._poll)
 
     def _read(self):
         for raw in self.proc.stdout:
@@ -118,40 +106,45 @@ class ProcessDialog(tk.Toplevel):
                     finished = True
                     break
                 self.lines.append(line)
-                self._show(parse_progress(line))
+                p = parse_progress(line)
+                if p is not None:
+                    self._on_progress(p)
         except queue.Empty:
             pass
         if finished:
-            code = self.proc.wait()
-            self.grab_release()
-            self.destroy()
-            self._on_done(code, self.lines)
+            self._on_done(self.proc.wait(), self.lines)
         else:
-            self.after(100, self._poll)
+            self.widget.after(100, self._poll)
 
-    def _show(self, p: Optional[tuple]):
-        if p is None:
-            return
-        if p[0] == "total":
-            self.bar.stop()
-            self.bar.configure(mode="determinate", maximum=max(p[1], 1), value=0)
-            self._count.set(f"Новых фото: {p[1]}" if p[1] else "Новых фото нет")
-        elif p[0] == "photo":
-            self.bar.configure(mode="determinate", maximum=max(p[2], 1), value=p[1])
-            self._count.set(f"Обработано {p[1]} из {p[2]} новых фото")
-            self._status.set(p[3])
-        elif p[0] == "models":
-            self._status.set("Загружаем модели…")
-        elif p[0] == "stopped":
-            self._status.set("Остановлено")
+    @property
+    def running(self) -> bool:
+        return self.proc.poll() is None
 
     def stop(self):
         """«Остановить»: прогон дочитает текущее фото и закончит сам."""
-        if self.proc.poll() is not None:
+        if not self.running or self.stopping:
             return
         self._stop_file.write_text("", encoding="utf-8")
-        self.stop_btn.configure(state=tk.DISABLED)
-        self._status.set("Останавливаем после текущего фото…")
+        self.stopping = True
+
+
+_REPORT_NUMBERS = {
+    "new": r"Новых фото в этом прогоне:\s*(\d+)",
+    "copies": r"Тот же файл ещё раз \(копия\):\s*(\d+)",
+    "written": r"Успешно \(PLUS\+MINUS\):\s*(\d+)",
+    "queue": r"На проверку \(question/\):\s*(\d+)",
+    "repeat": r"Дубли \(REPEAT\):\s*(\d+)",
+}
+
+
+def report_numbers(text: str) -> dict:
+    """Главные числа итога обработки (report.txt, общий отчёт — первый в файле):
+    new, copies, written, queue, repeat; чего нет — нет в словаре."""
+    out = {}
+    for key, pattern in _REPORT_NUMBERS.items():
+        if m := re.search(pattern, text):
+            out[key] = int(m.group(1))
+    return out
 
 
 def show_text(parent, title: str, text: str) -> None:
@@ -166,7 +159,7 @@ def show_text(parent, title: str, text: str) -> None:
     box.configure(yscrollcommand=sb.set)
     box.insert("1.0", text)
     box.configure(state=tk.DISABLED)
-    ttk.Button(win, text="Закрыть", command=win.destroy).pack(side=tk.BOTTOM, pady=8)
+    ttk.Button(win, text="Закрыть", command=win.destroy).pack(side=tk.BOTTOM, pady=px(8))
     sb.pack(side=tk.RIGHT, fill=tk.Y)
-    box.pack(fill=tk.BOTH, expand=True, padx=(8, 0), pady=(8, 0))
+    box.pack(fill=tk.BOTH, expand=True, padx=(px(8), 0), pady=(px(8), 0))
     center_on(win, parent)

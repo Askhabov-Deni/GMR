@@ -18,8 +18,9 @@ from typing import Callable, Optional
 from src.gmr.application.month import SUMMARY_FILE, MonthStats
 from src.gmr.application.quality import MIN_CHECKED
 
+from . import theme
 from .files import open_in_explorer
-from .theme import BG, BORDER, DANGER, FONT, MUTED, SURFACE, TEXT, action_button
+from .theme import action_button, BG, BORDER, DANGER, FONT, MUTED, px, SURFACE, TEXT
 
 PROGRAM, OPERATOR, TABLE = "#2a78d6", "#eb6834", "#1baf7a"      # кто записал показание
 REST = "#d3dae2"                                                 # без показания / не сделано
@@ -49,10 +50,13 @@ def _round_rect(c: tk.Canvas, x0, y0, x1, y1, r=4, **kw):
 
 
 class Chart(tk.Canvas):
-    """Холст карточки: рисуется заново при смене ширины; подсказка под мышью."""
+    """Холст карточки: рисуется заново при смене ширины; подсказка под мышью.
+    Рисунок — в размерах при масштабе 100% (ширина w — тоже), потом весь
+    холст умножается на масштаб экрана (theme.px): шрифты Windows уже
+    увеличила сама, вместе — как на обычном экране, только чётче."""
 
-    def __init__(self, parent, height: int, draw: Callable[["Chart", int], None]):
-        super().__init__(parent, height=height, bg=SURFACE, highlightthickness=0, bd=0)
+    def __init__(self, parent, height: int, draw: Callable[["Chart", float], None]):
+        super().__init__(parent, height=px(height), bg=SURFACE, highlightthickness=0, bd=0)
         self._draw = draw
         self._tip = None
         self.bind("<Configure>", lambda e: self.redraw())
@@ -61,7 +65,10 @@ class Chart(tk.Canvas):
         self.delete("all")
         w = self.winfo_width()
         if w > 20:
-            self._draw(self, w)
+            k = theme.SCALE
+            self._draw(self, w / k)
+            if k != 1:
+                self.scale("all", 0, 0, k, k)
 
     def tip(self, item, text: str):
         """Подсказка при наведении на часть рисунка."""
@@ -71,11 +78,12 @@ class Chart(tk.Canvas):
 
     def _show_tip(self, e, text):
         self._hide_tip()
-        x = min(e.x + 12, self.winfo_width() - 8)
-        t = self.create_text(x, e.y - 14, text=text, anchor="sw" if x == e.x + 12 else "se",
+        x = min(e.x + px(12), self.winfo_width() - px(8))       # подсказка — в пикселях экрана
+        t = self.create_text(x, e.y - px(14), text=text, anchor="sw" if x == e.x + px(12) else "se",
                              font=(FONT, 9), fill="#ffffff")
         x0, y0, x1, y1 = self.bbox(t)
-        box = _round_rect(self, x0 - 6, y0 - 3, x1 + 6, y1 + 3, r=4, fill="#1f2933", outline="")
+        box = _round_rect(self, x0 - px(6), y0 - px(3), x1 + px(6), y1 + px(3), r=px(4), fill="#1f2933",
+                          outline="")
         self.tag_raise(t, box)
         self._tip = (box, t)
 
@@ -103,16 +111,23 @@ def segmented_bar(c: Chart, w: int, y: int, parts: list[tuple[str, int, str]], t
         x = x1
 
 
+def text_end(c: Chart, item, x: float) -> float:
+    """Где кончается текст, начатый в x (рисунок — до умножения на масштаб, а
+    ширину шрифта Windows уже увеличила: делим её обратно)."""
+    x0, _, x1, _ = c.bbox(item)
+    return x + (x1 - x0) / theme.SCALE
+
+
 def legend(c: Chart, y: int, parts: list[tuple[str, int, str]], total: int):
     """Подписи под полосой: квадратик цвета, название, число и доля."""
     x = 0
     for name, n, color in parts:
         _round_rect(c, x, y + 3, x + 12, y + 15, r=3, fill=color, outline="")
         t = c.create_text(x + 18, y, anchor="nw", text=name, font=(FONT, 10), fill=TEXT)
-        x0, _, x1, _ = c.bbox(t)
+        x1 = text_end(c, t, x + 18)
         v = c.create_text(x1 + 6, y, anchor="nw", text=f"{fmt(n)}  ·  {pct(n, total)}", font=(FONT, 10, "bold"),
                           fill=TEXT)
-        x = c.bbox(v)[2] + 28
+        x = text_end(c, v, x1 + 6) + 28
 
 
 def meter(c: Chart, w: int, y: int, part: int, whole: int, color: str, h: int = 12):
@@ -182,11 +197,11 @@ class SummaryScreen(ttk.Frame):
     def _build(self):
         st, q = self.st, self.st.quality
         head = ttk.Frame(self)
-        head.pack(fill=tk.X, padx=20, pady=(16, 8))
+        head.pack(fill=tk.X, padx=px(20), pady=(px(16), px(8)))
         ttk.Label(head, text="Итог месяца", font=(FONT, 16, "bold")).pack(side=tk.LEFT)
         ttk.Label(head, text=f"   {st.root.name}", style="Muted.TLabel", font=(FONT, 12)).pack(side=tk.LEFT)
         action_button(head, "←  К спискам   Esc", self._back).pack(side=tk.RIGHT)
-        action_button(head, "Без показаний (CSV)", lambda: self._open(st.without_list)).pack(side=tk.RIGHT, padx=8)
+        action_button(head, "Без показаний (CSV)", lambda: self._open(st.without_list)).pack(side=tk.RIGHT, padx=px(8))
         action_button(head, "Текстом (TXT)", lambda: self._open(st.root / SUMMARY_FILE)).pack(side=tk.RIGHT)
 
         # всё ниже заголовка — с прокруткой: в маленьком окне (1100×680) итог выше окна
@@ -210,7 +225,7 @@ class SummaryScreen(ttk.Frame):
         self._scroll_canvas = c
 
         tiles = ttk.Frame(body)
-        tiles.pack(fill=tk.X, padx=14)
+        tiles.pack(fill=tk.X, padx=px(14))
         rate = q.error_rate()
         waiting = sum(st.waiting.values())
         for i, (label, value, sub, color) in enumerate([
@@ -224,16 +239,16 @@ class SummaryScreen(ttk.Frame):
              f"проверено {fmt(q.checked)}, исправлено {fmt(q.corrected)}" if rate
              else f"проверьте {MIN_CHECKED}–50 фото на «Проверке»", DANGER if rate and q.corrected else TEXT),
         ]):
-            t = tk.Frame(tiles, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER, padx=16, pady=12)
-            t.grid(row=0, column=i, sticky="nsew", padx=6, pady=6)
+            t = tk.Frame(tiles, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER, padx=px(16), pady=px(12))
+            t.grid(row=0, column=i, sticky="nsew", padx=px(6), pady=px(6))
             tiles.columnconfigure(i, weight=1, uniform="tile")
             tk.Label(t, text=label, font=(FONT, 9), fg=MUTED, bg=SURFACE).pack(anchor="w")
             tk.Label(t, text=value, font=(FONT, 22, "bold"), fg=color, bg=SURFACE).pack(anchor="w")
-            tk.Label(t, text=sub, font=(FONT, 9), fg=MUTED, bg=SURFACE, wraplength=165,
+            tk.Label(t, text=sub, font=(FONT, 9), fg=MUTED, bg=SURFACE, wraplength=px(165),
                      justify="left").pack(anchor="w")        # узкое окно — в две строки, не обрезать
 
         grid = ttk.Frame(body)
-        grid.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 14))
+        grid.pack(fill=tk.BOTH, expand=True, padx=px(14), pady=(0, px(14)))
         for col in (0, 1):
             grid.columnconfigure(col, weight=1, uniform="card")
         # высоты — чтобы всё влезло на экран ноутбука 1366×768
@@ -246,10 +261,10 @@ class SummaryScreen(ttk.Frame):
                    150, self._draw_queue)
 
     def _card(self, grid, row, col, title, sub, height, draw):
-        f = tk.Frame(grid, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER, padx=18, pady=12)
-        f.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+        f = tk.Frame(grid, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER, padx=px(18), pady=px(12))
+        f.grid(row=row, column=col, sticky="nsew", padx=px(6), pady=px(6))
         tk.Label(f, text=title, font=(FONT, 12, "bold"), fg=TEXT, bg=SURFACE).pack(anchor="w")
-        tk.Label(f, text=sub, font=(FONT, 9), fg=MUTED, bg=SURFACE).pack(anchor="w", pady=(0, 8))
+        tk.Label(f, text=sub, font=(FONT, 9), fg=MUTED, bg=SURFACE).pack(anchor="w", pady=(0, px(8)))
         Chart(f, height, draw).pack(fill=tk.X)
 
     # ── рисунки ──
@@ -289,7 +304,7 @@ class SummaryScreen(ttk.Frame):
             p, lo, hi = rate
             big = c.create_text(0, 0, anchor="nw", font=(FONT, 20, "bold"), fill=DANGER if q.corrected else TEXT,
                                 text=pct1(p))
-            x = c.bbox(big)[2] + 14
+            x = text_end(c, big, 0) + 14
             c.create_text(x, 4, anchor="nw", font=(FONT, 10), fill=TEXT,
                           text=f"ошибок: исправлено {fmt(q.corrected)} из {fmt(q.checked)} проверенных")
             c.create_text(x, 23, anchor="nw", font=(FONT, 9), fill=MUTED,

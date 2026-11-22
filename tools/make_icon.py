@@ -92,7 +92,7 @@ def main() -> int:
     frames = [(small if s <= 32 else big).resize((s, s), Image.LANCZOS) for s in sizes]
     ICO.parent.mkdir(parents=True, exist_ok=True)
     frames[-1].save(ICO, format="ICO", sizes=[(s, s) for s in sizes], append_images=frames[:-1])
-    big.resize((128, 128), Image.LANCZOS).save(PNG)      # окно и экран входа
+    big.resize((256, 256), Image.LANCZOS).save(PNG)      # окно и экран входа (уменьшает theme.py)
     print(f"{ICO}\n{PNG}")
     return 0
 

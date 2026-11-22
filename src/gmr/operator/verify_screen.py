@@ -4,23 +4,23 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Optional
 
-from PIL import Image, ImageTk
 
 from .decisions import plan_verify_correction
 from .files import free_photo_path, move_photo, now_iso, redraw_annotation
 from .photos import controller_dir
 from .theme import (
+    action_button,
+    card,
     FONT,
+    key_sequences,
     MUTED,
     PHOTO_BG,
+    px,
     SUCCESS,
     SURFACE,
     TEXT,
-    action_button,
-    card,
-    key_sequences,
 )
-from .widgets import ReadingWidget
+from .widgets import PHOTO_HINT, PhotoView, ReadingWidget, photo_keys
 
 OUTCOME_WORDS = {"PLUS": "▲ больше прошлого", "MINUS": "▼ меньше прошлого"}
 
@@ -37,52 +37,36 @@ class VerifyScreen(ttk.Frame):
         self.index    = index        # номер фото в списке «Проверки» — для перехода к следующему
         self.total    = total        # сколько фото сейчас на проверке (после «Верно» — на одно меньше)
         self._on_back = on_back
-        self._tk_img: Optional[ImageTk.PhotoImage] = None
         self._edit_mode = False
 
-        self._zoom_scale = 1.0
-        self._pan_start  = (0, 0)
-        self._pan_offset = [0, 0]
-        self._orig_image: Optional[Image.Image] = None
-
         self._build()
-        self._load_photo()
         self._bind_keys()
 
     def _build(self):
         r = self.item["log_row"]
 
         top = ttk.Frame(self)
-        top.pack(fill=tk.X, padx=16, pady=(12, 8))
-        ttk.Button(top, text="←  К списку", command=self._back).pack(side=tk.LEFT)
+        top.pack(fill=tk.X, padx=px(16), pady=(px(12), px(8)))
+        ttk.Button(top, text="←  К списку   Esc", command=self._back).pack(side=tk.LEFT)
         tk.Label(top, text="Проверка", bg="#e3edfd", fg="#1858bd", font=(FONT, 10, "bold"),
-                 padx=10, pady=3).pack(side=tk.LEFT, padx=(16, 10))
+                 padx=px(10), pady=px(3)).pack(side=tk.LEFT, padx=(px(16), px(10)))
         if self.total is not None:           # сколько осталось (просьба владельца 2026-11-21)
             tk.Label(top, text=f"На проверке: {self.total}", bg="#e6f4ea", fg="#1e7b34",
-                     font=(FONT, 10, "bold"), padx=10, pady=3).pack(side=tk.LEFT, padx=(0, 10))
+                     font=(FONT, 10, "bold"), padx=px(10), pady=px(3)).pack(side=tk.LEFT, padx=(0, px(10)))
         where = f"Фото {self.index + 1} из {self.total}" if self.total else f"Фото {self.index + 1}"
         ttk.Label(top, text=f"{where}   ·   {Path(self.item['path']).name}",
                   style="Muted.TLabel").pack(side=tk.LEFT)
-        ttk.Label(top, text="колёсико — масштаб  ·  2× щелчок — сброс",
-                  style="Muted.TLabel", font=(FONT, 9)).pack(side=tk.RIGHT)
+        ttk.Label(top, text=PHOTO_HINT, style="Muted.TLabel", font=(FONT, 9)).pack(side=tk.RIGHT)
 
         center = ttk.Frame(self)
-        center.pack(fill=tk.BOTH, expand=True, padx=16, pady=4)
+        center.pack(fill=tk.BOTH, expand=True, padx=px(16), pady=px(4))
 
-        self._canvas = tk.Canvas(center, bg=PHOTO_BG, width=560, highlightthickness=0)
+        self._canvas = PhotoView(center, self.item["path"], bg=PHOTO_BG, width=px(560))
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self._canvas.bind("<Configure>",       lambda e: self._load_photo())
-        self._canvas.bind("<MouseWheel>",      self._on_mousewheel)
-        self._canvas.bind("<Button-4>",        self._on_mousewheel)
-        self._canvas.bind("<Button-5>",        self._on_mousewheel)
-        self._canvas.bind("<ButtonPress-1>",   self._on_pan_start)
-        self._canvas.bind("<B1-Motion>",       self._on_pan_move)
-        self._canvas.bind("<Double-Button-1>", lambda e: self._reset_zoom())
-
         right = card(center)
-        right.configure(width=360)
-        right.pack(side=tk.LEFT, fill=tk.Y, padx=(16, 0))
+        right.configure(width=px(380))
+        right.pack(side=tk.LEFT, fill=tk.Y, padx=(px(16), 0))
         right.pack_propagate(False)
         self._build_right(right, r)
 
@@ -90,13 +74,13 @@ class VerifyScreen(ttk.Frame):
 
     def _build_right(self, parent, r: dict):
         ttk.Label(parent, text="Программа записала сама — верно?", style="CardMuted.TLabel").pack(
-            anchor="w", pady=(0, 12))
+            anchor="w", pady=(0, px(12)))
 
         def row(label, value, big=False, color=None):
             ttk.Label(parent, text=label, style="CardTitle.TLabel").pack(anchor="w")
             lbl = tk.Label(parent, text=value, font=(FONT, 18 if big else 13, "bold" if big else "normal"),
                            fg=color or TEXT, bg=SURFACE, anchor="w")
-            lbl.pack(anchor="w", pady=(0, 10))
+            lbl.pack(anchor="w", pady=(0, px(10)))
             return lbl
 
         row("НОМЕР СЧЁТЧИКА", r.get("serial_id") or "—")
@@ -116,33 +100,37 @@ class VerifyScreen(ttk.Frame):
         ttk.Label(parent, text=f"прочитано {r.get('processed_at', '')[:16].replace('T', ' ')}",
                   style="CardMuted.TLabel").pack(anchor="w")
 
-        self._edit_frame = ttk.LabelFrame(parent, text="ИСПРАВЛЕНИЕ", padding=10)
+        self._edit_frame = ttk.LabelFrame(parent, text="ИСПРАВЛЕНИЕ", padding=px(10))
         ttk.Label(self._edit_frame, text="Номер счётчика", style="Card.TLabel").pack(anchor="w")
         self._serial_var = tk.StringVar(value=r.get("serial_id", ""))
         ttk.Entry(self._edit_frame, textvariable=self._serial_var, font=(FONT, 13)).pack(fill=tk.X)
-        ttk.Label(self._edit_frame, text="Показание", style="Card.TLabel").pack(anchor="w", pady=(8, 0))
+        ttk.Label(self._edit_frame, text="Показание", style="Card.TLabel").pack(anchor="w", pady=(px(8), 0))
         self._reading_widget = ReadingWidget(self._edit_frame, style="Card.TFrame")
         self._reading_widget.pack(anchor="w")
         self._reading_widget.set_digits(r.get("reading", ""), None)
 
     def _build_buttons(self):
         bottom = ttk.Frame(self)
-        bottom.pack(fill=tk.X, padx=16, pady=(8, 14))
+        bottom.pack(fill=tk.X, padx=px(16), pady=(px(8), px(14)))
 
         self._ok_btn = action_button(bottom, "✓   Верно     Enter", self._verify_ok, kind="primary")
-        self._ok_btn.pack(side=tk.LEFT, padx=(0, 12))
+        self._ok_btn.pack(side=tk.LEFT, padx=(0, px(12)))
         self._edit_btn = action_button(bottom, "Исправить     E", self._enter_edit)
-        self._edit_btn.pack(side=tk.LEFT, padx=4)
+        self._edit_btn.pack(side=tk.LEFT, padx=px(4))
         self._save_edit_btn = action_button(bottom, "✓   Сохранить исправление     Enter", self._save_edit,
                                             kind="accent")
         action_button(bottom, "Пропустить     →", self._skip).pack(side=tk.RIGHT)
+        if self.index > 0:
+            action_button(bottom, "←     Предыдущее", self._previous).pack(side=tk.RIGHT, padx=(0, px(8)))
 
     def _key_bindings(self) -> list:
         edit = lambda e: None if self._edit_mode else self._enter_edit()   # noqa: E731
         return ([("<Return>", lambda e: self._on_return() if self.app.take_return(e) else None),
-                 ("<Escape>", lambda e: self._back()),
-                 ("<Right>", lambda e: None if self._edit_mode else self._skip())]
-                + [(seq, edit) for seq in key_sequences("e")])
+                 ("<Escape>", lambda e: self._exit_edit() if self._edit_mode else self._back()),
+                 ("<Right>", lambda e: None if self._edit_mode else self._skip()),
+                 ("<Left>", lambda e: None if self._edit_mode else self._previous())]
+                + [(seq, edit) for seq in key_sequences("e")]
+                + photo_keys(self._canvas, self.app))
 
     def _bind_keys(self):
         # Enter: «Верно», а в режиме исправления — «Сохранить исправление»
@@ -163,66 +151,6 @@ class VerifyScreen(ttk.Frame):
             except Exception:
                 pass
 
-    def _on_mousewheel(self, event):
-        if event.num == 4 or event.delta > 0:
-            factor = 1.15
-        elif event.num == 5 or event.delta < 0:
-            factor = 1 / 1.15
-        else:
-            return
-        self._zoom_scale = max(0.2, min(self._zoom_scale * factor, 10.0))
-        self._load_photo()
-
-    def _on_pan_start(self, event):
-        self._pan_start = (event.x, event.y)
-
-    def _on_pan_move(self, event):
-        self._pan_offset[0] += event.x - self._pan_start[0]
-        self._pan_offset[1] += event.y - self._pan_start[1]
-        self._pan_start = (event.x, event.y)
-        self._load_photo()
-
-    def _reset_zoom(self):
-        self._zoom_scale = 1.0
-        self._pan_offset = [0, 0]
-        self._load_photo()
-
-    def _load_photo(self):
-        w = self._canvas.winfo_width()
-        h = self._canvas.winfo_height()
-        if w < 10 or h < 10:
-            self.after(100, self._load_photo)
-            return
-        try:
-            if self._orig_image is None:
-                self._orig_image = Image.open(self.item["path"])
-            orig_w, orig_h = self._orig_image.size
-            base_scale = min(w / orig_w, h / orig_h)
-            disp_w = max(1, int(orig_w * base_scale * self._zoom_scale))
-            disp_h = max(1, int(orig_h * base_scale * self._zoom_scale))
-            # Кеш, как на экране «Обработка»: перетаскивание не пересчитывает
-            # фото заново (было 0,2 с на каждый шаг мыши, замер 2026-11-20)
-            cached = getattr(self, "_cached_render", None)
-            if cached is None or cached[0] != (disp_w, disp_h):
-                img = self._orig_image.resize((disp_w, disp_h), Image.LANCZOS, reducing_gap=3.0)
-                self._tk_img = ImageTk.PhotoImage(img)
-                self._cached_render = ((disp_w, disp_h), self._tk_img)
-            else:
-                self._tk_img = cached[1]
-            self._canvas.delete("all")
-            cx = w // 2 + self._pan_offset[0]
-            cy = h // 2 + self._pan_offset[1]
-            self._canvas.create_image(cx, cy, anchor="center", image=self._tk_img)
-            if abs(self._zoom_scale - 1.0) > 0.01:
-                self._canvas.create_text(
-                    8, 8, anchor="nw",
-                    text=f"×{self._zoom_scale:.1f}",
-                    font=("Segoe UI", 10, "bold"),
-                    fill="#ffffff",
-                )
-        except Exception:
-            pass
-
     def _back(self):
         try:
             self._on_back()
@@ -239,6 +167,12 @@ class VerifyScreen(ttk.Frame):
         self._unbind_keys()
         self.app.open_verify_at(self.index + 1)
 
+    def _previous(self):
+        """← — предыдущее фото списка (вернуться к пропущенному)."""
+        if self.index > 0:
+            self._unbind_keys()
+            self.app.open_verify_at(self.index - 1)
+
     def _verify_ok(self):
         # Отметка — ровно в ту строку, по которой фото попало в список
         # (раньше искалась первая строка с тем же original_filename).
@@ -251,11 +185,23 @@ class VerifyScreen(ttk.Frame):
         if self._edit_mode:
             return
         self._edit_mode = True
-        self._edit_frame.pack(fill=tk.X, pady=(12, 0))
+        self._edit_frame.pack(fill=tk.X, pady=(px(12), 0))
         # «Верно» в режиме исправления прячем: её нажатие выбрасывало правку
         self._ok_btn.pack_forget()
         self._edit_btn.pack_forget()
-        self._save_edit_btn.pack(side=tk.LEFT, padx=4)
+        self._save_edit_btn.pack(side=tk.LEFT, padx=px(4))
+
+    def _exit_edit(self):
+        """Esc в режиме исправления — отменить исправление (поля — как прочитано)."""
+        r = self.item["log_row"]
+        self._edit_mode = False
+        self._edit_frame.pack_forget()
+        self._save_edit_btn.pack_forget()
+        self._ok_btn.pack(side=tk.LEFT, padx=(0, px(12)))
+        self._edit_btn.pack(side=tk.LEFT, padx=px(4))
+        self._serial_var.set(r.get("serial_id", ""))
+        self._reading_widget.set_digits(r.get("reading", ""), None)
+        self._canvas.focus_set()
 
     def _save_edit(self):
         r = self.item["log_row"]

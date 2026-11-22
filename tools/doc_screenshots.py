@@ -7,10 +7,11 @@ tools/doc_screenshots.py — снимки окна «GMR» для docs/OPERATOR.
 
 С 1.3.0 окно стоит за краем экрана и снимается через Windows (PrintWindow):
 на рабочем столе ничего не появляется и фокус не уходит — можно снимать,
-пока на компьютере работают. Так не снять меню «Месяц» (всплывающее окно)
-и диалоги — настройки распознавания и полосу обработки (Windows не отдаёт
-их содержимое за краем экрана): operator_menu.png, operator_settings.png и
-operator_progress.png остаются прежними. Меню заново — с --menu (окно на
+пока на компьютере работают. Окна — «с прозрачностью» (layered): обычное
+окно за краем экрана Windows рисует не целиком. Так не снять меню «Месяц»
+(всплывающее меню) и диалоги с полями ttk (настройки распознавания) —
+operator_menu.png и operator_settings.png остаются прежними.
+Снимки — в масштабе экрана этого компьютера (на 125% — крупнее и чётче). Меню заново — с --menu (окно на
 несколько секунд появится на экране). Месяц «Октябрь_2026»
 создаётся во временной папке и потом удаляется.
 """
@@ -37,9 +38,19 @@ from tools import ui_scenarios as ui  # noqa: E402
 FONT = r"C:\Windows\Fonts\consolab.ttf"
 HAND = r"C:\Windows\Fonts\segoepr.ttf"
 MENU_H = ctypes.windll.user32.GetSystemMetrics(15) + 1      # строка меню над окном
-FAKE_RUN = ("import time\nprint('Новых фото к чтению: 24', flush=True)\n"
-            "for i in range(1, 25):\n"
-            "    print(f'Фото {i} из 24: IMG-20261004-WA{i:04d}.jpg', flush=True); time.sleep(0.35)\n")
+# «обработка» для снимков: 24 выдуманных фото и отчёт с выдуманными числами
+FAKE_RUN = """import sys, time
+from pathlib import Path
+print('Новых фото к чтению: 24', flush=True)
+for i in range(1, 25):
+    print(f'Фото {i} из 24: IMG-20261004-WA{i:04d}.jpg', flush=True)
+    time.sleep(0.35)
+r = Path(sys.argv[1])
+r.mkdir(parents=True, exist_ok=True)
+(r / 'report.txt').write_text('ОБЩИЙ ОТЧЁТ ПО ВСЕМ ПАПКАМ\\nНовых фото в этом прогоне: 24\\n'
+    '  Успешно (PLUS+MINUS):        17    70.8%\\n  На проверку (question/):      5    20.8%\\n'
+    '  Дубли (REPEAT):               2     8.3%\\n', encoding='utf-8')
+"""
 
 
 def meter(path: Path, digits: str, serial: str, marker: str = "", red: int = 2):
@@ -133,6 +144,32 @@ def settle(w, sec=1.5):
     ui.pump(w, sec)
 
 
+def layered(w):
+    """Окно — «с прозрачностью» (alpha): такое Windows рисует целиком и за
+    краем экрана; обычное окно за краем — не всё (поля ввода, фон)."""
+    w.attributes("-alpha", 0.0)
+    w.attributes("-alpha", 1.0)
+
+
+def grab_dialog(d, path):
+    """Диалог (окно поверх главного) — без заголовка."""
+    layered(d)
+    settle(d, 1.0)
+    img, (left, top) = window_image(d)
+    x0, y0 = d.winfo_rootx() - left, d.winfo_rooty() - top
+    img.crop((x0, y0, x0 + d.winfo_width(), y0 + d.winfo_height())).save(path)
+
+
+def shot_dialogs(w, out):
+    """Горячие клавиши (Справка). Диалоги с полями ttk за краем экрана Windows
+    рисует не целиком — operator_settings.png снят раньше, на экране."""
+    from src.gmr.operator.dialogs import KeysDialog
+    w.show_keys()
+    d = next(t for t in w.winfo_children() if isinstance(t, KeysDialog))
+    grab_dialog(d, out / "operator_keys.png")
+    d.destroy()
+
+
 def grab(w, path, menu=True, over=None):
     """Окно без заголовка (со строкой меню — menu=True); over — диалог поверх него."""
     settle(w)
@@ -162,19 +199,42 @@ def shot_menu_on_screen(w, out):
 
 
 def shot_welcome(w, out):
-    """Экран входа — в отдельном окне того же размера (в главном он уже прошёл)."""
+    """Экран входа и первой настройки — в отдельном главном окне того же
+    размера (в главном он уже прошёл; во вспомогательном окне за краем экрана
+    Windows не рисует поля ввода)."""
     import tkinter as tk
 
     import program2
-    from src.gmr.operator.theme import BG
+    from src.gmr.operator.theme import apply_theme, px
     from src.gmr.operator.welcome import WelcomeScreen
-    top = tk.Toplevel(w, bg=BG)
-    top.geometry("1100x620" + OFF)
+    top = tk.Tk()
+    layered(top)
+    apply_theme(top)
+    top.geometry(f"{px(1100)}x{px(760)}" + OFF)
     scr = WelcomeScreen(top)
-    scr._take_focus = lambda: None           # не выводить окно вперёд: фокус — у того, кто работает
+    scr._take_focus = lambda *a: None        # не выводить окно вперёд: фокус — у того, кто работает
     top.after(100, lambda: (grab(top, out / "operator_welcome.png", menu=False), scr._continue()))
     scr.ask(program2.AppSettings("Оператор", "D:/GMR/Октябрь_2026"))
+    top.after(100, lambda: (grab(top, out / "operator_setup.png", menu=False), scr._cancel()))
+    scr.ask_setup(program2.AppSettings("", ""), new_month=lambda *a: None)
     top.destroy()
+
+
+def shot_process(w, out, tmp):
+    """Обработка — экраном в окне: ход и итог."""
+    from src.gmr.operator import window as op_window
+    script = tmp / "fake_run.py"
+    script.write_text(FAKE_RUN, encoding="utf-8")
+    real = op_window.process_command
+    op_window.process_command = lambda project, month, reread=False: [sys.executable, str(script),
+                                                                      str(w.session.folder.results)]
+    try:
+        w.after(4500, lambda: grab(w, out / "operator_progress.png"))
+        w.process_new()
+        grab(w, out / "operator_process_done.png")
+        w._current_screen._go_back()
+    finally:
+        op_window.process_command = real
 
 
 def main(argv=None) -> int:
@@ -189,7 +249,8 @@ def main(argv=None) -> int:
         ui.OPERATOR = "Оператор"
         w = ui.setup(f.root)
         w.attributes("-alpha", 1.0)
-        w.geometry("1100x720" + OFF)
+        from src.gmr.operator.theme import px
+        w.geometry(f"{px(1100)}x{px(720)}" + OFF)
         # два новых фото в папке контролёра — значок «● 2 новых фото» у кнопки обработки
         meter(f.photos / "Контролёр 1" / "IMG-20261005-WA0001.jpg", "01530", "001000104")
         meter(f.photos / "Контролёр 1" / "IMG-20261005-WA0002.jpg", "01211", "001000105")
@@ -199,6 +260,7 @@ def main(argv=None) -> int:
         shot_welcome(w, out)
         if with_menu:
             shot_menu_on_screen(w, out)
+        shot_process(w, out, tmp)
 
         import program2
         reason, _, path = program2.list_question_photos(w.results_dir)[0]
@@ -222,6 +284,7 @@ def main(argv=None) -> int:
         w.show_summary()
         grab(w, out / "operator_summary.png")
         w._current_screen._back()
+        shot_dialogs(w, out)
 
         w.destroy()
         time.sleep(0.2)

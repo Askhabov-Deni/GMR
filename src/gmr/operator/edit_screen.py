@@ -8,7 +8,6 @@ from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
-from PIL import Image, ImageTk
 
 from src.gmr.domain import find_auto_row_for_output_file
 from src.gmr.domain.area_code import other_code_note
@@ -41,18 +40,19 @@ from .markup import save_cnn_markup, save_crnn_markup, save_meter_markup
 from .photos import _to_float, controller_dir, controller_name, list_question_photos
 from .run_read import RunRead, run_read_of
 from .theme import (
+    action_button,
+    card,
     FONT,
+    key_sequences,
     MUTED,
     PHOTO_BG,
+    px,
+    set_enabled,
     SUCCESS,
     SURFACE,
     WARNING,
-    action_button,
-    card,
-    key_sequences,
-    set_enabled,
 )
-from .widgets import ReadingWidget
+from .widgets import PHOTO_HINT, PhotoView, ReadingWidget, photo_keys
 
 if TYPE_CHECKING:                      # только для подсказки типов: окно импортирует экраны
     from .window import MainWindow
@@ -71,18 +71,12 @@ class EditScreen(ttk.Frame):
         self.reason     = reason
         self._on_back   = on_back
         self._run: RunRead = RunRead()         # что прочитала обработка на этом фото
-        self._tk_img: Optional[ImageTk.PhotoImage] = None
         self._confirmed_suspicious  = False
         self._filling_other: bool = False
         self._model_serial:  Optional[str] = None
         self._model_reading: Optional[str] = None
         self._reading_manually_changed: bool = False
         self._abonent_found: bool = False      # абонент найден в таблице по номеру или счёту
-
-        self._zoom_scale = 1.0
-        self._pan_start  = (0, 0)
-        self._pan_offset = [0, 0]
-        self._orig_image: Optional[Image.Image] = None
 
         self._build()
         self._show_run_read()
@@ -91,31 +85,22 @@ class EditScreen(ttk.Frame):
         self.configure(padding=0)
 
         top = ttk.Frame(self)
-        top.pack(fill=tk.X, padx=16, pady=(12, 8))
+        top.pack(fill=tk.X, padx=px(16), pady=(px(12), px(8)))
         ttk.Button(top, text="←  К списку   Esc", command=self._back).pack(side=tk.LEFT)
         tk.Label(top, text=REASON_LABELS.get(self.reason, self.reason), bg="#fdf0e1", fg=WARNING,
-                 font=(FONT, 10, "bold"), padx=10, pady=3).pack(side=tk.LEFT, padx=(16, 10))
+                 font=(FONT, 10, "bold"), padx=px(10), pady=px(3)).pack(side=tk.LEFT, padx=(px(16), px(10)))
         ttk.Label(top, text=self._position_text(), style="Muted.TLabel").pack(side=tk.LEFT)
-        ttk.Label(top, text="колёсико — масштаб  ·  2× щелчок — сброс",
-                  style="Muted.TLabel", font=(FONT, 9)).pack(side=tk.RIGHT)
+        ttk.Label(top, text=PHOTO_HINT, style="Muted.TLabel", font=(FONT, 9)).pack(side=tk.RIGHT)
 
         center = ttk.Frame(self)
-        center.pack(fill=tk.BOTH, expand=True, padx=16, pady=4)
+        center.pack(fill=tk.BOTH, expand=True, padx=px(16), pady=px(4))
 
-        self._canvas = tk.Canvas(center, bg=PHOTO_BG, width=560, highlightthickness=0)
+        self._canvas = PhotoView(center, self.photo_path, bg=PHOTO_BG, width=px(560))
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self._canvas.bind("<Configure>",       lambda e: self._display_photo())
-        self._canvas.bind("<MouseWheel>",      self._on_mousewheel)
-        self._canvas.bind("<Button-4>",        self._on_mousewheel)
-        self._canvas.bind("<Button-5>",        self._on_mousewheel)
-        self._canvas.bind("<ButtonPress-1>",   self._on_pan_start)
-        self._canvas.bind("<B1-Motion>",       self._on_pan_move)
-        self._canvas.bind("<Double-Button-1>", lambda e: self._reset_zoom())
-
         right = card(center)
-        right.configure(width=360)
-        right.pack(side=tk.LEFT, fill=tk.Y, padx=(16, 0))
+        right.configure(width=px(380))
+        right.pack(side=tk.LEFT, fill=tk.Y, padx=(px(16), 0))
         right.pack_propagate(False)
         self._build_fields(right)
 
@@ -134,20 +119,20 @@ class EditScreen(ttk.Frame):
 
     @staticmethod
     def _title(parent, text: str):
-        ttk.Label(parent, text=text, style="CardTitle.TLabel").pack(anchor="w", pady=(0, 2))
+        ttk.Label(parent, text=text, style="CardTitle.TLabel").pack(anchor="w", pady=(0, px(2)))
 
     @staticmethod
     def _match_label(parent, var: tk.StringVar) -> tk.Label:
         """Строка под полем: «✓ …» зелёным, «⚠ …» оранжевым."""
         lbl = tk.Label(parent, textvariable=var, bg=SURFACE, font=(FONT, 9), anchor="w",
-                       justify="left", wraplength=320)
+                       justify="left", wraplength=px(340))
         var.trace_add("write", lambda *a: lbl.config(fg=SUCCESS if var.get().startswith("✓") else WARNING))
-        lbl.pack(anchor="w", fill=tk.X, pady=(2, 6))
+        lbl.pack(anchor="w", fill=tk.X, pady=(px(2), px(6)))
         return lbl
 
     def _build_fields(self, parent):
         self._status_var = tk.StringVar(value="")
-        ttk.Label(parent, textvariable=self._status_var, style="CardMuted.TLabel").pack(anchor="w", pady=(0, 6))
+        ttk.Label(parent, textvariable=self._status_var, style="CardMuted.TLabel").pack(anchor="w", pady=(0, px(6)))
 
         self._title(parent, "НОМЕР СЧЁТЧИКА")
         self._serial_var = tk.StringVar()
@@ -173,44 +158,44 @@ class EditScreen(ttk.Frame):
 
         self._title(parent, "ПОКАЗАНИЕ")
         self._reading_widget = ReadingWidget(parent, on_change=self._on_reading_change, style="Card.TFrame")
-        self._reading_widget.pack(anchor="w", pady=(2, 8))
+        self._reading_widget.pack(anchor="w", pady=(px(2), px(8)))
 
         row = ttk.Frame(parent, style="Card.TFrame")
         row.pack(fill=tk.X)
         ttk.Label(row, text="Прошлое показание:", style="CardMuted.TLabel").pack(side=tk.LEFT)
         self._last_reading_var = tk.StringVar(value="—")
         ttk.Label(row, textvariable=self._last_reading_var, style="Card.TLabel",
-                  font=(FONT, 11, "bold")).pack(side=tk.LEFT, padx=(6, 0))
+                  font=(FONT, 11, "bold")).pack(side=tk.LEFT, padx=(px(6), 0))
 
         self._delta_var = tk.StringVar(value="")
         self._delta_lbl = tk.Label(parent, textvariable=self._delta_var,
                                    font=(FONT, 15, "bold"), bg=SURFACE, anchor="w")
-        self._delta_lbl.pack(anchor="w", pady=(6, 0))
+        self._delta_lbl.pack(anchor="w", pady=(px(6), 0))
         self._outcome_var = tk.StringVar(value="")
         self._outcome_lbl = tk.Label(parent, textvariable=self._outcome_var, font=(FONT, 10),
-                                     bg=SURFACE, fg=MUTED, anchor="w", justify="left", wraplength=320)
+                                     bg=SURFACE, fg=MUTED, anchor="w", justify="left", wraplength=px(340))
         self._outcome_lbl.pack(anchor="w", fill=tk.X)
         self._outcome_code: Optional[str] = None     # PLUS / MINUS / SUSPICIOUS — для строки лога
         self._delta_value: Optional[float] = None
 
         self._source_var = tk.StringVar(value="")
         ttk.Label(parent, textvariable=self._source_var, style="CardMuted.TLabel",
-                  wraplength=320, justify="left").pack(side=tk.BOTTOM, anchor="w")
+                  wraplength=px(340), justify="left").pack(side=tk.BOTTOM, anchor="w")
 
     def _build_buttons(self):
         bottom = ttk.Frame(self)
-        bottom.pack(fill=tk.X, padx=16, pady=(8, 14))
+        bottom.pack(fill=tk.X, padx=px(16), pady=(px(8), px(14)))
 
         self._accept_btn = action_button(bottom, "✓  Принять   Enter", self._accept, kind="primary",
                                          state=tk.DISABLED)
-        self._accept_btn.pack(side=tk.LEFT, padx=(0, 12))
+        self._accept_btn.pack(side=tk.LEFT, padx=(0, px(12)))
         for text, command, kind in (
             ("Дубль   D", self._duplicate, "secondary"),
             ("Нечитаемо   Del", self._unreadable, "danger"),
             ("Нет в базе   N", self._not_in_db, "secondary"),
             ("Номер в таблице с ошибкой   B", self._db_serial_fix, "secondary"),
         ):
-            action_button(bottom, text, command, kind=kind).pack(side=tk.LEFT, padx=4)
+            action_button(bottom, text, command, kind=kind).pack(side=tk.LEFT, padx=px(4))
 
     def _key_bindings(self) -> list:
         """Горячие клавиши; буквы — в обеих раскладках (D — и «в»)."""
@@ -219,7 +204,7 @@ class EditScreen(ttk.Frame):
         for letter, handler in (("d", self._hotkey_duplicate), ("n", self._hotkey_not_in_db),
                                 ("b", self._hotkey_db_serial_fix)):
             keys += [(seq, handler) for seq in key_sequences(letter)]
-        return keys
+        return keys + photo_keys(self._canvas, self.app)
 
     def _bind_keys(self):
         for seq, cb in self._key_bindings():
@@ -291,75 +276,8 @@ class EditScreen(ttk.Frame):
         self._db_serial_fix()
         return "break"
 
-    def _on_mousewheel(self, event):
-        if event.num == 4 or event.delta > 0:
-            factor = 1.15
-        elif event.num == 5 or event.delta < 0:
-            factor = 1 / 1.15
-        else:
-            return
-        self._zoom_scale = max(0.2, min(self._zoom_scale * factor, 10.0))
-        self._display_photo()
-
-    def _on_pan_start(self, event):
-        self._pan_start = (event.x, event.y)
-
-    def _on_pan_move(self, event):
-        dx = event.x - self._pan_start[0]
-        dy = event.y - self._pan_start[1]
-        self._pan_offset[0] += dx
-        self._pan_offset[1] += dy
-        self._pan_start = (event.x, event.y)
-        self._display_photo()
-
-    def _reset_zoom(self):
-        self._zoom_scale = 1.0
-        self._pan_offset = [0, 0]
-        self._display_photo()
-
-    def _display_photo(self):
-        w = self._canvas.winfo_width()
-        h = self._canvas.winfo_height()
-        if w < 10 or h < 10:
-            return
-
-        try:
-            if self._orig_image is None:
-                self._orig_image = Image.open(self.photo_path)
-
-            orig_w, orig_h = self._orig_image.size
-            base_scale = min(w / orig_w, h / orig_h)
-            disp_w = max(1, int(orig_w * base_scale * self._zoom_scale))
-            disp_h = max(1, int(orig_h * base_scale * self._zoom_scale))
-
-            # Кеш: не пересчитываем LANCZOS если размер не изменился
-            cached = getattr(self, "_cached_render", None)
-            if cached is None or cached[0] != (disp_w, disp_h):
-                img = self._orig_image.resize((disp_w, disp_h), Image.LANCZOS, reducing_gap=3.0)
-                self._tk_img = ImageTk.PhotoImage(img)
-                self._cached_render = ((disp_w, disp_h), self._tk_img)
-            else:
-                self._tk_img = cached[1]
-
-            self._canvas.delete("all")
-
-            cx = w // 2 + self._pan_offset[0]
-            cy = h // 2 + self._pan_offset[1]
-            self._canvas.create_image(cx, cy, anchor="center", image=self._tk_img)
-
-            if abs(self._zoom_scale - 1.0) > 0.01:
-                self._canvas.create_text(
-                    8, 8, anchor="nw",
-                    text=f"×{self._zoom_scale:.1f}",
-                    font=("Segoe UI", 10, "bold"),
-                    fill="#ffffff",
-                )
-        except Exception:
-            pass
-
     def _show_run_read(self):
         """Что прочитала обработка на этом фото — сразу в поля (этап Е)."""
-        self._display_photo()
         auto = find_auto_row_for_output_file(
             self.app.log_rows, Path(self.photo_path).name,
             controller_name(self.photo_path, self.app.results_dir))
@@ -486,12 +404,12 @@ class EditScreen(ttk.Frame):
                 text=f"{h.serial}   л/с {h.account}\nпосл. {last}   расход {delta}",
                 font=("Segoe UI", 9), relief="groove", anchor="w", justify="left", bg=SURFACE,
                 command=lambda h=h: self._use_hint(h),
-            ).pack(anchor="w", fill=tk.X, pady=1)
+            ).pack(anchor="w", fill=tk.X, pady=px(1))
         ttk.Label(self._hint_frame, style="Card.TLabel",
                   text="Клик — подставить лицевой счёт. Дальше: «Принять», если это он "
                        "(модель ошиблась), или «Серийник в базе с ошибкой».",
                   font=("Segoe UI", 8), foreground=CLR_GRAY,
-                  wraplength=280, justify="left").pack(anchor="w", pady=(0, 6))
+                  wraplength=px(280), justify="left").pack(anchor="w", pady=(0, px(6)))
 
     def _show_choices(self, choices: list[SerialHint]):
         """Номер в таблице у нескольких абонентов — кнопки выбора."""
@@ -508,12 +426,12 @@ class EditScreen(ttk.Frame):
                 text=f"л/с {h.account}\nпосл. {last}   расход {delta}",
                 font=("Segoe UI", 9), relief="groove", anchor="w", justify="left", bg=SURFACE,
                 command=lambda h=h: self._use_choice(h),
-            ).pack(anchor="w", fill=tk.X, pady=1)
+            ).pack(anchor="w", fill=tk.X, pady=px(1))
         ttk.Label(self._hint_frame, style="Card.TLabel",
                   text="Клик — выбрать абонента, потом «Принять». У другой записи в базе "
                        "номер с ошибкой.",
                   font=("Segoe UI", 8), foreground=CLR_GRAY,
-                  wraplength=280, justify="left").pack(anchor="w", pady=(0, 6))
+                  wraplength=px(280), justify="left").pack(anchor="w", pady=(0, px(6)))
 
     def _use_choice(self, h: SerialHint):
         """Выбран абонент из нескольких с одним номером (как подсказка: лицевой

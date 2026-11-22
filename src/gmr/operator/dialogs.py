@@ -1,6 +1,8 @@
-"""Диалоги: первый запуск и смена пользователя, вход, настройки распознавания месяца."""
+"""Диалоги: настройки распознавания месяца, ввод строки, выгрузка, горячие клавиши.
+
+(Первый запуск и смена пользователя — с 1.4.0 на экране входа, welcome.py.)"""
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 from typing import Optional
 
 from src.gmr.domain.preset import (
@@ -14,74 +16,8 @@ from src.gmr.domain.preset import (
 
 from src.gmr.ui.run_dialog import center_on
 
-from .settings import AppSettings
-from .theme import BG, FONT, action_button
+from .theme import action_button, BG, FONT, MUTED, px, SURFACE, TEXT
 
-
-class SettingsDialog(tk.Toplevel):
-    """Первый запуск или смена пользователя: имя и папка месяца. «Новый…» —
-    создать месяц из таблицы компании (new_month(диалог, имя) → папка | None)."""
-    def __init__(self, parent, settings: AppSettings, new_month=None):
-        super().__init__(parent)
-        self.title("Настройки")
-        self.resizable(False, False)
-        self.transient(parent)           # поверх главного окна, а не под ним
-        self.grab_set()
-        self.result: Optional[AppSettings] = None
-        self._new_month = new_month
-        self._build(settings)
-        self.protocol("WM_DELETE_WINDOW", self._cancel)
-        center_on(self, self.master)
-        self.wait_window()
-
-    def _build(self, s: AppSettings):
-        pad = dict(padx=12, pady=6)
-        f = ttk.Frame(self, padding=16)
-        f.pack(fill=tk.BOTH, expand=True) 
-
-        ttk.Label(f, text="Настройка программы", font=("Segoe UI", 13, "bold")).grid(
-            row=0, column=0, columnspan=3, pady=(0, 16), sticky="w"
-        )
-
-        self._vars = {"name": tk.StringVar(value=s.operator_name), "month": tk.StringVar(value=s.month_dir)}
-        ttk.Label(f, text="Ваше имя:").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(f, textvariable=self._vars["name"], width=42).grid(row=1, column=1, columnspan=2, **pad)
-        ttk.Label(f, text="Папка месяца:").grid(row=2, column=0, sticky="w", **pad)
-        ttk.Entry(f, textvariable=self._vars["month"], width=42).grid(row=2, column=1, columnspan=2, **pad)
-        ttk.Button(f, text="Открыть…", command=self._browse).grid(row=3, column=1, sticky="w", padx=12)
-        if self._new_month is not None:
-            ttk.Button(f, text="Новый месяц…", command=self._create).grid(row=3, column=2, sticky="e", padx=12)
-
-        btns = ttk.Frame(f)
-        btns.grid(row=10, column=0, columnspan=3, pady=(16, 0))
-        ttk.Button(btns, text="Сохранить", command=self._save).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btns, text="Отмена",    command=self._cancel).pack(side=tk.LEFT, padx=6)
-
-    def _browse(self):
-        p = filedialog.askdirectory(parent=self, title="Папка месяца")
-        if p:
-            self._vars["month"].set(p)
-
-    def _create(self):
-        folder = self._new_month(self, self._vars["name"].get().strip())
-        if folder:
-            self._vars["month"].set(folder)
-
-    def _save(self):
-        name = self._vars["name"].get().strip()
-        if not name:
-            messagebox.showwarning("Ошибка", "Введите имя оператора", parent=self)
-            return
-        month = self._vars["month"].get().strip()
-        if not month:
-            messagebox.showwarning("Папка месяца", "Откройте папку месяца или создайте новый месяц "
-                                   "из таблицы компании («Новый месяц…»).", parent=self)
-            return
-        self.result = AppSettings(operator_name=name, month_dir=month)
-        self.destroy()
-
-    def _cancel(self):
-        self.destroy()
 
 class PresetDialog(tk.Toplevel):
     """Настройки распознавания месяца (2026-10-11, решение 2а): при создании
@@ -117,22 +53,22 @@ class PresetDialog(tk.Toplevel):
         }
         self._fill(preset)
 
-        outer = ttk.Frame(self, padding=14)
+        outer = ttk.Frame(self, padding=px(14))
         outer.pack(fill=tk.BOTH, expand=True)
         self._tabs = ttk.Notebook(outer)
         self._tabs.pack(fill=tk.BOTH, expand=True)
-        simple, advanced = ttk.Frame(self._tabs, padding=14), ttk.Frame(self._tabs, padding=14)
+        simple, advanced = ttk.Frame(self._tabs, padding=px(14)), ttk.Frame(self._tabs, padding=px(14))
         self._tabs.add(simple, text="Обычные")
         self._tabs.add(advanced, text="Расширенные")
         self._build_simple(simple)
         self._build_advanced(advanced)
 
         ttk.Label(outer, text="Действует со следующей обработки фото.", foreground="#666").pack(
-            anchor="w", pady=(10, 0))
+            anchor="w", pady=(px(10), 0))
         btns = ttk.Frame(outer)
-        btns.pack(pady=(10, 0))
-        ttk.Button(btns, text=ok_text, command=self._save).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btns, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=6)
+        btns.pack(pady=(px(10), 0))
+        ttk.Button(btns, text=ok_text, command=self._save).pack(side=tk.LEFT, padx=px(6))
+        ttk.Button(btns, text="Отмена", command=self.destroy).pack(side=tk.LEFT, padx=px(6))
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         center_on(self, self.master)
         self.wait_window()
@@ -147,7 +83,7 @@ class PresetDialog(tk.Toplevel):
             v[key].set(f"{getattr(p, key):.2f}")
 
     @staticmethod
-    def _title(parent, text, pady=(12, 4)):
+    def _title(parent, text, pady=(px(12), px(4))):
         ttk.Label(parent, text=text, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=pady)
 
     def _build_simple(self, f):
@@ -156,15 +92,15 @@ class PresetDialog(tk.Toplevel):
         ttk.Checkbutton(f, text="лицевой счёт, написанный маркером на счётчике" + (
             "" if self._marker_model else "  (модель надписи не подключена)"),
             variable=self._vars["account_marker"],
-            state=tk.NORMAL if self._marker_model else tk.DISABLED).pack(anchor="w", padx=12, pady=2)
+            state=tk.NORMAL if self._marker_model else tk.DISABLED).pack(anchor="w", padx=px(12), pady=px(2))
         ttk.Checkbutton(f, text="надписи контролёра поверх фото («лс 12345», «пок 6789»)",
-                        variable=self._vars["overlay_notes"]).pack(anchor="w", padx=12, pady=2)
+                        variable=self._vars["overlay_notes"]).pack(anchor="w", padx=px(12), pady=px(2))
         ttk.Checkbutton(f, text="повернуть фото, если на нём ничего не найдено",
-                        variable=self._vars["turn_photo"]).pack(anchor="w", padx=12, pady=2)
+                        variable=self._vars["turn_photo"]).pack(anchor="w", padx=px(12), pady=px(2))
         ttk.Button(f, text="Вернуть стандартные настройки",
-                   command=lambda: self._fill(RecognitionPreset.new_month())).pack(anchor="w", pady=(18, 0))
+                   command=lambda: self._fill(RecognitionPreset.new_month())).pack(anchor="w", pady=(px(18), 0))
         ttk.Label(f, text="Остальное — во вкладке «Расширенные» (для владельца программы).",
-                  foreground="#666").pack(anchor="w", pady=(10, 0))
+                  foreground="#666").pack(anchor="w", pady=(px(10), 0))
 
     def _build_advanced(self, f):
         tk.Label(f, text="Для владельца программы: эти настройки меняют, как программа читает показания.\n"
@@ -172,26 +108,26 @@ class PresetDialog(tk.Toplevel):
                  fg="#b45309", justify="left", font=("Segoe UI", 9)).pack(anchor="w")
 
         def radios(parent, text, key, options):
-            self._title(parent, text, pady=(8, 2))
+            self._title(parent, text, pady=(px(8), px(2)))
             row = ttk.Frame(parent)
-            row.pack(anchor="w", padx=12)
+            row.pack(anchor="w", padx=px(12))
             for value, label in options:
                 ttk.Radiobutton(row, text=label, value=value, variable=self._vars[key]).pack(
-                    side=tk.LEFT, padx=(0, 12))
+                    side=tk.LEFT, padx=(0, px(12)))
 
         radios(f, "Детектор не нашёл одну цифру — на её место:", "missing_digit", MISSING_MODES.items())
         radios(f, "Неуверенные последние цифры показания:", "forgive_last",
                [(0, "не прощать — оператору"), (1, "прощать последнюю"), (2, "прощать две последние")])
         radios(f, "Прощённую цифру заменять:", "forgive_with", FORGIVE_MODES.items())
 
-        self._title(f, "Модели: включена и уверенность (0,05–0,99)", pady=(14, 2))
+        self._title(f, "Модели: включена и уверенность (0,05–0,99)", pady=(px(14), px(2)))
         grid = ttk.Frame(f)
-        grid.pack(anchor="w", padx=12)
+        grid.pack(anchor="w", padx=px(12))
         for col, head in enumerate(("", "включена", "уверенность")):
-            ttk.Label(grid, text=head, foreground="#666").grid(row=0, column=col, sticky="w", padx=(0, 14))
+            ttk.Label(grid, text=head, foreground="#666").grid(row=0, column=col, sticky="w", padx=(0, px(14)))
         self._conf_boxes = {}
         for r, (name, conf_key, on_key) in enumerate(self.MODELS, start=1):
-            ttk.Label(grid, text=name).grid(row=r, column=0, sticky="w", padx=(0, 14), pady=1)
+            ttk.Label(grid, text=name).grid(row=r, column=0, sticky="w", padx=(0, px(14)), pady=px(1))
             if on_key is None:                    # без неё программа не читает — включена всегда
                 cb = ttk.Checkbutton(grid)
                 cb.state(["selected", "disabled"])
@@ -207,15 +143,15 @@ class PresetDialog(tk.Toplevel):
                 self._conf_boxes[conf_key] = box
         ttk.Label(f, text="Первые четыре не выключаются: без них программа не читает показание.\n"
                           "Уверенность ниже — программа сама принимает больше фото, но и ошибается чаще.",
-                  foreground="#666", justify="left").pack(anchor="w", pady=(4, 0))
+                  foreground="#666", justify="left").pack(anchor="w", pady=(px(4), 0))
 
         radios(f, "Запас вокруг рамки номера счётчика:", "serial_pad",
                [(p, f"{int(p * 100)}%") for p in SERIAL_PADS])
-        self._title(f, "Опыты (обычно выключены):", pady=(10, 2))
+        self._title(f, "Опыты (обычно выключены):", pady=(px(10), px(2)))
         for key, label in (("serial_by_table", "номер счётчика по таблице (ближайший номер таблицы)"),
                            ("drum_rule", "правило барабана: цифра между двумя — меньшая"),
                            ("first_from_last", "старшая цифра по прошлому показанию")):
-            ttk.Checkbutton(f, text=label, variable=self._vars[key]).pack(anchor="w", padx=12)
+            ttk.Checkbutton(f, text=label, variable=self._vars[key]).pack(anchor="w", padx=px(12))
 
     def _conf_values(self) -> Optional[dict]:
         out = {}
@@ -259,16 +195,16 @@ class TextDialog(tk.Toplevel):
         self.resizable(False, False)
         self.configure(bg=BG)
         self.result: Optional[str] = None
-        f = ttk.Frame(self, padding=20)
+        f = ttk.Frame(self, padding=px(20))
         f.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(f, text=prompt, wraplength=440, justify="left").pack(anchor="w")
+        ttk.Label(f, text=prompt, wraplength=px(440), justify="left").pack(anchor="w")
         self._var = tk.StringVar(value=initial)
         entry = ttk.Entry(f, textvariable=self._var, font=(FONT, 13), width=26)
-        entry.pack(anchor="w", pady=(12, 16))
+        entry.pack(anchor="w", pady=(px(12), px(16)))
         buttons = ttk.Frame(f)
         buttons.pack(fill=tk.X)
         action_button(buttons, "Отмена", self._cancel).pack(side=tk.RIGHT)
-        action_button(buttons, "ОК", self._ok, kind="accent").pack(side=tk.RIGHT, padx=(0, 8))
+        action_button(buttons, "ОК", self._ok, kind="accent").pack(side=tk.RIGHT, padx=(0, px(8)))
         self.bind("<Return>", lambda e: self._ok() or "break")
         self.bind("<KP_Enter>", lambda e: self._ok() or "break")
         self.bind("<Escape>", lambda e: self._cancel() or "break")
@@ -314,17 +250,17 @@ class ExportDialog(tk.Toplevel):
         self.chosen: Optional[str] = None
         self._export, self._open_path = export, open_path
         self._fmt = tk.StringVar(value=current if current in formats else next(iter(formats)))
-        self._body = ttk.Frame(self, padding=22)
+        self._body = ttk.Frame(self, padding=px(22))
         self._body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(self._body, text="В каком виде выгрузить показания?", font=(FONT, 12, "bold")).pack(anchor="w")
         ttk.Label(self._body, text="Файл появится в папке месяца: «показания» с выбранным расширением.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(2, 12))
+                  style="Muted.TLabel").pack(anchor="w", pady=(px(2), px(12)))
         for key, label in formats.items():
-            ttk.Radiobutton(self._body, text=label, value=key, variable=self._fmt).pack(anchor="w", pady=3)
+            ttk.Radiobutton(self._body, text=label, value=key, variable=self._fmt).pack(anchor="w", pady=px(3))
         self._buttons = ttk.Frame(self._body)
-        self._buttons.pack(fill=tk.X, pady=(18, 0))
+        self._buttons.pack(fill=tk.X, pady=(px(18), 0))
         action_button(self._buttons, "Отмена", self.destroy).pack(side=tk.RIGHT)
-        action_button(self._buttons, "Выгрузить", self._go, kind="accent").pack(side=tk.RIGHT, padx=(0, 8))
+        action_button(self._buttons, "Выгрузить", self._go, kind="accent").pack(side=tk.RIGHT, padx=(0, px(8)))
         self.bind("<Return>", lambda e: self._go() or "break")
         self.bind("<KP_Enter>", lambda e: self._go() or "break")
         self.bind("<Escape>", lambda e: self.destroy() or "break")
@@ -347,10 +283,45 @@ class ExportDialog(tk.Toplevel):
         for w in self._body.winfo_children():
             w.destroy()
         ttk.Label(self._body, text="✓  Выгружено", font=(FONT, 12, "bold")).pack(anchor="w")
-        ttk.Label(self._body, text=report, justify="left", wraplength=560).pack(anchor="w", pady=(8, 16))
+        ttk.Label(self._body, text=report, justify="left", wraplength=px(560)).pack(anchor="w", pady=(px(8), px(16)))
         b = ttk.Frame(self._body)
         b.pack(fill=tk.X)
         action_button(b, "Закрыть", self.destroy).pack(side=tk.RIGHT)
-        action_button(b, "Открыть папку", lambda: self._open_path(path, folder=True)).pack(side=tk.RIGHT, padx=8)
+        action_button(b, "Открыть папку", lambda: self._open_path(path, folder=True)).pack(side=tk.RIGHT, padx=px(8))
         action_button(b, "Открыть файл", lambda: self._open_path(path), kind="accent").pack(side=tk.RIGHT)
         center_on(self, self.master)
+
+
+class KeysDialog(tk.Toplevel):
+    """Справка → «Горячие клавиши»: все клавиши программы одной таблицей
+    (sections — [(раздел, [(клавиша, что делает), …]), …])."""
+
+    def __init__(self, parent, sections):
+        super().__init__(parent)
+        self.title("Горячие клавиши")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.configure(bg=SURFACE)
+        f = tk.Frame(self, bg=SURFACE, padx=px(26), pady=px(20))
+        f.pack(fill=tk.BOTH, expand=True)
+        cols = [tk.Frame(f, bg=SURFACE), tk.Frame(f, bg=SURFACE)]
+        for i, c in enumerate(cols):
+            c.grid(row=0, column=i, sticky="n", padx=(0, px(36)) if i == 0 else 0)
+        half = (len(sections) + 1) // 2
+        for n, (title, keys) in enumerate(sections):
+            col = cols[0 if n < half else 1]
+            tk.Label(col, text=title.upper(), font=(FONT, 9, "bold"), fg=MUTED, bg=SURFACE).pack(
+                anchor="w", pady=(px(14) if col.winfo_children() else 0, px(6)))
+            for key, what in keys:
+                row = tk.Frame(col, bg=SURFACE)
+                row.pack(fill=tk.X, pady=px(2))
+                tk.Label(row, text=key, font=(FONT, 9, "bold"), fg=TEXT, bg="#eef1f5", padx=px(7), pady=px(1),
+                         width=16, anchor="w").pack(side=tk.LEFT)
+                tk.Label(row, text=what, font=(FONT, 10), fg=TEXT, bg=SURFACE).pack(side=tk.LEFT, padx=(px(10), 0))
+        b = action_button(f, "Закрыть", self.destroy, kind="accent")
+        b.grid(row=1, column=0, columnspan=2, sticky="e", pady=(px(18), 0))
+        for seq in ("<Escape>", "<Return>", "<KP_Enter>"):
+            self.bind(seq, lambda e: self.destroy() or "break")
+        center_on(self, parent)
+        self.focus_set()
+        self.grab_set()

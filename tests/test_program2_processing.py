@@ -735,18 +735,20 @@ def test_not_a_month_folder_asks_settings_again(tmp_path, monkeypatch):
     f = make_month(tmp_path, [("1234567", "A1", "1000", "")])
     asked = []
 
-    def settings_dialog(parent, settings, **kw):
-        asked.append(settings.month_dir)
-        assert kw["new_month"] == parent.ask_new_month         # в настройках есть «Новый месяц…»
-        return SimpleNamespace(result=program2.AppSettings("Оператор", str(f.root)))
+    def setup(welcome, settings, new_month, error=None, can_cancel=False):
+        asked.append((settings.month_dir, error, can_cancel))
+        assert new_month == welcome.window.ask_new_month       # на экране есть «Новый месяц…»
+        return program2.AppSettings("Оператор", str(f.root))
 
-    monkeypatch.setattr(op_window, "SettingsDialog", settings_dialog)
-    # «Создать в этой папке новый месяц?» — Нет: окно снова спрашивает папку
+    monkeypatch.setattr(op_window, "ask_setup", setup)
+    # «Создать в этой папке новый месяц?» — Нет: экран входа снова спрашивает папку, с объяснением
     w = _window(monkeypatch, program2.AppSettings("Оператор", str(tmp_path / "нет")), answers=[False])
     try:
-        assert asked == [str(tmp_path / "нет")]
+        (month, error, can_cancel), = asked
+        assert month == str(tmp_path / "нет") and "месяц не создан" in error and not can_cancel
         assert "Месяц не создан" in w.asked[0][1] and "Создать в этой папке" in w.asked[0][1]
         assert w.session.folder.root == f.root
+        assert not [t for t in w.winfo_children() if t.winfo_class() == "Toplevel"]     # без окон поверх
     finally:
         w.destroy()
 
@@ -754,13 +756,16 @@ def test_not_a_month_folder_asks_settings_again(tmp_path, monkeypatch):
 @needs_display
 def test_change_user_cancelled_keeps_settings(tmp_path, monkeypatch):
     f = make_month(tmp_path, [("1234567", "A1", "1000", "")])
-    monkeypatch.setattr(op_window, "SettingsDialog", lambda parent, settings, **kw: SimpleNamespace(result=None))
+    asked = []
+    monkeypatch.setattr(op_window, "ask_setup", lambda welcome, settings, new_month, error=None, can_cancel=False:
+                        asked.append(can_cancel))                    # «Отмена»
     w = _window(monkeypatch, program2.AppSettings("Оператор", str(f.root)))
     monkeypatch.setattr(op_window, "ask_login", lambda *a, **k: "change")
     w.destroy()
     w = new_window(program2.MainWindow)            # «Сменить пользователя» → «Отмена»
     try:
         w.withdraw()
+        assert asked == [True]                     # отменить можно — прежние настройки целы
         assert w.session.folder.root == f.root and w.settings.operator_name == "Оператор"
     finally:
         w.destroy()
@@ -841,45 +846,58 @@ def test_process_command(tmp_path, monkeypatch):
 def test_process_new_shows_report_and_refreshes(app, monkeypatch):
     calls = []
     img(app.month.root.parent / "new.jpg")
-    shown = _fake_run(monkeypatch, app, calls=calls,       # «прогон» добавит фото в очередь
-                      new_photo=(app.month.root.parent / "new.jpg", app.photos / "question" / "no_meter" / "new.jpg"))
+    _fake_run(monkeypatch, app, calls=calls,               # «прогон» добавит фото в очередь
+              new_photo=(app.month.root.parent / "new.jpg", app.photos / "question" / "no_meter" / "new.jpg"))
     _open_first(app)                                       # экран разбора открыт
     app.process_new()
     assert calls == [(str(app.month.root), False)]
-    assert not hasattr(app, "_current_screen") or not app._current_screen.winfo_exists()
-    assert shown == [("Итог обработки", "ОБЩИЙ ОТЧЁТ\nНовых фото в этом прогоне: 3\n")]
+    # 1.4.0: ход и итог — экраном в окне, а не окнами поверх
+    from src.gmr.operator.process_screen import ProcessScreen
+    scr = app._current_screen
+    assert isinstance(scr, ProcessScreen) and not [t for t in app.winfo_children() if t.winfo_class() == "Toplevel"]
+    assert scr.report == "ОБЩИЙ ОТЧЁТ\nНовых фото в этом прогоне: 3\n"
     assert len(app._proc_tab._items) == 4                  # очередь перечитана после прогона
-    lines = app._process_dialog.lines
-    assert "INFO  Фото 3 из 3: c.jpg" in lines and not app._process_dialog.winfo_exists()
-    app._process_dialog.stop()                             # «Остановить» уже после конца — ничего
+    assert "INFO  Фото 3 из 3: c.jpg" in scr.lines
+    scr.stop()                                             # «Остановить» уже после конца — ничего
     assert not app.month.stop_file.exists()
+    assert not app._processing and app._process_btn["state"] == "normal"      # шапка снова работает
+    assert app.bind_all("<Return>")                        # Enter — «Разобрать очередь»
+    scr._go_queue()
+    assert not app.screen_open() and app._notebook.select() == str(app._proc_tab)
 
 
 @needs_display
 def test_reread_runs_with_reread(app, monkeypatch):
-    calls, titles = [], []
+    calls = []
     _fake_run(monkeypatch, app, calls=calls)
-    real = program2.ProcessDialog
-    monkeypatch.setattr(op_window, "ProcessDialog", lambda *a, **k: titles.append(k["title"]) or real(*a, **k))
     app.process_new(reread=True)
-    assert calls == [(str(app.month.root), True)] and titles == ["Обработка фото с ошибками"]
+    assert calls == [(str(app.month.root), True)]
+    assert app._process_screen.done.get()
 
 
 @needs_display
 def test_process_new_stop(app, monkeypatch):
-    shown = _fake_run(monkeypatch, app, slow=1)
-    app.after(400, lambda: app._process_dialog.stop())     # оператор нажал «Остановить»
+    _fake_run(monkeypatch, app, slow=1)
+    seen = []
+
+    def press_stop():                                      # оператор нажал «Остановить»
+        seen.append(app._process_btn["state"])            # пока идёт — шапка выключена
+        app._process_screen.stop()
+    app.after(400, press_stop)
     app.process_new()
-    assert any("Остановлено оператором: прочитано 0 из 3" in x for x in app._process_dialog.lines)
-    assert not app.month.stop_file.exists() and shown[0][0] == "Итог обработки"
+    assert seen == ["disabled"]
+    assert any("Остановлено оператором: прочитано 0 из 3" in x for x in app._process_screen.lines)
+    assert not app.month.stop_file.exists() and app._process_screen.report
 
 
 @needs_display
 def test_process_new_failure_shows_output(app, monkeypatch):
-    shown = _fake_run(monkeypatch, app, code=1)
+    _fake_run(monkeypatch, app, code=1)
     app.process_new()
-    (title, text), = shown
-    assert title == "Обработка не удалась" and "Код завершения: 1" in text and "Фото 3 из 3" in text
+    scr = app._process_screen
+    texts = [w.cget("text") for w in _all_children(scr) if w.winfo_class() == "Label"]
+    assert any("не удалась (код 1)" in t for t in texts)
+    assert "Фото 3 из 3" in scr._detail.get("1.0", "end") and scr._detail.winfo_manager()   # вывод — сразу
 
 
 # ─── Этап 4: меню «Месяц» ────────────────────────────────────────────────────
@@ -1095,26 +1113,34 @@ def test_no_meter_accept_copies_original_for_labeling(app):
 
 
 @needs_display
-def test_settings_dialog_name_and_month(app, tmp_path):
+def test_setup_on_welcome_screen_name_and_month(tmp_path, monkeypatch):
+    # 1.4.0: первый запуск — на экране входа, без окна «Настройки» поверх
+    import tkinter as tk
+    from src.gmr.operator.welcome import WelcomeScreen
+    root = new_window(tk.Tk)
+    root.withdraw()
     calls = []
 
     def new_month(parent, who):
         calls.append(who)
         return str(tmp_path / "Ноябрь_2026")
 
+    scr = WelcomeScreen(root)
+
     def fill():
-        dlg = next(w for w in app.winfo_children() if isinstance(w, program2.SettingsDialog))
-        dlg._vars["name"].set("Мадина")
-        dlg._save()                                            # папки месяца нет — не закрывается
-        assert dlg.winfo_exists() and dlg.result is None
-        dlg._create()
-        dlg._vars["month"].set(f"  {dlg._vars['month'].get()}  ")   # лишние пробелы не мешают
-        dlg._save()
-    app.after(100, fill)
-    dlg = program2.SettingsDialog(app, program2.AppSettings("", ""), new_month=new_month)
+        scr._name_var.set("Мадина")
+        scr._save()                                            # папки месяца нет — не дальше
+        assert "папку месяца" in scr._error.get() and scr._result is None
+        scr._create(new_month)
+        scr._month_var.set(f"  {scr._month_var.get()}  ")              # лишние пробелы не мешают
+        scr._on_return()                                       # Enter — «Продолжить»
+    root.after(50, fill)
+    got = scr.ask_setup(program2.AppSettings("", "", "csv"), new_month)
     assert calls == ["Мадина"]
-    assert dlg.result == program2.AppSettings("Мадина", str(tmp_path / "Ноябрь_2026"))
-    assert any(t == "showwarning" and "Новый месяц" in a[1] for t, a in app.shown)
+    assert got == program2.AppSettings("Мадина", str(tmp_path / "Ноябрь_2026"), "csv")   # формат выгрузки — прежний
+    root.after(50, scr._cancel)
+    assert scr.ask_setup(got, new_month, can_cancel=True) is None and not scr.quit
+    root.destroy()
 
 
 @needs_display

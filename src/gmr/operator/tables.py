@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
 
-from .theme import DANGER, SUCCESS
+from .theme import DANGER, SUCCESS, px
 
 UP, DOWN = " ▲", " ▼"
 
@@ -83,14 +83,14 @@ def arrow_images(master) -> dict[str, tk.PhotoImage]:
     return {"PLUS": _triangle(master, SUCCESS, up=True), "MINUS": _triangle(master, DANGER, up=False)}
 
 
-def _triangle(master, color: str, up: bool, size: int = 13) -> tk.PhotoImage:
-    img = tk.PhotoImage(master=master, width=size, height=size)
-    top, bottom = 2, size - 2
-    for y in range(top, bottom):
-        t = (y - top) / max(1, bottom - top - 1)          # 0 — острие, 1 — основание
-        if not up:
-            t = 1 - t
-        half = t * (size / 2 - 1)
-        x0, x1 = round(size / 2 - half - 0.5), round(size / 2 + half - 0.5)
-        img.put(color, to=(max(0, x0), y, min(size, x1 + 1), y + 1))
-    return img
+def _triangle(master, color: str, up: bool, size: int = 13):
+    """Треугольник со сглаженными краями: рисуется вчетверо крупнее и уменьшается
+    (по точкам — зубчатый); размер — под масштаб экрана."""
+    from PIL import Image, ImageDraw, ImageTk
+    n = px(size)
+    k = 4
+    im = Image.new("RGBA", (n * k, n * k), (0, 0, 0, 0))
+    a, b, mid = n * k * 0.12, n * k * 0.88, n * k / 2
+    pts = [(mid, a), (b, b - a * 0.6), (a, b - a * 0.6)] if up else [(a, a + a * 0.6), (b, a + a * 0.6), (mid, b)]
+    ImageDraw.Draw(im).polygon(pts, fill=color)
+    return ImageTk.PhotoImage(im.resize((n, n), Image.LANCZOS), master=master)

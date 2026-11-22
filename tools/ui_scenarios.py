@@ -187,6 +187,8 @@ def s_verify(w, run):
     press(w, "e")
     check("E — режим исправления", scr._edit_mode)
     press(w, "Escape")
+    check("Esc при исправлении — отменить исправление (1.4.0)", screens(w) and not scr._edit_mode)
+    press(w, "Escape")
     check("Esc — к списку", not screens(w) and not w.screen_open())
     check("фокус — в списке", focus_widget(w) is w._verify_tab._tree)
     check("в списке на 4 фото меньше", len(w._verify_tab._items) == n0 - 4)
@@ -209,6 +211,33 @@ def s_verify_edit(w, run):
     val = db(run, "select value from readings where account=?", row["account_id"])
     check("исправленное показание в базе", val and val[0][0] == str(int(new)), f"{val} ≠ {int(new)}")
     press(w, "Escape")
+
+
+def s_keys_14(w, run):
+    print("1.4.0: масштаб фото + − 0, ← на «Проверке», Esc отменяет исправление, F5")
+    to_tab(w, w._verify_tab)
+    press(w, "Return")
+    scr = screens(w)[0]
+    press(w, "plus")
+    check("+ — фото крупнее", scr._canvas.zoom > 1, f"{scr._canvas.zoom}")
+    press(w, "minus")
+    press(w, "plus")
+    press(w, "0")
+    check("0 — фото целиком", scr._canvas.zoom == 1, f"{scr._canvas.zoom}")
+    i0 = scr.index
+    press(w, "Right")
+    scr = screens(w)[0]
+    press(w, "Left")
+    scr = screens(w)[0]
+    check("→ и ← — следующее и предыдущее фото", scr.index == i0, f"{scr.index} ≠ {i0}")
+    press(w, "e")
+    press(w, "Escape")
+    scr2 = screens(w)
+    check("Esc при исправлении — отменить, а не к списку", scr2 and scr2[0] is scr and not scr._edit_mode)
+    press(w, "Escape")
+    check("Esc — к списку", not w.screen_open())
+    press(w, "F5")
+    check("F5 — списки обновлены (сообщение в окне)", w.toast.text == "Списки обновлены", w.toast.text)
 
 
 def s_queue(w, run):
@@ -327,7 +356,7 @@ def s_help(w, run):
     check("инструкция оператора есть", path is not None and path.is_file() and path.stat().st_size > 10_000)
     labels = [w._help_menu.entrycget(i, "label") for i in range(w._help_menu.index("end") + 1)
               if w._help_menu.type(i) == "command"]
-    check("меню «Справка»", labels == ["Инструкция оператора", "Ярлык на рабочем столе", "О программе"], f"{labels}")
+    check("меню «Справка»", labels == ["Инструкция оператора", "Горячие клавиши", "Ярлык на рабочем столе", "О программе"], f"{labels}")
 
 
 def s_menu(w, run):
@@ -360,9 +389,12 @@ def _process(w, run, n, how):
     pump(w, 0.5)
     n1 = db(run, "select count(*) from processing_log")[0][0]
     titles = [t_.title() for t_ in w.winfo_children() if t_.winfo_class() == "Toplevel"]
+    scr = getattr(w, "_current_screen", None)
     check(f"{how}: {n} новых фото прочитаны", n1 - n0 >= n, f"+{n1 - n0}, окна {titles}")
-    check(f"{how}: итог обработки показан", "Итог обработки" in titles, f"{titles}")
-    close_toplevels(w)
+    check(f"{how}: итог — экраном в окне, без окон поверх", type(scr).__name__ == "ProcessScreen"
+          and bool(scr.report) and not titles, f"{type(scr).__name__}, окна {titles}")
+    press(w, "Escape")
+    check(f"{how}: Esc — к спискам", not w.screen_open())
     print(f"     {time.time() - t:.0f} с", flush=True)
 
 
@@ -419,7 +451,7 @@ def s_months(w, run):
         shutil.rmtree(new, ignore_errors=True)
 
 
-SCENARIOS = (s_verify, s_verify_edit, s_queue, s_queue_accept, s_queue_b, s_list_keys_inert, s_settings,
+SCENARIOS = (s_verify, s_verify_edit, s_keys_14, s_queue, s_queue_accept, s_queue_b, s_list_keys_inert, s_settings,
              s_help, s_menu, s_process, s_process_exe, s_months)
 
 

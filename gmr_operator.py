@@ -25,8 +25,10 @@ def main() -> int:
         import gmr
         return gmr.main(sys.argv[1:]) or 0
     from src.gmr.console import safe_console
+    from src.gmr.operator.theme import enable_dpi_awareness
     from src.gmr.operator.window import MainWindow
     safe_console()
+    enable_dpi_awareness()      # чёткий текст при масштабе Windows 125–150% (до первого окна)
     try:        # своя кнопка на панели задач со значком GMR, а не значок Python
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GMR")

@@ -21,7 +21,7 @@ from src.gmr.application.month import ExportLocked, NotAMonth  # noqa: E402, F40
 from src.gmr.console import safe_console  # noqa: E402
 from src.gmr.domain import PipelineConfig  # noqa: E402, F401
 from src.gmr.render import read_image, write_image  # noqa: E402, F401
-from src.gmr.ui.run_dialog import ProcessDialog, process_command, show_text  # noqa: E402, F401
+from src.gmr.ui.run_dialog import ProcessRunner, process_command, show_text  # noqa: E402, F401
 from src.gmr.operator.common import (  # noqa: E402, F401
     _BASE,
     CLR_BG,
@@ -49,7 +49,6 @@ from src.gmr.operator.settings import (  # noqa: E402, F401
 )
 from src.gmr.operator.dialogs import (  # noqa: E402, F401
     PresetDialog,
-    SettingsDialog,
 )
 from src.gmr.operator.photos import (  # noqa: E402, F401
     controller_dir,
@@ -118,5 +117,7 @@ from src.gmr.operator.verify_screen import (  # noqa: E402, F401
 
 if __name__ == "__main__":
     safe_console()
+    from src.gmr.operator.theme import enable_dpi_awareness
+    enable_dpi_awareness()
     app = MainWindow()
     app.mainloop()
