@@ -48,3 +48,26 @@ def test_entry_with_arguments_runs_command(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["GMR.exe", "--version"])
     assert gmr_operator.main() == 0
     assert capsys.readouterr().out.strip() == f"GMR {__version__}"
+
+
+def test_frozen_output_switches_to_window_encoding(monkeypatch):
+    # 1.5.1: сборка писала в трубу окна в cp1251 (PyInstaller не читает PYTHONIOENCODING) —
+    # окно не узнавало «Фото N из M», ход обработки стоял на «Запуске»
+    import io
+    raw = io.BytesIO()
+    out = io.TextIOWrapper(raw, encoding="cp1251")
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(io.BytesIO(), encoding="cp1251"))
+    monkeypatch.setattr(frozen, "FROZEN", True)
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    frozen.attach_std_streams()
+    assert sys.stdout is out and out.encoding == "utf-8" and out.line_buffering
+    print("Фото 3 из 40: a.jpg")
+    assert raw.getvalue().decode("utf-8").rstrip() == "Фото 3 из 40: a.jpg"     # сразу, построчно
+
+
+def test_window_reads_old_cp1251_output():
+    from src.gmr.ui.run_dialog import decode_line, parse_progress
+    line = "12:00:00  INFO      Фото 3 из 40: a.jpg"
+    assert parse_progress(decode_line(line.encode("utf-8")))[:3] == ("photo", 3, 40)
+    assert parse_progress(decode_line(line.encode("cp1251")))[:3] == ("photo", 3, 40)

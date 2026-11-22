@@ -55,6 +55,16 @@ def center_on(win: tk.Toplevel, parent) -> None:
     win.geometry(f"+{x}+{y}")
 
 
+def decode_line(raw: bytes) -> str:
+    """Строка вывода прогона: utf-8 (так просит окно); не utf-8 — кодировка
+    Windows (cp1251): так писали сборки до 1.5.2, и ход обработки стоял на
+    «Запуске» — строки «Фото N из M» не узнавались."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("cp1251", errors="replace")
+
+
 def parse_progress(line: str) -> Optional[tuple]:
     """Строка вывода прогона → ("total", N) | ("photo", k, N, имя) |
     ("models",) | ("stopped",) | None."""
@@ -94,7 +104,7 @@ class ProcessRunner:
 
     def _read(self):
         for raw in self.proc.stdout:
-            self._queue.put(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+            self._queue.put(decode_line(raw).rstrip("\r\n"))
         self._queue.put(None)
 
     def _poll(self):

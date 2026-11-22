@@ -37,11 +37,26 @@ def attach_std_streams() -> None:
     """Собранное окно (без консоли) запущено с параметрами — командой gmr.py,
     например обработкой из окна. У программы без консоли Python не открывает
     sys.stdout/sys.stderr — подключаем их к тому, куда их передал запустивший
-    (труба окна обработки или консоль). Без сборки и с консолью — ничего."""
+    (труба окна обработки или консоль). Без сборки и с консолью — ничего.
+
+    Кодировка: собранная программа не читает переменные PYTHON* (PyInstaller),
+    и если Windows дала ей трубу окна, Python открывает её в кодировке Windows
+    (cp1251) — окно не узнавало строки «Фото N из M» и ход обработки стоял на
+    «Запуске» (1.5.1). Поэтому, если запустивший просит PYTHONIOENCODING
+    (окно обработки — utf-8), вывод переключается на неё, построчно."""
+    import os
+    want = os.environ.get("PYTHONIOENCODING", "").split(":")[0]
+    if FROZEN and want:
+        for name in ("stdout", "stderr"):
+            stream = getattr(sys, name)
+            if stream is not None and hasattr(stream, "reconfigure"):
+                try:
+                    stream.reconfigure(encoding=want, errors="replace", line_buffering=True)
+                except (ValueError, OSError, LookupError):
+                    pass
     if sys.stdout is not None and sys.stderr is not None:
         return
     import io
-    import os
     try:
         import ctypes
         import msvcrt

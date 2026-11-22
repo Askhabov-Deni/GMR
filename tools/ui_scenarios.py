@@ -391,6 +391,8 @@ def _process(w, run, n, how):
     titles = [t_.title() for t_ in w.winfo_children() if t_.winfo_class() == "Toplevel"]
     scr = getattr(w, "_current_screen", None)
     check(f"{how}: {n} новых фото прочитаны", n1 - n0 >= n, f"+{n1 - n0}, окна {titles}")
+    check(f"{how}: ход виден — «Фото N из M» дошло до экрана", getattr(scr, "_k", 0) >= 1,
+          f"_k={getattr(scr, '_k', None)}, шаг {getattr(scr, '_step', None)}")
     check(f"{how}: итог — экраном в окне, без окон поверх", type(scr).__name__ == "ProcessScreen"
           and bool(scr.report) and not titles, f"{type(scr).__name__}, окна {titles}")
     press(w, "Escape")

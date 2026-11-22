@@ -106,7 +106,8 @@ class ProcessScreen(ttk.Frame):
         row.pack(fill=tk.X, pady=(px(8), 0))
         self._dot = tk.Label(row, text="●", font=(FONT, 9), fg=ACCENT, bg=SURFACE)
         self._dot.pack(side=tk.LEFT, padx=(0, px(6)))
-        self._status = tk.StringVar(master=self)
+        self._status = tk.StringVar(master=self, value="Программа готовится: копия базы, поиск новых фото — "
+                                                       "обычно 10–20 секунд…")
         self._eta = tk.StringVar(master=self)
         tk.Label(row, textvariable=self._status, font=(FONT, 9), fg=MUTED, bg=SURFACE, anchor="w").pack(
             side=tk.LEFT, fill=tk.X, expand=True)
