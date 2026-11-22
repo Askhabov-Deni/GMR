@@ -15,11 +15,12 @@ from typing import Callable
 
 WM_DROPFILES = 0x0233
 GWLP_WNDPROC = -4
+POLL_MS = 150            # как часто окно забирает перетащенное (см. proc)
 
 
 def enable_drop(window, on_drop: Callable[[list], None]) -> bool:
     """Окно window (tk.Tk / Toplevel) принимает файлы; on_drop(список путей)
-    вызывается в потоке окна после отпускания мыши. True — включено."""
+    вызывается таймером окна (до 0,15 с после отпускания мыши). True — включено."""
     if sys.platform != "win32":
         return False
     try:
@@ -39,6 +40,7 @@ def enable_drop(window, on_drop: Callable[[list], None]) -> bool:
         shell32.DragFinish.argtypes = (ctypes.c_void_p,)
         shell32.DragAcceptFiles.argtypes = (wintypes.HWND, wintypes.BOOL)
         old = None
+        pending: list = []
 
         def proc(h, msg, wparam, lparam):
             if msg == WM_DROPFILES:
@@ -50,7 +52,12 @@ def enable_drop(window, on_drop: Callable[[list], None]) -> bool:
                     paths.append(buf.value)
                 shell32.DragFinish(wparam)
                 if paths:
-                    window.after_idle(lambda: on_drop(paths))    # Tk — не внутри оконной процедуры
+                    # ТОЛЬКО запомнить: вызвать Tk отсюда нельзя — процедура
+                    # работает внутри цикла Tk, и вызов из неё ломает состояние
+                    # tkinter (1.5.0 в офисе: «Fatal Python error:
+                    # PyEval_RestoreThread», программа закрывалась). Забирает
+                    # _poll — таймером окна.
+                    pending.append(paths)
                 return 0
             return user32.CallWindowProcW(old, h, msg, wparam, lparam)
 
@@ -60,6 +67,17 @@ def enable_drop(window, on_drop: Callable[[list], None]) -> bool:
             return False
         window._drop_callback = callback          # иначе сборщик мусора уберёт процедуру
         shell32.DragAcceptFiles(hwnd, True)
+
+        def poll():
+            # следующий раз — заранее: on_drop может ждать ответа (поле «Добавить
+            # фото» — wait_variable), а перетаскивать в это поле тоже можно
+            try:
+                window.after(POLL_MS, poll)
+            except Exception:                     # окно закрыто
+                return
+            while pending:
+                on_drop(pending.pop(0))
+        window.after(POLL_MS, poll)
         return True
     except (AttributeError, OSError, ValueError, TypeError):
         return False
