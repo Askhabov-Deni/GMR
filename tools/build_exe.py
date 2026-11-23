@@ -104,6 +104,14 @@ def main(argv=None) -> int:
         print("Закоммитьте или соберите с --dirty (для проверки, не для офиса).")
         return 1
     commit = git("rev-parse", "--short", "HEAD")
+    from models.yolo_all_detect.openvino_net import export_openvino, is_current
+    from src.gmr.domain import PipelineConfig
+    from src.gmr.ml.loader import quiet_ultralytics
+    cfg = PipelineConfig()
+    for weights, imgsz in ((cfg.meter_detect_model, 640), (cfg.digit_detect_model, 480)):
+        if not is_current(ROOT / weights):      # детекторы в OpenVINO (1.6.0): нет выгрузки или от других весов
+            quiet_ultralytics()
+            print(f"Выгрузка в OpenVINO: {export_openvino(ROOT / weights, imgsz)}")
     out = Path(args.out)
     dist, work = out / "dist", out / "work"
     app = dist / APP

@@ -277,6 +277,38 @@ def test_inferer_end_to_end_with_random_model(tmp_path):
     assert p.account == res["group"]
 
 
+def test_extended_lexicon_equals_full_compile():
+    # 1.6.0: «словарь и ещё счёт» дополняется, а не собирается заново — ответ тот же
+    groups = {"1300000065": ["00065", "65"], "1300000165": ["00165", "165"], "1300000777": ["00777"]}
+    extra = {"1400000065": ["00065", "400065"]}              # одна строка — общая с другим счётом
+    full = CompiledLexicon({**groups, **extra}, DIGITS)
+    ext = CompiledLexicon(groups, DIGITS).extended(extra)
+    assert ext.strings == full.strings and ext.group_names == full.group_names
+    assert torch.equal(ext._member_string, full._member_string)
+    assert torch.equal(ext._member_group, full._member_group)
+    for text in ("00065", "400065", "00777"):
+        a, b = match(peaky(text), full, BLANK), match(peaky(text), ext, BLANK)
+        assert (a.group, a.string, a.confidence, a.top) == (b.group, b.string, b.confidence, b.top)
+
+
+def test_inferer_keeps_table_lexicon_when_one_account_is_added(tmp_path, monkeypatch):
+    # раньше {**словарь, счёт: …} собирался заново и вытеснял словарь таблицы
+    from models.account import infer_account
+    save_checkpoint(tmp_path / "best.pt", AccountCRNN(img_h=48), {"img_h": 48, "img_w": 224}, DIGITS)
+    inf = infer_account.AccountInferer(str(tmp_path / "best.pt"))
+    base = inf.compile(GROUPS)
+    built = []
+    real = infer_account.CompiledLexicon
+    monkeypatch.setattr(infer_account, "CompiledLexicon", lambda *a: built.append(a) or real(*a))
+    plus = {**GROUPS, "999": ["99999"]}
+    ext = inf.compile(plus)
+    assert not built                                          # дополнен, не собран заново
+    assert ext.group_names == list(GROUPS) + ["999"]
+    assert inf.compile(GROUPS) is base                        # словарь таблицы не вытеснен
+    assert infer_account._extra_over(GROUPS, {"999": ["99999"], **GROUPS}) is None    # не в конце — собрать
+    assert infer_account._extra_over(GROUPS, dict(GROUPS)) is None
+
+
 def test_cli_threshold_equals_prod():
     assert config_account.MIN_CONFIDENCE == PipelineConfig().account_conf_thresh
 
@@ -529,3 +561,22 @@ def test_other_code_note_without_marker_model(base_config):
                       FakeDigitDetector(digit_crops), docr, FakeSerialOCR("555555", 0.95), area_code="1300")
     assert (r.outcome, r.account_id) == (Outcome.PLUS, "0429000011")
     assert "не с участка" in pipeline_output.make_log_row("p.jpg", r, base_config)["notes"]
+
+
+def test_edit_distances_and_pruned_match():
+    import numpy as np
+    lex = CompiledLexicon(GROUPS, DIGITS)
+    rows = np.arange(len(lex.strings))
+    want = []
+    for s in lex.strings:                         # обычный Левенштейн
+        d = list(range(len(s) + 1))
+        for i, ch in enumerate("00065", 1):
+            prev, d[0] = d[0], i
+            for j in range(1, len(s) + 1):
+                prev, d[j] = d[j], min(d[j] + 1, d[j - 1] + 1, prev + (ch != s[j - 1]))
+        want.append(d[-1])
+    assert lex.edit_distances("00065", rows).tolist() == want
+    for text in ("00065", "00068", "54321"):
+        a = match(peaky(text), lex, BLANK, len_window=2)
+        b = match(peaky(text), lex, BLANK, len_window=2, max_edits=3)
+        assert a.group == b.group and abs(a.confidence - b.confidence) < 0.05

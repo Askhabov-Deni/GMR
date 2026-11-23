@@ -41,7 +41,7 @@ from .photo import (
     RunState,
     account_groups_of,
     note_context_of,
-    process_photo,
+    read_photo,
     serial_groups_of,
 )
 from .report import (
@@ -342,6 +342,10 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
         log.info(f"Устройство: {device}")
         loaded = load_models(config, device=device)
         log.info("Модели загружены ✓")
+        for name, det in (("счётчика", loaded.meter_detector), ("цифр", loaded.digit_detector)):
+            backend = getattr(getattr(det, "inferer", None), "backend", None)
+            if backend:
+                log.info(f"  детектор {name}: {backend}")
         if config.ignore_last_digits > 0:
             log.info(
                 f"⚙️  ignore_last_digits={config.ignore_last_digits}: "
@@ -466,7 +470,7 @@ def _run_pipeline(config: PipelineConfig, log: logging.Logger, store) -> None:
             try:
                 if hash_error is not None:
                     raise hash_error
-                result = process_photo(
+                result = read_photo(
                     str(photo_path), df, config,
                     models.meter_detector, models.digit_detector,
                     models.digit_recognizer, models.serial_recognizer,

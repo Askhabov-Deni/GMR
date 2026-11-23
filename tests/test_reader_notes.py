@@ -183,12 +183,12 @@ def test_month_run_passes_notes_when_switched_on(tmp_path, monkeypatch, fake_mod
     from src.gmr.domain.preset import RecognitionPreset
     from tests import _pipeline
     seen = []
-    original = reader.process_photo
+    original = pipeline_run.read_photo
 
     def spy(*args, **kw):
         seen.append(kw.get("notes"))
         return original(*args, **kw)
-    monkeypatch.setattr(pipeline_run, "process_photo", spy)
+    monkeypatch.setattr(pipeline_run, "read_photo", spy)
     folder = _pipeline.setup_month(tmp_path / "выкл")
     _pipeline.run(folder)
     assert seen and all(n is None for n in seen)                     # по умолчанию — как без надписей
@@ -198,3 +198,59 @@ def test_month_run_passes_notes_when_switched_on(tmp_path, monkeypatch, fake_mod
     _pipeline.run(folder)
     assert seen and all(n is seen[0] for n in seen)                  # один на прогон
     assert seen[0].index.find("A-1") == set() and "A-1" in seen[0].lasts
+
+
+# ─── 1.6.0: надпись — только если без неё фото ушло бы оператору ────────────
+
+def _read(tmp_path, config, serial_text, lines=(), digit_conf=0.95, with_serial=True):
+    """Как _run, но через read_photo (так читает прогон); calls — сколько раз
+    запускались поддельные модели."""
+    from src.gmr.ml.adapters import CnnDigitRecognizer, CrnnSerialRecognizer, YoloDigitDetector, YoloMeterDetector
+    from src.gmr.pipeline.photo import read_photo
+    path = tmp_path / "p.jpg"
+    write_image(path, _photo([(t, BLUE, 400 + 200 * i, 0) for i, t in enumerate(lines)]) if lines
+                else _jpeg(_background(3)))
+    crops = make_meter_crops()
+    if not with_serial:
+        crops = [c for c in crops if c["class"] != "serial_number"]
+    digit_crops, arrays = make_digit_crops_with_centers([i * 40 for i in range(5)])
+    calls = []
+
+    class Counting:
+        def __init__(self, inner, name):
+            self.inner, self.name = inner, name
+
+        def __getattr__(self, attr):
+            fn = getattr(self.inner, attr)
+            return lambda *a, **k: calls.append(self.name) or fn(*a, **k)
+
+    docr = FakeDigitOCR({id(a): (d, digit_conf) for a, d in zip(arrays, "01200")})
+    r = read_photo(str(path), make_df(TABLE), config,
+                   YoloMeterDetector(Counting(FakeMeterDetector(crops), "meter")),
+                   YoloDigitDetector(Counting(FakeDigitDetector(digit_crops), "digits")),
+                   CnnDigitRecognizer(Counting(docr, "digit")),
+                   CrnnSerialRecognizer(Counting(FakeSerialOCR(serial_text, 0.95), "serial")),
+                   notes=_notes())
+    return r, calls
+
+
+def test_note_not_read_when_photo_is_written(tmp_path, base_config):
+    # барабан и табличка прочитаны — надпись не смотрится, показание с барабана
+    r, _ = _read(tmp_path, base_config, "123456", ["пок1250"])
+    assert (r.outcome, r.account_id, r.reading, r.account_notes) == (Outcome.PLUS, "1300000065", 1200, None)
+    r, _ = _read(tmp_path, base_config, "123456", ["лс82"])
+    assert (r.outcome, r.account_id) == (Outcome.PLUS, "1300000065")     # спора по надписи нет
+
+
+def test_note_read_when_photo_would_go_to_operator(tmp_path, base_config):
+    r, calls = _read(tmp_path, base_config, None, ["лс82"], with_serial=False)
+    assert (r.outcome, r.account_id, r.reading) == (Outcome.MINUS, "1300000082", 1200)    # как до 1.6.0
+    assert calls.count("meter") == 1 and calls.count("digits") == 1       # модели второй раз не запускались
+    r, _ = _read(tmp_path, base_config, "123456", ["пок1250"], digit_conf=0.3)
+    assert (r.outcome, r.reading) == (Outcome.PLUS, 1250)
+
+
+def test_note_every_photo_when_switched_back(tmp_path, base_config):
+    base_config.overlay_notes_if_unsure = False                          # как до 1.6.0
+    r, _ = _read(tmp_path, base_config, "123456", ["пок1250"])
+    assert (r.outcome, r.reading) == (Outcome.PLUS, 1250)

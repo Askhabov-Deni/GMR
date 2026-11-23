@@ -32,8 +32,14 @@ PipelineConfig); остальные — тонкие обёртки над tools
 `python program2.py`.
 """
 import argparse
+import os
 import sys
 from typing import Optional
+
+# 1.6.0: потоки PyTorch после своей работы не крутятся вхолостую (по умолчанию
+# — ещё ~0.2 с), иначе отнимают ядра у OpenVINO: обработка медленнее на треть.
+# Читается при загрузке torch — поэтому здесь, до неё.
+os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
 
 
 def _process(argv: list[str]) -> int:
@@ -158,6 +164,21 @@ def _notes(argv):
     return notes.main(argv)
 
 
+def _openvino(argv):
+    p = argparse.ArgumentParser(prog="python gmr.py openvino",
+                                description="Выгрузить детекторы (счётчик, цифры) в OpenVINO рядом с весами: "
+                                            "обработка фото быстрее (models/yolo_all_detect/openvino_net.py).")
+    p.parse_args(argv)
+    from models.yolo_all_detect.openvino_net import export_openvino
+    from src.gmr.domain import PipelineConfig
+    from src.gmr.ml.loader import quiet_ultralytics
+    quiet_ultralytics()
+    cfg = PipelineConfig()
+    for weights, imgsz in ((cfg.meter_detect_model, 640), (cfg.digit_detect_model, 480)):
+        print(f"OpenVINO: {export_openvino(weights, imgsz)}")
+    return 0
+
+
 def _prelabel(argv):
     from models.yolo_all_detect import prelabel
     return prelabel.main(argv)
@@ -179,6 +200,7 @@ COMMANDS = {
     "etalon":   (_etalon,   "эталон: трудные фото из месяца, обычные — из архива; проверить на нём модели (tools/etalon.py)"),
     "angles":   (_angles,   "замер: насколько повёрнуты счётчики на фото (tools/angles.py)"),
     "notes":    (_notes,    "замер: что программа поняла бы из надписей контролёров поверх фото (tools/notes.py)"),
+    "openvino": (_openvino, "детекторы — в OpenVINO: обработка фото быстрее (models/yolo_all_detect/openvino_net.py)"),
     "prelabel": (_prelabel, "предразметка YOLO: рамки текущей модели на фото без разметки "
                             "(models/yolo_all_detect/prelabel.py)"),
 }

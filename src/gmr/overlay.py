@@ -255,13 +255,24 @@ def _overlap(a: tuple, b: tuple) -> float:
     return max(0, w) * max(0, h) / max(1, min(a[2] * a[3], b[2] * b[3]))
 
 
-def _glyphs(lab: np.ndarray, sel: np.ndarray, near: float) -> tuple[list[_Glyph], np.ndarray, np.ndarray]:
-    """(«буквы», разметка пятен, их рамки) одного цвета — среднего у пикселей
-    sel; свой цвет — ближе near."""
-    dist = np.linalg.norm(lab - np.median(lab[sel], axis=0), axis=2)
+def _color_dist(lab: np.ndarray, sel: np.ndarray) -> np.ndarray:
+    """Расстояние в Lab от каждой точки до цвета — среднего (медианы) у
+    пикселей sel. Как np.linalg.norm(lab - цвет, axis=2) — то же число до
+    последнего бита (тот же порядок сложения, float32), но в разы быстрее:
+    без свёртки по короткой оси (1.6.0)."""
+    diff = lab - np.median(lab[sel], axis=0)
+    d2 = diff[..., 0] * diff[..., 0]
+    d2 += diff[..., 1] * diff[..., 1]
+    d2 += diff[..., 2] * diff[..., 2]
+    return np.sqrt(d2)
+
+
+def _glyphs(dist: np.ndarray, near: float) -> tuple[list[_Glyph], np.ndarray, np.ndarray]:
+    """(«буквы», разметка пятен, их рамки) одного цвета; dist — расстояние до
+    него (_color_dist), свой цвет — ближе near."""
     mask = cv2.morphologyEx((dist < near).astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     n, lbl, st, _ = cv2.connectedComponentsWithStats(mask)
-    height, out = lab.shape[0], []
+    height, out = dist.shape[0], []
     for i in range(1, n):
         x, y, w, h, a = st[i]
         if a < 60 or not 0.025 * height <= h <= 0.35 * height or w > WIDEST * h + 10:
@@ -309,18 +320,20 @@ def find(img: np.ndarray) -> list[tuple]:
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
     bright = (hsv[..., 1] >= 110) & (hsv[..., 2] >= 90)
     hue = hsv[..., 0].astype(int) // (180 // _HUE_BINS)
+    counts = np.bincount(hue[bright], minlength=_HUE_BINS)     # ярких точек каждого цвета — за один проход
     out = []
     for b in range(_HUE_BINS):
-        sel = bright & (hue == b)
-        if sel.sum() < _MIN_COLOR_PX:
+        if counts[b] < _MIN_COLOR_PX:
             continue
+        sel = bright & (hue == b)
+        dist = _color_dist(lab, sel)                # один раз на цвет — для обоих проходов
         # Бледный фон того же оттенка при _NEAR сливается с буквами в одно
         # пятно (строка — «обрывок»); буквы из редактора залиты ровно — при
         # _CORE они отдельно. Строка второго прохода — обрывок и тогда, когда
         # рядом при _NEAR цельная буква (а не фон, слитый с её же буквами).
         loose = None
         for strict, near in enumerate((_NEAR, _CORE)):
-            glyphs, lbl, st = _glyphs(lab, sel, near)
+            glyphs, lbl, st = _glyphs(dist, near)
             loose = loose or (lbl, st)
             lines = _runs(glyphs, 3)
             for ln in lines + _tails(lines, glyphs):

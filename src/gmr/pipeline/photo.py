@@ -187,6 +187,65 @@ def _read_marker(recognizer: Optional[AccountRecognizer], crops: list, groups: O
     return None if det is None else recognizer.recognize(det["crop"], groups)
 
 
+# ─── Надпись — только если без неё фото ушло бы оператору (1.6.0) ───────────
+
+class _Memo:
+    """Модель на одно фото: тот же вход (тот же объект кропа, путь) — тот же
+    ответ без второго запуска. Ключи держат свои объекты, поэтому id не
+    переиспользуется, пока память жива."""
+
+    def __init__(self, inner):
+        self._inner, self._seen = inner, {}
+
+    def _call(self, name: str, *args):
+        key = (name,) + tuple(a if isinstance(a, str) else id(a) for a in args)
+        hit = self._seen.get(key)
+        if hit is None:
+            hit = self._seen[key] = (args, getattr(self._inner, name)(*args))
+        return hit[1]
+
+    def __getattr__(self, name):            # detect_turned и прочее — только если есть у модели
+        if not hasattr(self._inner, name):
+            raise AttributeError(name)
+        return lambda *args: self._call(name, *args)
+
+    def detect(self, x):
+        return self._call("detect", x)
+
+    def recognize(self, crop, *rest):
+        if rest and rest[0] is not None:     # надпись маркером со словарём: словарь бывает новым dict
+            for (args, res) in (v for k, v in self._seen.items() if k[0] == "recognize" and len(k) == 3):
+                if args[0] is crop and (args[1] is rest[0] or args[1] == rest[0]):
+                    return res
+        return self._call("recognize", crop, *rest)
+
+
+def needs_note(result: PhotoResult) -> bool:
+    """Без надписи фото ушло бы оператору (question/, кроме сбоя программы)."""
+    from src.gmr.domain import OUTCOME_FOLDER
+    return OUTCOME_FOLDER[result.outcome].startswith("question/") and result.outcome != Outcome.ERROR
+
+
+def read_photo(photo_path: str, df: pd.DataFrame, config: PipelineConfig,
+               meter_detector: MeterDetector, digit_detector: DigitDetector,
+               digit_recognizer: DigitRecognizer, serial_recognizer: SerialRecognizer,
+               notes: Optional["NoteContext"] = None, **kw) -> PhotoResult:
+    """process_photo с надписью поверх фото по настройке
+    config.overlay_notes_if_unsure (1.6.0, решение владельца 2026-11-23): фото
+    читается без надписи; ушло бы оператору — читается ещё раз с надписью,
+    и ответ — как до 1.6.0. Модели второй раз не запускаются (_Memo)."""
+    if notes is None or not config.overlay_notes_if_unsure:
+        return process_photo(photo_path, df, config, meter_detector, digit_detector,
+                             digit_recognizer, serial_recognizer, notes=notes, **kw)
+    memo = [_Memo(m) for m in (meter_detector, digit_detector, digit_recognizer, serial_recognizer)]
+    if kw.get("account_recognizer") is not None:
+        kw["account_recognizer"] = _Memo(kw["account_recognizer"])
+    result = process_photo(photo_path, df, config, *memo, notes=None, **kw)
+    if not needs_note(result):
+        return result
+    return process_photo(photo_path, df, config, *memo, notes=notes, **kw)
+
+
 # ─── Основная функция обработки одного фото ──────────────────────────────────
 
 def process_photo(

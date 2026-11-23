@@ -33,6 +33,30 @@ from src.gmr.ml.adapters import (
 )
 
 
+def quiet_ultralytics() -> None:
+    """ultralytics по умолчанию шлёт в интернет анонимную статистику работы
+    (settings.json, sync) — программе это не нужно: выключено (1.6.0)."""
+    try:
+        from ultralytics.utils import events
+        events.events.enabled = False
+    except Exception:                                   # noqa: BLE001 — другая версия ultralytics
+        pass
+
+
+def _use_openvino(inferer: YOLOInferer, weights: str, config: PipelineConfig) -> YOLOInferer:
+    """Сеть детектора — через OpenVINO, если можно; inferer.backend — чем считается."""
+    backend = "PyTorch"
+    if config.openvino and hasattr(inferer, "model"):      # поддельный детектор в тестах — как есть
+        from models.yolo_all_detect.openvino_net import load_openvino
+        why = load_openvino(inferer.model, weights)
+        backend = "OpenVINO" if why is None else f"PyTorch: {why}"
+    try:
+        inferer.backend = backend
+    except AttributeError:
+        pass
+    return inferer
+
+
 def default_device() -> "torch.device":
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -41,19 +65,21 @@ def load_meter_detector(config: PipelineConfig, resolve_path: Callable[[str], st
     # запас вокруг рамки серийника (этап 5b): при 0 YOLOInferer создаётся как раньше
     p = config.serial_crop_pad                                 # класс у детектора — по-старому или по-новому
     pad = {"pad": {"serial_number": p, "serial": p}} if p else {}
-    return YoloMeterDetector(YOLOInferer(
-        resolve_path(config.meter_detect_model),
+    weights = resolve_path(config.meter_detect_model)
+    return YoloMeterDetector(_use_openvino(YOLOInferer(
+        weights,
         conf_thresh=config.meter_conf_thresh,
         **pad,
-    ))
+    ), weights, config))
 
 
 def load_digit_detector(config: PipelineConfig, resolve_path: Callable[[str], str] = resolve) -> YoloDigitDetector:
-    return YoloDigitDetector(YOLOInferer(
-        resolve_path(config.digit_detect_model),
+    weights = resolve_path(config.digit_detect_model)
+    return YoloDigitDetector(_use_openvino(YOLOInferer(
+        weights,
         conf_thresh=config.digit_detect_conf_thresh,
         straighten=False,
-    ))
+    ), weights, config))
 
 
 def load_digit_recognizer(
@@ -134,6 +160,7 @@ def load_models(
     (program2.py резолвит относительные пути от своей папки).
     """
     device = device or default_device()
+    quiet_ultralytics()
     meter_detector = load_meter_detector(config, resolve_path)
     check_meter_classes(meter_detector)
     account_recognizer = load_account_recognizer(config, device, resolve_path)

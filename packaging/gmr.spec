@@ -25,13 +25,29 @@ datas += collect_data_files("ultralytics")
 missing = [d for d, _ in datas[:len(weights)] if not Path(d).is_file()]
 if missing:
     raise SystemExit(f"Нет файлов весов: {missing}")
+# 1.6.0: детекторы в OpenVINO (python gmr.py openvino; build_exe выгружает сам, если нет)
+from models.yolo_all_detect.openvino_net import is_current, openvino_dir  # noqa: E402
+for w in (cfg.meter_detect_model, cfg.digit_detect_model):
+    d = ROOT / openvino_dir(w)
+    if not is_current(ROOT / w):
+        raise SystemExit(f"Нет выгрузки OpenVINO из этих весов: {d} — python gmr.py openvino")
+    datas += [(str(f), str(openvino_dir(w))) for f in d.iterdir() if f.is_file()]
 
 hidden = collect_submodules("src") + ["reader", "gmr"]
 # torchvision 0.29: модуль операций — _C_stable.pyd (хук PyInstaller ищет старый _C)
 import torchvision  # noqa: E402
 _tv = Path(torchvision.__file__).parent
 binaries = [(str(f), "torchvision") for f in _tv.iterdir() if f.suffix.lower() in (".pyd", ".dll")]
-excludes = ["matplotlib", "IPython", "jupyter", "notebook", "tensorboard", "pytest"]
+# OpenVINO: только расчёт на процессоре и чтение готовой модели — без видеокарты,
+# нейропроцессора, конвертеров и телеметрии (иначе +180 МБ)
+import openvino  # noqa: E402
+_OV_LIBS = {"openvino.dll", "openvino_c.dll", "openvino_intel_cpu_plugin.dll", "openvino_ir_frontend.dll",
+            "tbb12.dll", "tbbbind_2_5.dll", "tbbmalloc.dll", "tbbmalloc_proxy.dll"}
+_ov_libs = Path(openvino.__file__).parent / "libs"
+binaries += [(str(f), "openvino/libs") for f in _ov_libs.iterdir() if f.name.lower() in _OV_LIBS]
+hidden += ["openvino"]
+excludes = ["matplotlib", "IPython", "jupyter", "notebook", "tensorboard", "pytest", "openvino_telemetry",
+            "openvino.tools", "onnx"]
 
 
 def analysis(script):

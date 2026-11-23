@@ -39,14 +39,14 @@ import numpy as np
 import torch
 
 try:
-    from .config_account import LEN_WINDOW
+    from .config_account import LEN_WINDOW, MAX_EDITS
     from .dataset_account import load_dataset, prepare_input, read_gray
     from .model_account import load_checkpoint
     from ..ctc_lexicon import CompiledLexicon, greedy_decode, match
     from ..crnn.metrics_crnn import cer, levenshtein
 except ImportError:  # запуск как отдельный скрипт: нужна папка проекта в sys.path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from models.account.config_account import LEN_WINDOW
+    from models.account.config_account import LEN_WINDOW, MAX_EDITS
     from models.account.dataset_account import load_dataset, prepare_input, read_gray
     from models.account.model_account import load_checkpoint
     from models.ctc_lexicon import CompiledLexicon, greedy_decode, match
@@ -86,7 +86,7 @@ def evaluate(log_probs: Sequence[torch.Tensor], accounts: Sequence[str], alphabe
     lexicon = CompiledLexicon(groups, alphabet)
     picks = []
     for lp, account, g in zip(log_probs, accounts, greedy):
-        m = match(lp, lexicon, blank, len_window=LEN_WINDOW)
+        m = match(lp, lexicon, blank, len_window=LEN_WINDOW, max_edits=MAX_EDITS)
         picks.append({"account": account, "greedy": g, "group": m.group, "string": m.string,
                       "confidence": m.confidence, "ok": m.group == account})
     n = max(len(picks), 1)

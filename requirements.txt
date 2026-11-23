@@ -3,6 +3,9 @@
 torch==2.14.0
 torchvision==0.29.0
 ultralytics==8.4.163
+# Детекторы через OpenVINO (1.6.0, models/yolo_all_detect/openvino_net.py): в 1,5–2 раза быстрее
+# на процессоре Intel и AMD; без него — PyTorch, как раньше.
+openvino==2026.4.1
 opencv-python==4.13.0.92
 numpy==2.4.4
 pandas==3.0.2

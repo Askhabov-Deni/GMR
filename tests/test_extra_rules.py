@@ -245,8 +245,8 @@ def test_serial_by_table_in_month_run(tmp_path, fake_models, monkeypatch):  # no
     seen, given = [], []
     pl.SerialOCR.predict_in_table = lambda self, image, serials: (
         seen.append(serials) or {"text": "99999", "serial": "33333", "confidence": 0.95})
-    real = reader.process_photo
-    monkeypatch.setattr(pipeline_run, "process_photo", lambda *a, **k: given.append(k["serial_groups"]) or real(*a, **k))
+    real = pipeline_run.read_photo
+    monkeypatch.setattr(pipeline_run, "read_photo", lambda *a, **k: given.append(k["serial_groups"]) or real(*a, **k))
     try:
         folder = pl.setup_month(tmp_path)
         month_app.set_month_preset(folder.root, RecognitionPreset(serial_by_table=True))

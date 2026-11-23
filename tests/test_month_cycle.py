@@ -649,19 +649,19 @@ def test_stop_file_stops_between_photos(tmp_path, models, monkeypatch):
     f = _month(tmp_path)
     for name, n in (("a.jpg", 1), ("b.jpg", 2), ("c.jpg", 4)):
         _photo(f.photos / "Аюб" / name, n)
-    real = reader.process_photo
+    real = pipeline_run.read_photo
 
     def press_stop_after_first(*a, **k):                          # оператор нажал «Остановить»
         res = real(*a, **k)
         f.stop_file.write_text("", encoding="utf-8")
         return res
 
-    monkeypatch.setattr(pipeline_run, "process_photo", press_stop_after_first)
+    monkeypatch.setattr(pipeline_run, "read_photo", press_stop_after_first)
     _run(f)
     assert [r["original_filename"] for r in _log(f)] == ["a.jpg"]   # a.jpg записан целиком
     assert "Остановлено оператором: прочитано 1 из 3" in _journal(f)
     assert not f.stop_file.exists() and f.export_xlsx.is_file()   # выгрузка сделана
-    monkeypatch.setattr(pipeline_run, "process_photo", real)
+    monkeypatch.setattr(pipeline_run, "read_photo", real)
     _run(f)                                                        # следующий запуск дочитывает
     assert [r["original_filename"] for r in _log(f)] == ["a.jpg", "b.jpg", "c.jpg"]
 
@@ -671,8 +671,8 @@ def test_stop_stops_whole_run_not_only_one_controller(tmp_path, models, monkeypa
     _photo(f.photos / "Аюб" / "a.jpg", 1)
     _photo(f.photos / "Аюб" / "b.jpg", 2)
     _photo(f.photos / "Сулиман С" / "c.jpg", 4)
-    real = reader.process_photo
-    monkeypatch.setattr(pipeline_run, "process_photo",
+    real = pipeline_run.read_photo
+    monkeypatch.setattr(pipeline_run, "read_photo",
                         lambda *a, **k: (real(*a, **k), f.stop_file.write_text("", encoding="utf-8"))[0])
     _run(f)
     j = _journal(f)

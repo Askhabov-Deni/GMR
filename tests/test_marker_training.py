@@ -165,7 +165,7 @@ def test_inferer_uses_length_window(tmp_path, monkeypatch):
     monkeypatch.setattr(infer_account, "match", lambda *a, **k: seen.append(k) or real(*a, **k))
     inf = infer_account.AccountInferer(str(tmp_path / "best.pt"))
     inf.predict(np.zeros((40, 120, 3), np.uint8), account_groups(["1300000093"]))
-    assert seen == [{"len_window": 2}]
+    assert seen == [{"len_window": 2, "max_edits": 3}]      # 1.6.0: и не дальше 3 правок
 
 
 def test_synthetic_items():
