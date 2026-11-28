@@ -1,0 +1,2 @@
+# хуки git — shell-скрипты: только LF, иначе sh не запустит их на Windows
+.githooks/* text eol=lf
