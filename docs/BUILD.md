@@ -62,7 +62,7 @@ git tag vX.Y.Z; git push origin vX.Y.Z  # метка: какой коммит с
 
 ```powershell
 python gmr.py check                                                    # тесты и данные
-python -m tools.ui_scenarios <КОПИЯ месяца> --photos <папка новых фото> --exe "D:\GMR_build\dist\GMR\GMR.exe"
+python -m tools.ui_scenarios --from-month D:\GMR\Май_2026_v1.1 --exe "D:\GMR_build\X.Y.Z\dist\GMR\GMR.exe"   # копию месяца готовит и убирает сама
 python -m tools.doc_screenshots                                        # снимки инструкции (если менялось окно; окно — за краем экрана)
 ```
 

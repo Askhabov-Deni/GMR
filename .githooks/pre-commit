@@ -1,0 +1,7 @@
+#!/bin/sh
+# GMR: в коммит не попадут данные абонентов — таблицы, фото, журналы, базы
+# (tools/check.py --staged). Включается один раз: git config core.hooksPath .githooks
+py=".venv/Scripts/python.exe"
+[ -x "$py" ] || py=".venv/bin/python"
+[ -x "$py" ] || py="python"
+PYTHONIOENCODING=utf-8 exec "$py" -m tools.check --staged

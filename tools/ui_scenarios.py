@@ -2,7 +2,14 @@
 tools/ui_scenarios.py — окно «GMR» с клавиатуры, как работает оператор
 (перед выпуском версии, docs/BUILD.md).
 
+  python -m tools.ui_scenarios --from-month <папка месяца> [--exe <GMR.exe>]
   python -m tools.ui_scenarios <КОПИЯ папки месяца> [--photos <папка с новыми фото>] [--exe <GMR.exe>]
+
+--from-month (с 1.6.0, так перед выпуском): копию месяца и новые фото
+программа готовит сама — рядом с месяцем, в _ui_check_<время> и
+_ui_new_photos_<время>: из первой папки контролёра 12 последних фото
+уходят в «новые», их строки — из журнала копии; после проверки обе папки
+удаляются (--keep — оставить). Сам месяц не меняется.
 
 Месяц меняется (отметки, решения, обработка) — только копия! Окно настоящее
 (Tk), но невидимое и за краем экрана: Enter, Esc, Del, стрелки, цифры идут в
@@ -521,19 +528,75 @@ SCENARIOS = (s_verify, s_verify_edit, s_keys_14, s_queue, s_queue_accept, s_queu
              s_help, s_menu, s_process, s_process_exe, s_ui_15, s_months)
 
 
+NEW_PHOTOS = 12        # «новые» фото копии: обработка в Python, через exe, «Добавить фото»
+
+
+def prepare(source: Path, n: int = NEW_PHOTOS) -> tuple[Path, Path]:
+    """Копия месяца source и папка новых фото рядом с ним (--from-month):
+    (копия, папка новых фото контролёра). Из копии — n последних фото первой
+    папки контролёра и их строки журнала: для программы они новые."""
+    from datetime import datetime
+    from src.gmr.storage import photo_fingerprint
+    source = Path(source)
+    if not (source / "gmr.sqlite").is_file():
+        raise SystemExit(f"Не папка месяца: {source}")
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    month, new_root = source.parent / f"_ui_check_{stamp}", source.parent / f"_ui_new_photos_{stamp}"
+    shutil.copytree(source, month)
+    ctrl = next((d for d in sorted((month / "фото").iterdir()) if d.is_dir()
+                 and any(f.suffix.lower() in (".jpg", ".jpeg", ".png") for f in d.iterdir())), None)
+    if ctrl is None:
+        raise SystemExit(f"В {source / 'фото'} нет папок контролёров с фото")
+    new = new_root / ctrl.name
+    new.mkdir(parents=True)
+    photos = sorted(f for f in ctrl.iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png"))[-n:]
+    con = sqlite3.connect(month / "gmr.sqlite")
+    try:
+        for f in photos:
+            con.execute("DELETE FROM processing_log WHERE photo_hash = ? OR "
+                        "(original_filename = ? AND source_folder = ?)", (photo_fingerprint(str(f)), f.name, ctrl.name))
+            shutil.move(str(f), new / f.name)
+        con.commit()
+    finally:
+        con.close()
+    print(f"Копия месяца: {month}; новые фото: {new} ({len(photos)})")
+    return month, new
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="python -m tools.ui_scenarios", description=__doc__.split("\n\n")[0])
-    p.add_argument("month", help="КОПИЯ папки месяца (меняется)")
+    p.add_argument("month", nargs="?", help="КОПИЯ папки месяца (меняется)")
+    p.add_argument("--from-month", help="папка месяца: копию и новые фото программа готовит и убирает сама")
+    p.add_argument("--keep", action="store_true", help="с --from-month: не удалять копию и новые фото")
     p.add_argument("--photos", help="папка с новыми фото: «Обработать новые фото», «Добавить фото» (берутся 8)")
     p.add_argument("--exe", help="собранная программа «GMR.exe» — обработка через неё")
     p.add_argument("--only", help="только эти сценарии, через запятую (s_verify,…)")
     a = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)
-    photos = sorted(f for f in Path(a.photos).iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png")) if a.photos else []
-    run = Run(Path(a.month), photos[-8:], Path(a.exe) if a.exe else None)
+    if a.from_month:
+        if a.month or a.photos:
+            p.error("--from-month — без папки копии и --photos: их программа готовит сама")
+        month, new = prepare(Path(a.from_month))
+        try:
+            return main_run(str(month), str(new), a.exe, a.only)
+        finally:
+            if not a.keep:
+                for d in (month, new.parent):
+                    shutil.rmtree(d, ignore_errors=True)
+                    if d.exists():
+                        print(f"⚠ не удалось удалить {d} — удалите сами")
+    if not a.month:
+        p.error("нужна копия папки месяца или --from-month <месяц>")
+    return main_run(a.month, a.photos, a.exe, a.only)
+
+
+def main_run(month: str, photos_dir, exe, only) -> int:
+    """Сценарии на готовой копии месяца."""
+    photos = sorted(f for f in Path(photos_dir).iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png")) if photos_dir else []
+    run = Run(Path(month), photos[-8:], Path(exe) if exe else None)
     w = setup(run.month)
     for s in SCENARIOS:
-        if a.only and s.__name__ not in a.only.split(","):
+        if only and s.__name__ not in only.split(","):
             continue
         w._show_lists()
         w._return_released = True

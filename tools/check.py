@@ -10,6 +10,12 @@ tools/check.py — проверка перед коммитом: `python gmr.py 
   3. тесты — `python -m pytest tests/ -q`.
 
 Всё зелёное — можно коммитить. Код возврата: 0 — всё в порядке, 1 — нет.
+
+`python -m tools.check --staged` (с 1.6.0) — только шаг 1 и только для того,
+что сейчас идёт в коммит (git add). Его сам запускает git перед каждым
+коммитом — хук .githooks/pre-commit (включается один раз: `git config
+core.hooksPath .githooks`): данные абонентов не попадут в коммит, даже если
+`gmr.py check` забыли запустить.
 """
 import re
 import subprocess
@@ -56,12 +62,41 @@ def git_files(root: Path = ROOT) -> list[str]:
     return [line for line in out.stdout.splitlines() if line]
 
 
+def staged_files(root: Path = ROOT) -> list[str]:
+    """Файлы, которые идут в коммит (добавлены или изменены; удаление — не в счёт)."""
+    out = subprocess.run(
+        ["git", "-c", "core.quotepath=off", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+        cwd=root, capture_output=True, text=True, encoding="utf-8", check=True,
+    )
+    return [line for line in out.stdout.splitlines() if line]
+
+
+def check_staged(list_files: Callable[[], list[str]] = staged_files) -> int:
+    """Хук перед коммитом: в коммите нет данных — 0, есть — 1 и список."""
+    try:
+        bad = data_files(list_files())
+    except (OSError, subprocess.CalledProcessError) as e:
+        print(f"GMR: не удалось спросить git, что идёт в коммит ({e}) — коммит остановлен.")
+        return 1
+    if not bad:
+        return 0
+    print("GMR: коммит остановлен — в нём файлы, похожие на данные абонентов (таблицы, фото, журналы):")
+    for p in bad:
+        print(f"  {p}")
+    print("Уберите их из коммита: git restore --staged <файл> (и добавьте в .gitignore).")
+    return 1
+
+
 def _run(cmd: list[str]) -> int:
     return subprocess.run(cmd, cwd=ROOT).returncode
 
 
 def main(argv=None, run: Callable[[list[str]], int] = _run,
          list_files: Callable[[], list[str]] = git_files) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--staged" in argv:
+        return check_staged()
     ok = True
 
     print("1/3 Данные в git (таблицы, логи, фото)…")

@@ -101,3 +101,17 @@ def test_operator_screenshots_allowed():
     # снимки экрана инструкции оператора — на выдуманных данных, в git намеренно
     assert check.data_files(["docs/img/operator_main.png", "docs/фото.png", "img/a.png"]) == [
         "docs/фото.png", "img/a.png"]
+
+
+def test_staged_check_stops_commit_with_data(capsys):
+    from tools import check
+    assert check.check_staged(lambda: ["src/a.py", "docs/b.md"]) == 0
+    assert check.check_staged(lambda: ["src/a.py", "Май/показания.xlsx", "фото/Аюб/1.jpg"]) == 1
+    out = capsys.readouterr().out
+    assert "коммит остановлен" in out and "Май/показания.xlsx" in out and "src/a.py" not in out
+
+
+def test_pre_commit_hook_runs_staged_check():
+    from pathlib import Path
+    hook = Path(__file__).resolve().parents[1] / ".githooks" / "pre-commit"
+    assert "tools.check --staged" in hook.read_text(encoding="utf-8")
